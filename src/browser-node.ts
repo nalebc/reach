@@ -1,5 +1,45 @@
 import { browserHostname, type StartConfig } from "./start-flow";
 import { tailnetNode, type TailnetNode } from "./tailnet-transport";
+import { storageBlocked } from "./storage-fallback";
+
+type NodeEvents = Parameters<TailnetNode["start"]>[0];
+const nodeEvents = new WeakMap<TailnetNode, { listeners: Set<NodeEvents>; state: string; url: string; owner: boolean; identity(): boolean }>();
+// A retained owner node has one Go startup and any number of removable UI
+// observers. Opening setup must not replace the recovery callback or start a
+// second node using the same persisted private identity.
+function observedNode(node: TailnetNode, owner: boolean, identity: () => boolean) {
+  const start = node.start.bind(node);
+  const events = { listeners: new Set<NodeEvents>(), state: "", url: "", owner, identity };
+  nodeEvents.set(node, events);
+  let started = false;
+  node.start = listener => {
+    events.listeners.add(listener);
+    if (started) {
+      if (events.state) listener.state(events.state);
+      if (events.url) listener.authURL(events.url);
+      return;
+    }
+    started = true;
+    start({
+      state(state) { events.state = state; if (state === "Running") events.url = ""; for (const item of [...events.listeners]) item.state(state); },
+      authURL(url) { events.url = url; for (const item of [...events.listeners]) item.authURL(url); },
+      error(kind) { for (const item of [...events.listeners]) item.error?.(kind); },
+    });
+  };
+  return node;
+}
+export function observeBrowserNode(node: TailnetNode, listener: NodeEvents) {
+  const events = nodeEvents.get(node);
+  if (!events) throw Error("This browser connection cannot be resumed here. Reopen Reach to continue.");
+  events.listeners.add(listener);
+  if (events.state) listener.state(events.state);
+  if (events.url) listener.authURL(events.url);
+  return () => events.listeners.delete(listener);
+}
+export function browserNodeIdentityCurrent(node: TailnetNode) {
+  const events = nodeEvents.get(node);
+  return !!events?.owner && events.identity() && !!savedBrowserProfile();
+}
 
 type StateStorage = { getState(key: string): string; setState(key: string, value: string): void };
 declare global {
@@ -73,7 +113,7 @@ export async function createBrowserNode(config: StartConfig, {
   hostname = browserHostname(navigator.userAgent),
   authKey,
   stopped = () => {},
-  stateStorage = browserState(guest ? "reach.guest:" : "reach.tailnet:"),
+  stateStorage,
   beforeStart = () => true,
 }: {
   wasm?: Promise<Response>;
@@ -85,28 +125,31 @@ export async function createBrowserNode(config: StartConfig, {
   stateStorage?: StateStorage;
   beforeStart?: () => boolean;
 } = {}) {
+  const captured = !guest && !stateStorage ? capturedBrowserState() : null;
+  const storage = stateStorage || captured?.state || browserState(guest ? "reach.guest:" : "reach.tailnet:");
+  const unchanged = () => beforeStart() && (!captured || captured.unchanged());
   // A loader failure or changed profile can cancel before instantiation.
   // Observe prefetch rejection even then; awaiting it still reports failure.
   void wasm.catch(() => {});
   await loadScript(`/tailnet/${config.tailnet!.exec}`, signal);
   if (signal?.aborted) throw abortReason(signal);
-  if (!beforeStart()) throw Error("The saved browser connection changed.");
+  if (!unchanged()) throw Error("The saved browser connection changed.");
   const go = new Go();
   const { instance } = await abortable(WebAssembly.instantiateStreaming(wasm, go.importObject), signal);
   if (signal?.aborted) throw abortReason(signal);
-  if (!beforeStart()) throw Error("The saved browser connection changed.");
+  if (!unchanged()) throw Error("The saved browser connection changed.");
   void go.run(instance).then(stopped, stopped);
-  return reachTailnet({
+  return observedNode(reachTailnet({
     hostname,
     ...(authKey ? { authKey } : {}),
-    stateStorage,
-  });
+    stateStorage: storage,
+  }), !guest, captured?.unchanged || beforeStart);
 }
 
 // Tailscale 1.104's StateStore values are hex-encoded UTF-8 (main.go). A
 // profile pointer alone is not a saved device: restoring it would generate
 // fresh key material. Require the complete existing persisted identity.
-function savedBrowserState() {
+function capturedBrowserState() {
   try {
     const prefix = "reach.tailnet:";
     const read = () => {
@@ -146,12 +189,24 @@ function savedBrowserState() {
           try {
             localStorage.setItem(prefix + key, value);
             persisted.set(key, value);
-          } catch { /* The running node can keep its state in memory. */ }
+          } catch {
+            // A running node may keep its state in memory, but old complete
+            // disk state cannot prove its new identity will survive reopening.
+            writable = false;
+          }
         }
         // Another tab's clear/replacement wins on disk. Retain this node's
         // in-memory state without restoring or overwriting that other choice.
       },
     };
+    return { state, unchanged };
+  } catch { return null; }
+}
+function savedBrowserState() {
+  try {
+    const captured = capturedBrowserState();
+    if (!captured) return null;
+    const { state, unchanged } = captured;
     const decode = (key: string) => {
       const value = state.getState(key);
       if (value.length > 4 * 1024 * 1024 || !/^(?:[a-f0-9]{2})+$/i.test(value)) throw Error("Incomplete browser identity");
@@ -160,16 +215,57 @@ function savedBrowserState() {
     const current = decode("_current-profile");
     const profiles = JSON.parse(decode("_profiles"));
     if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) return null;
-    const profile = Object.values(profiles).find((value: any) => value?.Key === current && typeof value.NodeID === "string" && value.NodeID);
+    const entry = Object.entries(profiles).find(([, value]: [string, any]) => value?.Key === current && typeof value.NodeID === "string" && value.NodeID);
+    const profile = entry?.[1] as Record<string, unknown> | undefined;
     const preferences = JSON.parse(decode(current)).Config;
     const key = (value: unknown) => typeof value === "string" && /^privkey:[a-f0-9]{64}$/i.test(value) && !/^privkey:0{64}$/i.test(value);
-    return key(decode("_machinekey")) && profile && preferences?.NodeID === (profile as { NodeID: string }).NodeID && key(preferences?.PrivateNodeKey)
-      ? { profile: current, state, unchanged } : null;
+    const machine = decode("_machinekey");
+    return key(machine) && profile && preferences?.NodeID === profile.NodeID && key(preferences?.PrivateNodeKey)
+      ? { profile: current, state, unchanged,
+          identity: JSON.stringify([current, entry![0], profile.ID ?? null, profile.Key, profile.NodeID,
+            profile.ControlURL ?? null, machine, preferences.PrivateNodeKey, preferences.NodeID]) } : null;
   } catch { return null; }
 }
 export const savedBrowserProfile = () => savedBrowserState()?.profile || "";
 
-let standby: { profile: string; node?: TailnetNode; ready: Promise<TailnetNode | null> } | undefined;
+// This is local continuity metadata, never authorization. Legacy approvals
+// without a binding need their own explicit approval in setup. Hash only the
+// validated identity, so preference writes do not bind an old token to a new
+// node; private key material never leaves this closure or enters the record.
+export function browserApprovalIdentity() {
+  const identity = savedBrowserState()?.identity;
+  if (!identity) return null;
+  const current = () => savedBrowserState()?.identity === identity;
+  let digest: Promise<string> | undefined;
+  const binding = async () => {
+    if (!current()) throw Error("The saved browser connection changed. Close setup and try again.");
+    digest ??= crypto.subtle.digest("SHA-256", new TextEncoder().encode("reach.browser-approval.v1\n" + identity))
+      .then(value => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, "0")).join(""));
+    const value = await digest;
+    if (!current()) throw Error("The saved browser connection changed. Close setup and try again.");
+    return value;
+  };
+  return { current, binding,
+    async accepts(peer: { browserIdentity?: unknown }) {
+      return typeof peer.browserIdentity === "string" && /^[a-f0-9]{64}$/.test(peer.browserIdentity) &&
+        current() && peer.browserIdentity === await binding() && current();
+    },
+  };
+}
+const browserLineageKey = "reach.browser.identity-lineage";
+// A new setup lineage can inherit old peer records after a reload, but never
+// their device binding. The marker is continuity metadata, not authorization.
+export async function browserPeerEligible(peer: { browserIdentity?: unknown }): Promise<boolean> {
+  try {
+    const identity = browserApprovalIdentity();
+    if (!identity) return false;
+    if (peer.browserIdentity !== undefined) return await identity.accepts(peer);
+    return localStorage.getItem(browserLineageKey) === null && identity.current();
+  } catch { return false; }
+}
+
+type Standby = { profile: string; identity(): boolean; node?: TailnetNode; nodeReady: Promise<TailnetNode>; ready: Promise<TailnetNode | null> };
+let standby: Standby | undefined;
 type RestorationPhase = "idle" | "identity-unavailable" | "client-unavailable" | "loading-assets" | "starting" | "running" | "needs-login" | "unavailable" | "failed";
 type RecoveryNodeState = "none" | "NoState" | "NeedsLogin" | "NeedsMachineAuth" | "Stopped" | "Starting" | "Running" | "InUseOtherUser" | "Unknown" | "Unavailable";
 let restorationPhase: RestorationPhase = "idle";
@@ -205,18 +301,29 @@ export function existingBrowserNode(config: StartConfig, { wake = false } = {}):
   const saved = savedBrowserState();
   if (!saved) { restorationPhase = "identity-unavailable"; return Promise.resolve(null); }
   if (!config.tailnet) { restorationPhase = "client-unavailable"; return Promise.resolve(null); }
-  const { profile } = saved;
-  if (standby?.profile === profile) {
+  if (standby) {
+    // A changed/cleared identity belongs to the user's newer storage choice.
+    // Never construct a competing node or overwrite it from this retained one.
+    if (!standby.identity()) return Promise.resolve(null);
     if (wake && standby.node) standby.node.wake();
     if (running(standby.node)) return Promise.resolve(standby.node!);
     return standby.ready.then(running);
   }
-  const restoring: NonNullable<typeof standby> = { profile, ready: Promise.resolve(null) };
+  return retainOwnerNode(config, saved).ready;
+}
+
+function retainOwnerNode(config: StartConfig,
+  saved: NonNullable<ReturnType<typeof capturedBrowserState>> & { profile?: string }, signal?: AbortSignal) {
+  const restoring: Standby = {
+    profile: saved.profile || "", identity: saved.unchanged,
+    nodeReady: Promise.resolve(null as unknown as TailnetNode), ready: Promise.resolve(null),
+  };
   restorationPhase = "loading-assets";
   const preload = new AbortController();
   const deadline = setTimeout(() => preload.abort(new DOMException("The browser connection assets did not answer in time.", "TimeoutError")), 8000);
-  restoring.ready = createBrowserNode(config, { stateStorage: saved.state, beforeStart: saved.unchanged, signal: preload.signal })
-    .finally(() => clearTimeout(deadline)).then(node => {
+  restoring.nodeReady = createBrowserNode(config, { stateStorage: saved.state, beforeStart: saved.unchanged,
+    signal: signal ? AbortSignal.any([preload.signal, signal]) : preload.signal }).finally(() => clearTimeout(deadline));
+  restoring.ready = restoring.nodeReady.then(node => {
     restoring.node = node;
     if (standby === restoring) restorationPhase = "starting";
     return new Promise<TailnetNode | null>(resolve => {
@@ -243,5 +350,36 @@ export function existingBrowserNode(config: StartConfig, { wake = false } = {}):
     return null;
   });
   standby = restoring;
-  return restoring.ready;
+  return restoring;
+}
+
+// Only an explicit setup action may construct a missing owner identity or ask
+// it to sign in. It shares the recovery slot, without installing app routing.
+export async function setupBrowserNode(config: StartConfig, signal: AbortSignal): Promise<TailnetNode> {
+  if (signal.aborted) throw abortReason(signal);
+  if (storageBlocked()) throw Error("Allow this site to save data before setting up fallback.");
+  if (!config.tailnet) throw Error("Fallback is not ready on this computer. Try again after Reach finishes updating.");
+  const saved = savedBrowserState();
+  if (!saved) {
+    // This must persist before Go can create keys. Keep it after approval so
+    // unrelated old records stay ineligible in this new lineage on reload.
+    try {
+      localStorage.setItem(browserLineageKey, "setup-v1");
+      if (localStorage.getItem(browserLineageKey) !== "setup-v1") throw Error();
+    } catch { throw Error("Allow this site to save data before setting up fallback."); }
+  }
+  const active = tailnetNode();
+  if (active) {
+    const events = nodeEvents.get(active);
+    if (!events?.owner) throw Error("Open your own Reach connection before setting up fallback.");
+    if (!events.identity()) throw Error("The saved browser connection changed. Reopen Reach to continue.");
+    return active;
+  }
+  if (standby && !standby.identity()) throw Error("The saved browser connection changed. Reopen Reach to continue.");
+  if (!standby) {
+    const state = saved || capturedBrowserState();
+    if (!state) throw Error("Allow this site to save data before setting up fallback.");
+    retainOwnerNode(config, state, signal);
+  }
+  return abortable(standby!.nodeReady, signal);
 }

@@ -47,9 +47,10 @@ export function forgetSaved() {
   try {
     localStorage.removeItem("reach.browser.devices");
     localStorage.removeItem("reach.browser.active");
+    localStorage.removeItem("reach.browser.identity-lineage");
     // Saved before the two ways were kept apart (src/api.ts, separateWays):
     // at this address, that was only ever the browser way's.
-    if (!localStorage.getItem("reach.ways")) {
+    if (!location.port && location.hostname.endsWith(".ts.net") && !localStorage.getItem("reach.ways")) {
       localStorage.removeItem("reach.devices");
       localStorage.removeItem("reach.active");
       localStorage.setItem("reach.ways", "1");

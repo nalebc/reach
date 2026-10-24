@@ -47,7 +47,7 @@ export const suites = {
     "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
-    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway",
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome",
     // The host guard refreshing ahead, and live connections held through a
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",

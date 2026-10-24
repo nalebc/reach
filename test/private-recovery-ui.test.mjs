@@ -52,6 +52,9 @@ test("a previously approved phone automatically leaves browser relay for its own
 
 async function fixture(mode = "browser") {
   const dom = await startDom({ url: origin });
+  // The synthetic running browser node represents a complete persisted owner
+  // identity, just as recovery requires before constructing a real node.
+  saveBrowserState(savedState());
   const oldEventTarget = globalThis.EventTarget;
   globalThis.EventTarget = dom.window.EventTarget;
   const traffic = [], changes = [], sockets = [];
@@ -109,6 +112,72 @@ async function fixture(mode = "browser") {
     close: async () => { recovery.stop(); globalThis.EventTarget = oldEventTarget; await dom.close(); },
   };
 }
+
+for (const route of ["outage", "fresh-page"]) for (const approval of ["new-unbound", "bound-current", "bound-other", "legacy-complete"]) test(`${route} recovery checks saved browser identity provenance for ${approval}`, async () => {
+  const f = await fixture("native");
+  try {
+    const { browserApprovalIdentity } = await f.dom.load("/src/browser-node.ts");
+    if (approval === "new-unbound" || approval === "bound-current") localStorage.setItem("reach.browser.identity-lineage", "setup-v1");
+    if (approval === "bound-current") f.saved.browser[0].browserIdentity = await browserApprovalIdentity().binding();
+    if (approval === "bound-other") f.saved.browser[0].browserIdentity = "f".repeat(64);
+    const before = JSON.stringify(f.saved);
+    f.network.native = false;
+    if (route === "fresh-page") f.setCurrent(null);
+    await f.recovery.check();
+    if (approval === "new-unbound" || approval === "bound-other") {
+      assert.equal(f.traffic.filter(call => call.route === "browser" && call.token).length, 0,
+        "an old token must never be probed through an unrelated newly persisted browser identity");
+      assert.equal(f.changes.length, 0);
+      assert.equal(f.transport.privateWay(), "native");
+    } else {
+      assert.deepEqual(f.changes.map(change => change.mode), ["browser"]);
+      assert.equal(f.current().peer.token, "BROWSER");
+      assert.ok(f.traffic.some(call => call.route === "browser" && call.token === "Bearer BROWSER"));
+      f.network.native = true;
+      await f.recovery.check();
+      assert.equal(f.current().peer.token, "APP", "the preferred native path still returns automatically");
+    }
+    assert.equal(JSON.stringify(f.saved), before, "eligibility reads cannot delete or relabel unrelated approvals");
+    assert.ok(f.traffic.every(call => call.method === "GET"), "provenance checks never create or replay actions");
+  } finally { await f.close(); }
+});
+
+for (const route of ["outage", "fresh-page"]) test(`${route} recovery rechecks cancellation, selection and saved binding after asynchronous identity hashing`, async t => {
+  for (const changed of ["selection", "approval", "binding", "stop"]) {
+    const f = await fixture("native");
+    const digest = crypto.subtle.digest;
+    let release, checking, entered = false;
+    const held = new Promise(resolve => { release = resolve; });
+    try {
+      const { browserApprovalIdentity } = await f.dom.load("/src/browser-node.ts");
+      localStorage.setItem("reach.browser.identity-lineage", "setup-v1");
+      f.saved.browser[0].browserIdentity = await browserApprovalIdentity().binding();
+      t.mock.method(crypto.subtle, "digest", async function (...args) {
+        entered = true;
+        await held;
+        return Reflect.apply(digest, this, args);
+      });
+      f.network.native = false;
+      if (route === "fresh-page") f.setCurrent(null);
+      checking = f.recovery.check();
+      await f.dom.waitFor(() => entered, 300);
+      if (changed === "selection") f.setSelected(peer("OTHER"));
+      if (changed === "approval") f.saved.browser = [];
+      if (changed === "binding") f.saved.browser = [{ ...f.saved.browser[0], browserIdentity: "f".repeat(64) }];
+      if (changed === "stop") f.recovery.stop();
+      release();
+      await checking;
+      assert.equal(f.traffic.filter(call => call.route === "browser" && call.token).length, 0,
+        `${changed} while hashing must cancel credential dispatch`);
+      assert.equal(f.changes.length, 0);
+    } finally {
+      release();
+      await checking?.catch(() => {});
+      t.mock.restoreAll();
+      await f.close();
+    }
+  }
+});
 
 const mobiles = [
   ["iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1"],
