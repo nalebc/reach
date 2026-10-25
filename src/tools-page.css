@@ -185,7 +185,7 @@
   margin: 0;
 }
 .home-pinned > header {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 .home-pinned .shortcuts-edit,
 .tools-invite {
@@ -204,16 +204,16 @@
 .home-pinned > .shortcut-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 .home-pinned .shortcut-open {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) 16px;
-  column-gap: 12px;
-  row-gap: 5px;
-  min-height: 88px;
-  padding: 18px;
-  border-radius: 18px;
+  column-gap: 10px;
+  row-gap: 2px;
+  min-height: 68px;
+  padding: 12px;
+  border-radius: 14px;
   background: #ffffff05;
   font: inherit;
   font-size: 15px;
@@ -300,9 +300,4 @@
 }
 .tools-invite:active {
   background: #ffffff0c;
-}
-@media (min-width: 600px) {
-  .home-pinned .shortcut-open {
-    min-height: 100px;
-  }
 }
