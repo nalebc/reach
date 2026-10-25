@@ -23,7 +23,7 @@ import { createLogos } from "./logos.mjs";
 import { claudeAppAccess, claudeAppRunning, claudeAppShown, createClaudeImports, createClaudeRefresh, idleSeconds, screenLocked } from "./claude-import.mjs";
 import { claudeAppDataDirs } from "./claude-app-paths.mjs";
 import { usePresenceFolder } from "../windows-presence.mjs";
-import { useProcessesFolder } from "../windows-processes.mjs";
+import { stopProcessReadings, useProcessesFolder } from "../windows-processes.mjs";
 import { createClaudeConsent, pressClaudeConsent } from "./claude-consent.mjs";
 import { createAppCards } from "./app-cards.mjs";
 import { agentAskSocket, createAgentAsks, stillAsked } from "./agent-asks.mjs";
@@ -2121,6 +2121,9 @@ export function createAgentSessions({
       agentWatch?.close?.();
       codexLive.close?.();
       daemon.close?.();
+      // Windows process readings still running: stopped, and their helper
+      // processes waited for (server/windows-processes.mjs).
+      return stopProcessReadings(dataDir);
     },
     // The list as last built while nothing changed, or while its rebuild is
     // already on its way (devices hear of it then): one build per listGapMs

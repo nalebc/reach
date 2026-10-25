@@ -14,6 +14,8 @@ import {
   privateIngressTest,
   apps,
 } from "./helpers/preset-fixture.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 const chrome = apps.chrome;
 const access = {
@@ -25,8 +27,11 @@ const access = {
   roots: [],
   terminals: [],
 };
+// Reach's own private folder (on Windows, its private stage): what keeps the
+// shortcuts file private there is its access list, not a mode.
+const privateParent = toolPrivateStateParent(test);
 function fixture(t, overrides = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-shortcut-"));
+  const dataDir = fs.mkdtempSync(path.join(privateParent(), "reach-shortcut-"));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   let client = {
     id: "agent1",
@@ -141,10 +146,7 @@ test("records successful actions, compacts website navigation, persists and repl
   assert.deepEqual(f.log.find((entry) => entry.action).options.expected, {
     bundle: chrome.bundleId,
   });
-  assert.equal(
-    fs.statSync(path.join(f.dataDir, "agent-shortcuts.json")).mode & 0o777,
-    0o600,
-  );
+  await assertPrivate(path.join(f.dataDir, "agent-shortcuts.json"));
 });
 
 test("form values and authentication URLs are inputs, never persisted or returned", async (t) => {
@@ -883,10 +885,7 @@ test("legacy saved tools migrate private context, path URLs and printable keys w
   );
   assert.ok(!stored.includes(secret));
   assert.ok(!stored.includes('"title"'));
-  assert.equal(
-    fs.statSync(path.join(f.dataDir, "agent-shortcuts.json")).mode & 0o777,
-    0o600,
-  );
+  await assertPrivate(path.join(f.dataDir, "agent-shortcuts.json"));
   assert.deepEqual(restored.list(f.authorize).shortcuts[0].inputs, [
     "text2",
     "text1",
