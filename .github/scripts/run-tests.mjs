@@ -186,14 +186,6 @@ export const suites = {
   // they first ran on a real Windows runner (Oct 25) and each, so far, a test
   // that assumed a Mac. A fixed file leaves this list; nothing new joins it.
   windowsPending: [
-    "agent-claude-host",
-    "agent-guard",
-    "agent-invite",
-    "agent-sessions",
-    "agent-shell-sandbox",
-    "agent-updates",
-    "browser-access",
-    "browser-command-log",
     "chat-archive",
     "claude-chat-settings",
     "cli-link",
