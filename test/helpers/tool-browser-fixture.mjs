@@ -82,6 +82,8 @@ export function toolBrowserFixture({ platform = "darwin" } = {}) {
       return tab;
     },
     load(tab, url) {
+      // A site writing its own address back (Gmail: a search's spaces as +).
+      url = this.rewrite?.(url) ?? url;
       tab.dom.reconfigure({ url });
       tab.url = url;
       const w = tab.dom.window,
@@ -90,7 +92,7 @@ export function toolBrowserFixture({ platform = "darwin" } = {}) {
       const origin = URL.canParse(url) ? new URL(url).origin : "";
       if (origin === "https://mail.google.com") {
         const query = decodeURIComponent(
-          new URL(url).hash.replace(/^#search\//, ""),
+          new URL(url).hash.replace(/^#search\//, "").replace(/\+/g, " "),
         );
         doc.body.innerHTML =
           '<input aria-label="Search mail"><div role="button" aria-label="Compose">Compose</div><main><table><tbody><tr role="row"><td class="yW">sender@example.test</td><td class="bog">Invoice October</td></tr></tbody></table></main>';
