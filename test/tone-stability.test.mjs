@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { toneStability } from "./helpers/tone-stability.mjs";
+import { toneStability, sourceStalls, explainedDropouts } from "./helpers/tone-stability.mjs";
 import { createToneTiming, observeToneSource, observeToneWebSockets, observeTonePort } from "./helpers/tone-timing.mjs";
 const tone = () => Array(40).fill(0.183);
 
@@ -19,6 +19,51 @@ test("missing or invalid readings and counters cannot certify sound stability", 
   const invalid = tone(); invalid[4] = NaN;
   for (const [levels, late] of [[tone().slice(0, 10), 0], [invalid, 0], [tone(), -1], [tone(), NaN]])
     assert.equal(toneStability(levels, late).passed, false);
+});
+
+// Packets every 20 ms from `from`, with the given pauses (start offset, length) in ms.
+const packets = (from, count, pauses = []) => {
+  const out = [];
+  let at = from;
+  for (let i = 0; i < count; i++) {
+    out.push({ wallMs: at });
+    const pause = pauses.find(([offset]) => at - from < offset + 20 && at - from >= offset);
+    at += pause ? pause[1] : 20;
+  }
+  return out;
+};
+test("a dropout right after the sound source itself stalled is explained; one per stall", () => {
+  // Oct 19 on Intel macOS: the helper paused 135 ms and 139 ms 140 ms apart;
+  // the browser ran dry once in each.
+  const helper = packets(1000, 200, [[900, 135], [1040, 139]]);
+  const stalls = sourceStalls(helper);
+  assert.deepEqual(stalls.map((s) => s.gapMs), [135, 139]);
+  const lates = [{ wallMs: stalls[0].startWallMs + 110 }, { wallMs: stalls[1].startWallMs + 120 }];
+  assert.equal(explainedDropouts(lates, stalls), 2);
+  const levels = tone(); levels[2] = 0.124; levels[4] = 0;
+  assert.equal(toneStability(levels, 2, { explained: 2 }).passed, true);
+  assert.equal(toneStability(levels, 2).passed, false, "without the measured stalls it still fails");
+});
+test("dropouts with the source on time, a relay delay, or two for one stall still fail", () => {
+  const onTime = packets(1000, 200);
+  assert.deepEqual(sourceStalls(onTime), [], "regular 20 ms packets are no stall, however many dropouts");
+  const twoDry = [{ wallMs: 2000 }, { wallMs: 2600 }];
+  assert.equal(explainedDropouts(twoDry, sourceStalls(onTime)), 0);
+  const levels = tone(); levels[5] = 0; levels[20] = 0;
+  assert.equal(toneStability(levels, 2, { explained: 0 }).passed, false);
+  // Reach holding packets after the helper sent them on time: the browser
+  // sees a gap, the helper doesn't, so it explains nothing.
+  assert.equal(explainedDropouts([{ wallMs: 1500 }], sourceStalls(onTime)), 0);
+  // One stall can't excuse a second, later dry queue.
+  const one = sourceStalls(packets(1000, 200, [[900, 150]]));
+  assert.equal(explainedDropouts([{ wallMs: one[0].startWallMs + 120 }, { wallMs: one[0].endWallMs + 200 }], one), 1);
+  // A dropout long after a stall isn't its doing.
+  assert.equal(explainedDropouts([{ wallMs: one[0].endWallMs + 900 }], one), 0);
+});
+test("explained dropouts can't exceed the dropouts, and shorter pauses aren't stalls", () => {
+  assert.equal(toneStability(tone(), 0, { explained: 1 }).passed, false);
+  assert.equal(toneStability(tone(), 1, { explained: -1 }).passed, false);
+  assert.deepEqual(sourceStalls(packets(1000, 100, [[500, 99]])), []);
 });
 
 test("timing retains only finite allowlisted metadata, with 512 events per kind and 40 samples", () => {
