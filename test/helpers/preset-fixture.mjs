@@ -6,6 +6,7 @@ import http from "node:http";
 import { createReach } from "../../server/index.mjs";
 import { ALL_SCOPES } from "../../server/core.mjs";
 import { admitAgent } from "./agent-admission.mjs";
+import { newIngressKey } from "../../server/tailscale-auth.mjs";
 
 // Preset invitations end to end: created from a pinned phone over the
 // private listener, redeemed by the agent, and checked route by route. Native
@@ -23,8 +24,11 @@ const addresses = { nPhone: "100.64.0.1", nHost: "100.64.0.2", nWasm: "100.64.0.
 
 export async function presetFixture(t, { desktopAvailable = true, withDesktop = true, desktopExtras = {}, desktopFactory, agentShellRun, browserToolOptions, serviceOptions, macShortcuts, includeSystemRoot = false, ownerHold, overrides = {} } = {}) {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "reach-presets-")));
-  const socketDir = fs.mkdtempSync("/tmp/reach-presets-sock-");
-  const socketPath = path.join(socketDir, "s"), dataDir = path.join(dir, "private");
+  // Reach's private ingress: a socket file on a Mac or Linux; on Windows,
+  // which has none, its keyed loopback listener (server/tailscale-auth.mjs).
+  const windows = process.platform === "win32";
+  const socketDir = windows ? null : fs.mkdtempSync("/tmp/reach-presets-sock-");
+  const socketPath = windows ? null : path.join(socketDir, "s"), dataDir = path.join(dir, "private");
   const home = path.join(dir, "home"), shared = path.join(dir, "shared");
   fs.mkdirSync(shared);
   fs.mkdirSync(path.join(home, "Desktop", "Project"), { recursive: true });
@@ -70,11 +74,22 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
   });
   const owners = Object.fromEntries(["nPhone", "nHost", "nWasm"].map((nodeId) =>
     [nodeId, reach.auth.issue(nodeId, ALL_SCOPES, "device", { tailscale: { nodeId, userId: "42" } })]));
-  t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); fs.rmSync(socketDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+  t.after(async () => { await reach.close(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); if (socketDir) fs.rmSync(socketDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
-  await reach.listenPrivate(socketPath);
+  let ingress;
+  if (windows) {
+    // The peer check stands in for Tailscale's own process, as in
+    // windows-agent-e2e; the real check runs against a LocalSystem service
+    // in windows-keyed-ingress.
+    const key = newIngressKey();
+    const port = await reach.listenKeyed({ key, peerCheck: { check: async () => true } });
+    ingress = (route) => ({ host: "127.0.0.1", port, path: `/r-${key}${route}` });
+  } else {
+    await reach.listenPrivate(socketPath);
+    ingress = (route) => ({ socketPath, path: route });
+  }
   const call = (route, { node = "nPhone", token = owners[node]?.token || "", method = "GET", body, headers = {} } = {}) => new Promise((resolve, reject) => {
-    const req = http.request({ socketPath, path: route, method, headers: {
+    const req = http.request({ ...ingress(route), method, headers: {
       Host: "localhost", "X-Forwarded-For": addresses[node], "Tailscale-User-Login": ownerAccount.login,
       ...(token ? { Authorization: `Bearer ${token}` } : {}), "Content-Type": "application/json", ...headers,
     } }, (res) => {
@@ -98,5 +113,5 @@ export async function presetFixture(t, { desktopAvailable = true, withDesktop = 
     const as = (route, options = {}) => call(route, { node: "nAgent", token: joined.token, ...options });
     return { created: created.body, joined, as };
   };
-  return { reach, call, invite, join, home, shared, cancelled, socketPath, owners, addresses, ownerAccount };
+  return { reach, call, invite, join, home, shared, cancelled, socketPath, ingress, owners, addresses, ownerAccount };
 }
