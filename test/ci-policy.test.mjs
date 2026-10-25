@@ -91,6 +91,24 @@ test("CI test selection never silently loses a renamed required platform test", 
   for (const suite of Object.keys(suites)) assert.equal(testFiles(suite).length, suites[suite].length);
 });
 
+test("every test runs on Windows unless a lane owns it or it is a listed pending Windows fix", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-windows-rest-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "test"));
+  for (const name of [...suites.windows, ...suites.native, ...suites.windowsPending, "brand-new"]) {
+    const file = path.join(root, "test", `${name}.test.mjs`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "");
+  }
+  // A file nobody listed runs on Windows by default.
+  assert.deepEqual(testFiles("windows-rest", root), [path.join("test", "brand-new.test.mjs")]);
+  // A pending Windows fix is not also claimed by the Windows lane.
+  assert.deepEqual(suites.windowsPending.filter(name => suites.windows.includes(name)), []);
+  const real = testFiles("windows-rest");
+  for (const name of [...suites.windows, ...suites.native, ...suites.windowsPending])
+    assert.equal(real.includes(path.join("test", `${name}.test.mjs`)), false, `${name} has its own lane`);
+});
+
 test("Windows CI retains the atomic JSON sharing regression beside installed pairing", () => {
   assert.ok(suites.windows.includes("windows-atomic-json"), "transient and permanent state-write refusals need Windows execution");
   assert.ok(suites.windows.includes("qr-onboarding-e2e"), "the installed pairing flow remains required");
