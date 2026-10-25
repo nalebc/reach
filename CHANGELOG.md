@@ -21,7 +21,9 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
   keeps its own Tailscale identity and separate device approval with the same
   access. Preparing this link also saves Reach's public interface files so it
   can reopen when the native connection is unavailable; computer data and
-  credentials are never cached by that preparation.
+  credentials are never cached by that preparation. Home suggests this
+  one-time setup while the Tailscale app connection is on, so it is ready
+  before the app is turned off; Settings keeps the same setup.
 - Let agents close their tracked tabs with `reach_close_tabs`, or automatically
   after five minutes without agent activity or when their access ends. Opening
   a sixth tracked tab tries to close its oldest eligible background tab.

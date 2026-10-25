@@ -673,3 +673,65 @@ test("Settings setup labels the missing prerequisite and preserves mounted work 
     assert.deepEqual(f.dom.errors, []);
   } finally { await view?.unmount(); await f.close(); }
 });
+
+// Home's suggestion (src/PhonePrompts.tsx): offered while the app connection
+// is up, before Tailscale is turned off, and it opens the same setup.
+async function homeOffer(f, props = {}) {
+  f.dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  f.dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  f.dom.window.matchMedia ??= query => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} });
+  const { default: PhonePrompts } = await f.dom.load("/src/PhonePrompts.tsx");
+  const view = await f.dom.render(f.dom.React.createElement(PhonePrompts, { owner: true, url: peer.url, peer, device, ...props }));
+  return view;
+}
+const offer = view => view.container.querySelector('[aria-label="Keep Reach when Tailscale is off"]');
+
+test("Home offers the one-time fallback setup on the app connection and opens the same setup", async () => {
+  const f = await setupFixture();
+  let view;
+  try {
+    view = await homeOffer(f);
+    await f.dom.waitFor(() => offer(view), 6000);
+    assert.equal(f.starts, 0, "the suggestion alone starts no browser node");
+    [...offer(view).querySelectorAll("button")].find(value => value.textContent === "Set up").click();
+    await f.dom.waitFor(() => view.container.querySelector('a[href^="https://login.tailscale.com/"]'));
+    f.running();
+    await f.dom.waitFor(() => view.container.querySelector(".approval-code"));
+    f.status = "approved"; f.state("Running");
+    await f.dom.waitFor(() => view.container.textContent.includes("Fallback is ready."), 2500);
+    await f.dom.waitFor(() => view.container.textContent.includes("approval is kept"));
+    [...view.container.querySelectorAll("button")].find(value => value.textContent === "Done").click();
+    await f.dom.waitFor(() => !view.container.querySelector("dialog"));
+    assert.equal(offer(view), null, "set up: not suggested again");
+    assert.equal(f.transport.privateWay(), "native");
+    assert.equal(localStorage.getItem("reach.devices"), f.nativeBytes);
+    assert.deepEqual(f.dom.errors, []);
+  } finally { await view?.unmount(); await f.close(); }
+});
+
+test("Home's fallback suggestion waits after Not now and is never shown to guests or without the app", async () => {
+  const f = await setupFixture();
+  const views = [];
+  try {
+    const first = await homeOffer(f); views.push(first);
+    await f.dom.waitFor(() => offer(first), 6000);
+    offer(first).querySelector('[aria-label="Not now"]').click();
+    await f.dom.waitFor(() => !offer(first));
+    assert.equal(JSON.parse(localStorage.getItem("reach.nudge.fallback")).dismissed, 1);
+    await first.unmount(); views.length = 0;
+    const later = await homeOffer(f); views.push(later);
+    await new Promise(resolve => setTimeout(resolve, 4500));
+    assert.equal(offer(later), null, "put away: not again the same day");
+    await later.unmount(); views.length = 0;
+    localStorage.removeItem("reach.nudge.fallback");
+    const guest = { ...device, access: { ...device.access, kind: "guest" } };
+    const notOwner = { ...device, access: { ...device.access, scopes: ["files"] } };
+    for (const props of [{ device: guest }, { device: notOwner }, { owner: false }, { peer: undefined }]) {
+      const view = await homeOffer(f, props); views.push(view);
+    }
+    await new Promise(resolve => setTimeout(resolve, 4500));
+    assert.ok(views.every(view => !offer(view)), "only the owner's own approved device on the app connection");
+    assert.equal(f.starts, 0);
+    assert.deepEqual(f.dom.errors, []);
+  } finally { for (const view of views) await view.unmount(); await f.close(); }
+});

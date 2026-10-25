@@ -17,6 +17,9 @@ export const NUDGES = {
   "tailscale-app": { againMs: DAY, maxDismissed: 3 },
   // On the app connection: a week later, three times; never once added.
   "home-screen": { againMs: 7 * DAY, maxDismissed: 3 },
+  // On the app connection without a fallback yet: three days later, three
+  // times. Once set up it isn't needed; Settings keeps the way to it.
+  fallback: { againMs: 3 * DAY, maxDismissed: 3 },
 } satisfies Record<string, NudgeRule>;
 export type NudgeName = keyof typeof NUDGES;
 

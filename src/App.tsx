@@ -971,7 +971,7 @@ function ReachWorkspace() {
               <>
                 {error && <FallbackNotice peer={peer} device={device} />}
                 {page === "overview" && (
-                  <PhonePrompts owner={features.owner} url={peer.url} />
+                  <PhonePrompts owner={features.owner} url={peer.url} peer={peer} device={device} />
                 )}
                 {page === "overview" && (
                   <HomeLive

@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { SquarePlus, X, Zap } from "lucide-react";
+import { ShieldCheck, SquarePlus, X, Zap } from "lucide-react";
+import type { Device, Peer } from "./api";
+import { FallbackSetupSheet } from "./FallbackSetup";
+import { canSetUpFallback, fallbackSetupNeeded } from "./native-fallback";
 import { isNative } from "./native";
 import { connectionWay, tailscaleAppLink } from "./connection";
 import { isAndroid, isPhone, justInstalled, standalone, useInstallPrompt } from "./home-screen";
@@ -12,15 +15,22 @@ import "./phone-prompts.css";
 // - Signed in from the browser, without the Tailscale app: get the app. The
 //   start page this browser came through answers only while a pairing window
 //   is open; with the app, the same link works any time, device to device.
+// - With the app, without a fallback yet: set one up while the app is on, so
+//   Reach keeps working when it's off (src/native-fallback.ts). Its own
+//   approval is needed once; it is offered here instead of after access ends.
 // - With the app, in a phone's browser tab: add Reach to the Home Screen. The
 //   Home Screen copy is this same Tailscale device, so it's approved at once.
 // Each comes back from time to time (nudges.ts) and stops for good once done.
 // Only for your own devices: guests come and go, agents have their own page.
-export default function PhonePrompts({ owner, url }: { owner: boolean; url: string }) {
+export default function PhonePrompts({ owner, url, peer, device }: { owner: boolean; url: string; peer?: Peer; device?: Device }) {
   const way = connectionWay(url);
   const install = useInstallPrompt();
   const [shown, setShown] = useState<NudgeName | null>(null);
   const [steps, setSteps] = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
+  const offerFallback = !!peer && !!device && canSetUpFallback(peer, device) && fallbackSetupNeeded(peer);
+  // Another connection or access: its setup starts over from its own row.
+  useEffect(() => setSettingUp(false), [peer?.token, peer?.url, device?.id, device?.access?.kind, device?.access?.scopes.join("\n")]);
   useEffect(() => {
     // Opened from the Home Screen: it's there; never suggested again.
     if (standalone()) finishNudge("home-screen");
@@ -29,6 +39,7 @@ export default function PhonePrompts({ owner, url }: { owner: boolean; url: stri
     if (!owner || isNative) return;
     const pick = (): NudgeName | null => {
       if (way === "browser") return nudgeDue("tailscale-app") ? "tailscale-app" : null;
+      if (way === "app" && offerFallback && nudgeDue("fallback")) return "fallback";
       if (way === "app" && isPhone() && !standalone() && nudgeDue("home-screen")) return "home-screen";
       return null;
     };
@@ -50,8 +61,10 @@ export default function PhonePrompts({ owner, url }: { owner: boolean; url: stri
       window.removeEventListener("reach-tailscale-app-on", appOn);
       window.removeEventListener("reach-install-changed", added);
     };
-  }, [owner, way]);
-  if (!shown) return null;
+  }, [owner, way, offerFallback]);
+  if (settingUp && peer && device)
+    return <FallbackSetupSheet peer={peer} device={device} onClose={() => setSettingUp(false)} />;
+  if (!shown || (shown === "fallback" && !offerFallback)) return null;
   const later = () => {
     dismissNudge(shown);
     setShown(null);
@@ -67,6 +80,21 @@ export default function PhonePrompts({ owner, url }: { owner: boolean; url: stri
         <a className="phone-prompt-go" href={tailscaleAppLink()} target="_blank" rel="noopener noreferrer">
           Get
         </a>
+        <button className="phone-prompt-close" aria-label="Not now" onClick={later}>
+          <X size={15} />
+        </button>
+      </div>
+    );
+  if (shown === "fallback")
+    return (
+      <div className="phone-prompt" role="note" aria-label="Keep Reach when Tailscale is off">
+        <span className="phone-prompt-icon">
+          <ShieldCheck size={16} aria-hidden="true" />
+        </span>
+        <span className="phone-prompt-text">Keep Reach working when Tailscale is off · one-time setup</span>
+        <button className="phone-prompt-go" onClick={() => setSettingUp(true)}>
+          Set up
+        </button>
         <button className="phone-prompt-close" aria-label="Not now" onClick={later}>
           <X size={15} />
         </button>
