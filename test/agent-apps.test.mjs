@@ -1022,7 +1022,9 @@ test("a phone's screen control remembers which display it's on", async () => {
     },
     close() {},
   });
-  const client = { id: "phone", scopes: ["admin", "screen"] };
+  // The owner's own phone (a device): on a Windows PC only the owner controls
+  // the screen (no guest screen there), as on a Mac with Reach's guest rules.
+  const client = { id: "phone", kind: "device", scopes: ["admin", "screen"] };
   desktopConnection(ws, {
     config: { screen: true },
     auth: { verify: () => client },

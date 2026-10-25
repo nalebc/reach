@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { parseProcesses, windowsProcesses } from "../server/windows-processes.mjs";
+import { parseProcesses, stopProcessReadings, windowsProcesses } from "../server/windows-processes.mjs";
 
 // Windows' process list, as `ps` gives a Mac's: one C# helper
 // (scripts/native/processes.cs), built on first use, one JSON line. Here its
@@ -62,6 +62,35 @@ test("built into the folder it's given, then run hidden; only on Windows", async
   assert.deepEqual(ran.map(({ file, args, options }) => [path.basename(file), args, options.windowsHide]), [["reach-processes-0123456789ab.exe", [], true]]);
   await assert.rejects(windowsProcesses({ nativeDir, platform: "darwin" }), { status: 501 });
   await assert.rejects(windowsProcesses({ platform: "win32" }), /folder for its helpers/);
+});
+
+test("a Reach that quits stops its own readings and waits for their helpers; another folder's run on", async (t) => {
+  const mine = path.join(folder(t), "mine"), other = path.join(folder(t), "other");
+  const exited = [];
+  // A helper that runs until it's stopped, then exits a moment later (as a
+  // killed process does), and only then lets go of its program file.
+  const helper = (name) => async (file, args, options) => {
+    await new Promise((resolve) => options.signal.addEventListener("abort", resolve, { once: true }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    exited.push(name);
+    throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+  };
+  const build = async (config) => path.join(config.dataDir, "reach-processes.exe");
+  const quitting = windowsProcesses({ nativeDir: mine, platform: "win32", build, run: helper("mine") });
+  let otherDone = false;
+  const running = windowsProcesses({ nativeDir: other, platform: "win32", build, run: async (file, args, options) => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(options.signal.aborted, false, "another Reach's reading is left alone");
+    otherDone = true;
+    return { stdout: `${JSON.stringify({ processes: [NODE] })}\n` };
+  } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await stopProcessReadings(mine);
+  assert.deepEqual(exited, ["mine"], "stop returns only once its helper has exited");
+  await assert.rejects(quitting, { name: "AbortError" });
+  assert.deepEqual(await running, [NODE]);
+  assert.equal(otherDone, true);
+  await stopProcessReadings(mine); // nothing left: returns at once
 });
 
 test("on real Windows, the helper finds this test and the child it starts, each with its parent, program, command line and start", { skip: !windows, timeout: 240000 }, async (t) => {

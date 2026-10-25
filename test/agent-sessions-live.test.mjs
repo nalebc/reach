@@ -431,6 +431,8 @@ test("who holds a Codex thread: the app, a terminal, or nobody", async () => {
   try {
     assert.equal(await codexHolder(T, { locks, run: async () => assert.fail("no lock, no lookup") }), null);
     await fs.writeFile(path.join(locks, `${T}.lock`), "");
+    // These model a Mac (pgrep, lsof, ps); test/windows-codex-holder.test.mjs
+    // covers the Windows path (Restart Manager).
     // lsof is asked about Codex's processes only (pgrep), never every process.
     const machine = (own, parent) => async (cmd, args) => {
       if (cmd.endsWith("lsof")) assert.deepEqual(args.slice(0, 4), ["-nP", "-a", "-p", "660,4242"]);
@@ -440,23 +442,24 @@ test("who holds a Codex thread: the app, a terminal, or nobody", async () => {
     };
     assert.equal(
       await codexHolder(T, {
+        platform: "darwin",
         locks,
         run: machine(" 660 ?? /Applications/ChatGPT.app/.../codex app-server", "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n"),
       }),
       "codex-app",
     );
     assert.equal(
-      await codexHolder(T, { locks, run: machine(" 1 ?? /Users/me/.codex/packages/app-server-daemon/bin/codex", "") }),
+      await codexHolder(T, { platform: "darwin", locks, run: machine(" 1 ?? /Users/me/.codex/packages/app-server-daemon/bin/codex", "") }),
       "daemon",
     );
-    assert.equal(await codexHolder(T, { locks, run: machine(" 77 ttys004 codex resume", "-zsh\n") }), "terminal");
+    assert.equal(await codexHolder(T, { platform: "darwin", locks, run: machine(" 77 ttys004 codex resume", "-zsh\n") }), "terminal");
     assert.equal(
-      await codexHolder(T, { locks, run: async () => Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) }),
+      await codexHolder(T, { platform: "darwin", locks, run: async () => Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) }),
       null,
     );
     // No Codex running at all: nobody holds it, and lsof isn't run.
     assert.equal(
-      await codexHolder(T, { locks, run: async (cmd) => (cmd.endsWith("pgrep") ? Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) : assert.fail("no lsof")) }),
+      await codexHolder(T, { platform: "darwin", locks, run: async (cmd) => (cmd.endsWith("pgrep") ? Promise.reject(Object.assign(new Error("exit 1"), { code: 1 })) : assert.fail("no lsof")) }),
       null,
     );
   } finally {

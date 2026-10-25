@@ -87,6 +87,11 @@ jobs:
         env:
           TESTS: ${{ inputs.tests }}
           REACH_TEST_WINDOWS_DESKTOP: "1"
+          # As ci.yml's Windows lane: test folders outside AppData, which Reach
+          # keeps private from agents on Windows as ~/Library on a Mac.
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
           # The public door's spike (docs/parity/D-public-door.md §8): a real
           # LocalSystem service and standard users, on this disposable runner
           # only. It joins ci.yml after three green runs here.

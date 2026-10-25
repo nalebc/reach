@@ -95,7 +95,8 @@ test("stored policies are re-checked: legacy fields, protected apps and bad shap
   for (const bad of [
     { ...good, screen: "apps" },
     { ...good, restrictedTerminal: true },
-    { ...good, apps: [{ id: "/Applications/Keychain Access.app", name: "Keychain Access" }] },
+    // A password manager is protected on a Mac and on Windows alike.
+    { ...good, apps: [{ id: "/Applications/1Password.app", name: "1Password" }] },
     { ...good, apps: [] },
     { ...good, roots: ["/Users/me"] },
     { ...good, preset: "files" },
