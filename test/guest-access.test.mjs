@@ -24,6 +24,10 @@ test(
       roots: [shared, other],
       dataDir: path.join(root, "private"),
       screen: true,
+      // On a Windows PC guests watch only once its check says private
+      // windows can be hidden: modeled as passed, as on a Mac (where no such
+      // check exists). Streams still come from the stand-in factories here.
+      windowsGuestScreen: { probe: async () => ({ ok: true }), refusal: () => "", source: async () => { throw Error("Streams here come from the stand-in factory."); } },
       screenStreamFactory: async () => () => ({
         next: async () => Buffer.from("fixture-frame"),
         stop() {},
