@@ -373,7 +373,13 @@ test("the watch says when a console opens, prints and closes", real, async (t) =
   const record = (seen.tests.watch = {});
   const dir = await folder();
   const helper = await terminalWatchHelper({ dataDir: dir }, { platform: "win32" })();
-  t.after(() => helper.stop());
+  t.after(async () => {
+    const stopped = helper.stop();
+    assert.equal(helper.stop(), stopped, "native watcher shutdown is idempotent");
+    const result = await stopped;
+    assert.deepEqual(result, { code: 0, signal: null }, "actual C# watcher has closed after stdin EOF");
+    record.retired = true;
+  });
   const events = [];
   helper.on("event", (event) => events.push({ at: Date.now(), ...event }));
   await eventually("ready", () => events.some((e) => e.type === "ready"));

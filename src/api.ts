@@ -5,6 +5,7 @@ export type Peer = {
   computerId?: string;
   tailnetHost?: string;
   pairedAt?: number;
+  browserIdentity?: string;
   name: string;
   url: string;
   token: string;

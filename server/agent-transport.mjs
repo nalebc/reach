@@ -31,7 +31,7 @@ export function validateAgentJsonResponse(route, method, body, result) {
 
 export const agentErrorKinds = Object.freeze({ blocked: 403, paused: 409, retry: 409, busy: 409, invalid: 400, unavailable: 503, setup_required: 503 });
 const kinds = new Set(Object.keys(agentErrorKinds));
-const helperReasons = new Set(["timeout", "process_exit", "process_error", "stdin_error", "write_error", "invalid_reply", "oversized_reply", "unexpected_reply", "stopped"]);
+const helperReasons = new Set(["timeout", "queue_timeout", "process_exit", "process_error", "stdin_error", "write_error", "invalid_reply", "oversized_reply", "unexpected_reply", "stopped"]);
 // The producer and every transport use the same bounded operation vocabulary.
 export const desktopHelperOperations = Object.freeze(["rules", "catalog", "shot", "front", "act", "open", "elements", "open-url", "browser-check", "windows", "focus", "menus", "find", "read", "open-file", "displays", "wait-change"]);
 const helperOperations = new Set([...desktopHelperOperations, "unknown"]);
@@ -52,7 +52,7 @@ export function agentErrorDetails(error) {
   const body = error?.body || error || {};
   const result = {
     error:
-      clean(error?.message || body.error, 1000) ||
+      clean(error?.message, 1000).trim() || clean(body.error, 1000).trim() ||
       "Reach could not complete the request.",
   };
   const status = error?.status ?? body.status;

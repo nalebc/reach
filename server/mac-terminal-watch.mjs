@@ -25,6 +25,8 @@ export function terminalWatchHelper(config, { platform = process.platform, build
       ? start(binary, ["watch"], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true })
       : start(binary, [], { stdio: ["pipe", "pipe", "ignore"] });
     const helper = new EventEmitter();
+    const closed = new Promise(resolve => child.once("close", (code, signal) => resolve({ code, signal })));
+    let stopping = false;
     readline.createInterface({ input: child.stdout }).on("line", (line) => {
       try {
         helper.emit("event", JSON.parse(line));
@@ -34,10 +36,18 @@ export function terminalWatchHelper(config, { platform = process.platform, build
     child.on("error", () => helper.emit("exit"));
     child.stdin.on("error", () => {});
     helper.send = (message) => {
-      if (child.stdin.writable)
+      if (!stopping && child.stdin.writable)
         child.stdin.write(JSON.stringify(message) + "\n");
     };
-    helper.stop = () => child.stdin.end();
+    // Both native watchers exit when they observe EOF. Sending it is only
+    // a request: their process and pipes are owned until actual close.
+    helper.stop = () => {
+      if (!stopping) {
+        stopping = true;
+        try { child.stdin.end(); } catch { /* already ended; still await close */ }
+      }
+      return closed;
+    };
     return helper;
   };
 }
@@ -87,6 +97,10 @@ export class MacTerminalWatch {
     });
   }
   users = 0;
+  closed = false;
+  preparations = new Set();
+  retiring = new Set();
+  closing = null;
   helper = null;
   snapshot = null;
   version = "";
@@ -102,11 +116,13 @@ export class MacTerminalWatch {
   }
   // Each connected phone that may see Mac terminals keeps the watch running.
   retain() {
+    if (this.closed) return;
     this.users++;
     clearTimeout(this.timers.linger);
     if (!this.helper && (!this.starting || this.preparing?.signal.aborted)) this.starting = this.begin();
   }
   release() {
+    if (this.closed) return;
     this.users = Math.max(0, this.users - 1);
     if (this.users) return;
     clearTimeout(this.timers.linger);
@@ -114,12 +130,20 @@ export class MacTerminalWatch {
     this.timers.linger.unref?.();
   }
   async begin() {
+    if (this.closed) return;
     const preparing = new AbortController();
     this.preparing = preparing;
+    let finishPreparation;
+    const prepared = new Promise(resolve => { finishPreparation = resolve; });
+    this.preparations.add(prepared);
+    const finished = () => { this.preparations.delete(prepared); finishPreparation(); };
     try {
       const helper = await this.start({ signal: preparing.signal });
-      if (preparing.signal.aborted || !this.users) return helper.stop();
+      if (this.closed || preparing.signal.aborted || !this.users) return await this.retire(helper);
       this.helper = helper;
+      // Startup ownership has transferred to this.helper. A slow terminal
+      // read must not delay proof that the watcher itself has stopped.
+      finished();
       helper.on("event", (event) => {
         if (this.helper === helper) this.event(event);
       });
@@ -131,7 +155,7 @@ export class MacTerminalWatch {
         // falls over at once (1 s, 2 s … a minute); back to 1 s after a
         // minute up. Meanwhile phones ask, as before.
         if (Date.now() - upAt > 60000) this.restarts = 0;
-        if (!this.users) return;
+        if (this.closed || !this.users) return;
         const delay = Math.min(60000, 1000 * 2 ** (this.restarts || 0));
         this.restarts = (this.restarts || 0) + 1;
         clearTimeout(this.timers.restart);
@@ -140,7 +164,7 @@ export class MacTerminalWatch {
           // not resurrect the watch after shutdown or replace a newer timer.
           if (this.timers.restart !== timer) return;
           delete this.timers.restart;
-          if (this.users && !this.helper && (!this.starting || this.preparing?.signal.aborted)) this.starting = this.begin();
+          if (!this.closed && this.users && !this.helper && (!this.starting || this.preparing?.signal.aborted)) this.starting = this.begin();
         }, delay);
         this.timers.restart = timer;
         timer.unref?.();
@@ -152,11 +176,22 @@ export class MacTerminalWatch {
     } catch {
       // No helper (no Command Line Tools): phones keep asking as before.
     } finally {
+      finished();
       if (this.preparing === preparing) {
         this.preparing = null;
         this.starting = null;
       }
     }
+  }
+  retire(helper) {
+    let stopped;
+    try { stopped = Promise.resolve(helper.stop()); }
+    catch (error) { stopped = Promise.reject(error); }
+    this.retiring.add(stopped);
+    // Keep a failed retirement for final close to report; ordinary idle
+    // end() does not await it and must not create an unhandled rejection.
+    void stopped.then(() => this.retiring.delete(stopped), () => {});
+    return stopped;
   }
   end() {
     this.preparing?.abort();
@@ -167,7 +202,7 @@ export class MacTerminalWatch {
     this.timers = {};
     const helper = this.helper;
     this.helper = null;
-    helper?.stop();
+    if (helper) this.retire(helper);
     this.snapshot = null;
     for (const tab of this.tabs.values()) for (const w of tab.waiters) w.done();
     this.tabs.clear();
@@ -177,6 +212,24 @@ export class MacTerminalWatch {
       this.version = "";
       this.onChange();
     }
+  }
+  close() {
+    if (this.closing) return this.closing;
+    this.closed = true;
+    this.users = 0;
+    this.end();
+    // A cancelled start may still return a helper. Its preparation settles
+    // only after that late helper retires; older stopped helpers stay joined.
+    this.closing = (async () => {
+      const existing = await Promise.allSettled([...this.preparations, ...this.retiring]);
+      // Late cancelled preparations can add a failed retirement after the
+      // first snapshot. Join it too; unknown ownership never becomes success.
+      const late = await Promise.allSettled([...this.retiring]);
+      const errors = [...new Set([...existing, ...late].filter(result => result.status === "rejected").map(result => result.reason))];
+      if (errors.length) throw new AggregateError(errors, "Terminal watcher shutdown could not be verified.");
+    })();
+    void this.closing.catch(() => {});
+    return this.closing;
   }
   event(event) {
     if (["opened", "closed", "app"].includes(event.type)) this.soon(250);
@@ -197,6 +250,7 @@ export class MacTerminalWatch {
     }
   }
   soon(delay) {
+    if (this.closed) return;
     clearTimeout(this.timers.soon);
     this.timers.soon = setTimeout(() => {
       delete this.timers.soon;
@@ -205,6 +259,7 @@ export class MacTerminalWatch {
     this.timers.soon.unref?.();
   }
   refresh() {
+    if (this.closed) return Promise.resolve();
     if (this.refreshing) {
       this.again = true;
       return this.refreshing;
@@ -214,7 +269,7 @@ export class MacTerminalWatch {
         const result = await this.terminals.list(() => {}, {
           background: true,
         });
-        if (!this.helper) return;
+        if (this.closed || !this.helper) return;
         this.snapshot = result;
         const listed = new Set();
         for (const s of result.sessions) {
@@ -256,7 +311,7 @@ export class MacTerminalWatch {
         this.refreshing = null;
         if (this.again) {
           this.again = false;
-          void this.refresh();
+          if (!this.closed) void this.refresh();
         }
       }
     })();
@@ -315,7 +370,7 @@ export class MacTerminalWatch {
   // One read at a time per tab; output during a read earns one more after it.
   read(id, every = this.readGap) {
     const tab = this.tabs.get(id);
-    if (!tab) return;
+    if (this.closed || !tab) return;
     tab.every = Math.min(tab.every ?? Infinity, every);
     if (tab.reading) {
       tab.dirty = true;
@@ -326,6 +381,7 @@ export class MacTerminalWatch {
         const gap = tab.readAt + tab.every - Date.now();
         tab.every = undefined;
         if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+        if (this.closed || this.tabs.get(id) !== tab) return;
         tab.readAt = Date.now();
         // A phone viewing the tab scrolls back through it; a Home peek
         // needs only the screen.
@@ -339,6 +395,7 @@ export class MacTerminalWatch {
             background: true,
           },
         );
+        if (this.closed || this.tabs.get(id) !== tab) return;
         tab.error = null;
         tab.scrollback = viewed;
         if (!tab.version || text !== tab.text) {
@@ -357,11 +414,12 @@ export class MacTerminalWatch {
           this.touched();
         }
       } catch (e) {
+        if (this.closed || this.tabs.get(id) !== tab) return;
         tab.error = e;
         if (e.status === 404) this.soon(0);
       } finally {
         tab.reading = null;
-        if (tab.dirty && this.tabs.get(id) === tab) {
+        if (!this.closed && tab.dirty && this.tabs.get(id) === tab) {
           tab.dirty = false;
           void this.read(id, tab.every ?? this.readGap);
         }

@@ -32,6 +32,7 @@ test("hints say what touches the Mac and what can't be undone", () => {
   // Finding scrolls the window: it touches the Mac.
   for (const name of ["reach_act", "reach_press", "reach_fill", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_app", "reach_open_url", "reach_close_tabs", "reach_change_file", "reach_shell", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
   for (const name of ["reach_change_file", "reach_shell", "reach_run_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
+  assert.equal(tools.reach_close_tabs.destructiveHint, true, "closing a tab can lose its unsaved page state");
   for (const name of ["reach_act", "reach_press", "reach_fill", "reach_run_mac_shortcut", "reach_open_file"]) assert.equal(tools[name].destructiveHint, true, name);
   assert.equal(tools.reach_execute.readOnlyHint, false);
   assert.equal(tools.reach_execute.destructiveHint, true);

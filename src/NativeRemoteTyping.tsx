@@ -19,6 +19,7 @@ export default function NativeRemoteTyping({
   onError,
   onRetarget,
   reconnectPaused = false,
+  onHeld,
 }: {
   target: TextTarget;
   send: (action: DesktopAction) => Promise<InputResult>;
@@ -27,10 +28,13 @@ export default function NativeRemoteTyping({
   // Tab or Esc can move the computer's focus: confirm the field again.
   onRetarget?: () => void;
   reconnectPaused?: boolean;
+  // How many never-sent edits wait for a confirmed field (0 when none).
+  onHeld?: (count: number) => void;
 }) {
-  const latest = useRef({ target, send, onClose, onError, onRetarget });
-  latest.current = { target, send, onClose, onError, onRetarget };
+  const latest = useRef({ target, send, onClose, onError, onRetarget, onHeld });
+  latest.current = { target, send, onClose, onError, onRetarget, onHeld };
   const queued = useRef<DesktopAction[]>([]);
+  const reportHeld = () => latest.current.onHeld?.(queued.current.length);
   const active = useRef(false);
   const generation = useRef(0);
   const wasReconnectPaused = useRef(false);
@@ -53,7 +57,10 @@ export default function NativeRemoteTyping({
       active.current = false;
       current.onError("Field confirmation took too long. Tap the field again.");
       current.onClose();
-    } else queued.current.push(action);
+    } else {
+      queued.current.push(action);
+      reportHeld();
+    }
   };
   const dispatch = (action: DesktopAction) => {
     if (!active.current) return;
@@ -78,7 +85,7 @@ export default function NativeRemoteTyping({
       shadow = "";
     active.current = true;
     generation.current++;
-    if (revision.current !== target.editRevision) queued.current = [];
+    if (revision.current !== target.editRevision) { queued.current = []; reportHeld(); }
     revision.current = target.editRevision;
     const fail = (error: Error) => {
       if (!valid) return;
@@ -128,9 +135,13 @@ export default function NativeRemoteTyping({
       void RemoteKeyboard.hide().catch(() => {});
     };
   }, [secure, target.editRevision]);
+  // Gone: nothing of this keyboard waits any more.
+  useEffect(() => () => latest.current.onHeld?.(0), []);
   useEffect(() => {
     if (target.pending || !target.focus) return;
-    for (const action of queued.current.splice(0)) dispatch(action);
+    const actions = queued.current.splice(0);
+    reportHeld();
+    for (const action of actions) dispatch(action);
   }, [target.pending, target.focus]);
   return null;
 }

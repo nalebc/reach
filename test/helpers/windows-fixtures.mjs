@@ -29,15 +29,28 @@ export async function lookAtRunnerDesktop(x, y) {
   return JSON.parse(stdout.trim());
 }
 
-export function windowsFixture(name, references = []) {
+export function windowsFixture(name, references = [], { onStage, signal } = {}) {
   if (process.platform !== "win32") throw Error("Windows fixtures are built on Windows.");
+  // Optional test diagnostics cannot change compilation or disclose paths/output.
+  const mark = (stage, details = {}) => { try { onStage?.(stage, details); } catch {} };
+  mark("fixture-request", { cacheHit: built.has(name) });
   if (!built.has(name))
     built.set(name, (async () => {
+      mark("fixture-import-begin");
       const { cscCandidates } = await import("../../server/desktop-native.mjs");
+      mark("fixture-import-end");
+      mark("fixture-compiler-select-begin");
       const csc = cscCandidates().find((candidate) => fs.existsSync(candidate));
-      if (!csc) throw Error("csc.exe isn't on this PC.");
+      if (!csc) {
+        mark("fixture-compiler-unavailable");
+        throw Error("csc.exe isn't on this PC.");
+      }
+      const category = path.win32.basename(path.win32.dirname(path.win32.dirname(csc)));
+      mark("fixture-compiler-selected", { framework: ["Framework64", "Framework"].includes(category) ? category : "other" });
       if (!dir) {
+        mark("fixture-directory-begin");
         dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-fixtures-"));
+        mark("fixture-directory-created");
         process.once("exit", () => {
           try {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -47,12 +60,26 @@ export function windowsFixture(name, references = []) {
       const out = path.join(dir, `${name}.exe`);
       const framework = path.win32.dirname(csc);
       try {
-        await exec(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", `/out:${out}`,
+        signal?.throwIfAborted();
+        mark("fixture-compile-begin");
+        const compilation = exec(csc, ["/nologo", "/noconfig", "/target:exe", "/platform:anycpu", "/optimize+", `/out:${out}`,
           ...["System.dll", ...references].map((file) => `/reference:${path.win32.join(framework, file)}`),
-          path.join(fixtures, `${name}.cs`)], { windowsHide: true, timeout: 120000 });
+          path.join(fixtures, `${name}.cs`)], { windowsHide: true, timeout: 120000, ...(signal ? { signal } : {}) });
+        mark("fixture-compiler-spawned", { pid: Number.isInteger(compilation.child?.pid) ? compilation.child.pid : null });
+        await compilation;
+        mark("fixture-compile-complete", {
+          exitCode: Number.isInteger(compilation.child?.exitCode) ? compilation.child.exitCode : null,
+          signal: /^SIG[A-Z0-9]{1,16}$/.test(compilation.child?.signalCode || "") ? compilation.child.signalCode : null,
+        });
       } catch (error) {
+        mark("fixture-compile-error", {
+          code: Number.isInteger(error.code) ? error.code : /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code || "") ? error.code : "unknown",
+          signal: /^SIG[A-Z0-9]{1,16}$/.test(error.signal || "") ? error.signal : null,
+          killed: error.killed === true,
+        });
         throw Error(`${name}.cs didn't build: ${error.stdout || ""}${error.stderr || error.message}`);
       }
+      mark("fixture-ready");
       return out;
     })());
   return built.get(name);

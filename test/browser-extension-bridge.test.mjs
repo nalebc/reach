@@ -246,6 +246,70 @@ test("a request with no answer is uncertain and cancelled; a cancelled run says 
   release();
 });
 
+for (const change of ["revoked", "paused", "owner-takeover"]) test(`cleanup's extension send rechecks ${change} after awaited window discovery`, async t => {
+  const w = await world(t);
+  const tab = await w.driver.transport("Edge", { op: "create", url: "https://example.com/" });
+  const query = w.chrome.tabs.query, remove = w.chrome.tabs.remove;
+  let release, entered = false, allowed = true, closes = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  w.chrome.tabs.query = async function (...args) { entered = true; await held; return query.apply(this, args); };
+  w.chrome.tabs.remove = async function (...args) { closes++; return remove.apply(this, args); };
+  const pending = w.driver.transport("Edge", { op: "close", target: tab, expectedURL: tab.url }, { beforeSend() {
+    if (!allowed) throw Object.assign(Error(change), { status: 403 });
+  } });
+  const result = pending.then(value => ({ value }), error => ({ error }));
+  await until(() => entered, "extension window discovery is held");
+  allowed = false; release();
+  const outcome = await result;
+  assert.equal(outcome.error?.message, change);
+  assert.equal(outcome.error?.uncertain, false);
+  assert.equal(closes, 0, "the actual request frame is refused before a close can reach the extension");
+});
+
+test("cleanup-only cancellation retains a dispatched extension close until its actual response", async t => {
+  const w = await world(t);
+  const tab = await w.driver.transport("Edge", { op: "create", url: "https://example.com/" });
+  const remove = w.chrome.tabs.remove;
+  let release, entered = false, completed = false, failed = false, settled = false, holds = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  w.chrome.tabs.remove = async function (...args) { entered = true; await held; return remove.apply(this, args); };
+  const controller = new AbortController();
+  const pending = w.driver.transport("Edge", { op: "close", target: tab, expectedURL: tab.url }, {
+    signal: controller.signal, retirement: { hold() { holds++; return { done() { completed = true; }, fail() { failed = true; } }; } },
+  });
+  const result = pending.then(value => ({ value }), error => ({ error }));
+  result.then(() => { settled = true; });
+  await until(() => entered, "the close effect is dispatched and held");
+  controller.abort(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(holds, 1);
+  assert.equal(settled, false, "an AbortSignal rejection would not prove this already sent close retired");
+  assert.equal(completed, false);
+  release(); const outcome = await result;
+  assert.equal(outcome.error?.code, "cancelled");
+  assert.equal(completed, true);
+  assert.equal(failed, false);
+  assert.equal(w.fixture.browsers.get("Chrome").some(item => item.tab === tab.tab), false);
+});
+
+test("a timed-out cleanup close remains unretired until its late extension response, with no replay", async t => {
+  const w = await world(t);
+  const tab = await w.driver.transport("Edge", { op: "create", url: "https://example.com/" });
+  const remove = w.chrome.tabs.remove;
+  let release, entered = false, completed = false, failed = false, closes = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  w.chrome.tabs.remove = async function (...args) { closes++; entered = true; await held; return remove.apply(this, args); };
+  const pending = w.driver.transport("Edge", { op: "close", target: tab, expectedURL: tab.url }, {
+    timeoutMs: 100, retirement: { hold() { return { done() { completed = true; }, fail() { failed = true; } }; } },
+  });
+  await assert.rejects(pending, error => error.code === "uncertain" && error.uncertain === true);
+  assert.equal(entered, true); assert.equal(failed, true); assert.equal(completed, false);
+  release(); await until(() => completed, "late close response proves retirement");
+  assert.equal(closes, 1);
+});
+
 test("browser and page failures carry only Reach's fixed words", async (t) => {
   const w = await world(t);
   w.chrome.tabs.query = async () => { throw Error(`Cannot access ${marker}`); };

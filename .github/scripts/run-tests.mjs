@@ -14,6 +14,8 @@ export const suites = {
   windows: [
     "agent-install", "agent-sign-in", "browser-mutations", "private-ingress-platform",
     "agent-admission-auth", "agent-request-limit", "agent-transport", "auth-cache",
+    // Shared helper startup, queue deadlines, fresh captures and failed observations.
+    "agent-desktop", "agent-helper-diagnostics", "agent-speed", "desktop-observation",
     "agent-extended-expiry", "agent-screenshot-route", "agent-image-envelope", "agent-image-envelope-integration", "service-failure-guidance",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
@@ -47,7 +49,7 @@ export const suites = {
     "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
-    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "private-gateway",
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     // The host guard refreshing ahead, and live connections held through a
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
@@ -136,7 +138,7 @@ export const suites = {
     // Reach's icon in the notification area, workstream P (audit #16).
     "windows-tray",
     // Apps' icons and the agents' logos drawn by Windows (audit #28).
-    "windows-app-icons",
+    "app-icons", "windows-app-icons",
     // Word, RTF and OpenDocument previews read in JS off a Mac (audit #37).
     "document-text", "file-kinds",
     // Voice memos as words through Windows' own recognizer (audit #35).
@@ -173,7 +175,9 @@ export const suites = {
     // real-Windows step (windows-browser-tools-native).
     "browser-extension", "browser-extension-bridge", "tool-receipt-pdf", "tool-setup", "permission-requests", "tool-browser-safety",
     // The tabs agents open closing once they're done, Chrome and Edge alike.
-    "agent-tabs",
+    "agent-tabs", "browser-worker",
+    // Explicit Mac/Windows browser models and the shared watcher shutdown barrier.
+    "agent-tools", "tool-page-runtime", "mac-terminal-watch",
   ],
   native: [
     "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",

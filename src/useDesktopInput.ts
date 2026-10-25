@@ -216,6 +216,9 @@ export function useDesktopInput(
           setReconnecting(false);
           queue = new DesktopInputQueue(
             (id, action) => {
+              // Closing already (the computer closed it first): the browser
+              // would drop it silently, so the queue must know it never left.
+              if (socket.readyState !== 1) throw Error("Desktop input disconnected.");
               if (changes.has(action.type)) lastChange.current = id;
               socket.send(JSON.stringify({ type: "input", id, action }));
             },

@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   toolBrowserFixture,
+  toolAppsFor,
+  toolPrivateStateParent,
   exampleTool,
 } from "./helpers/tool-browser-fixture.mjs";
 import { createAgentTools } from "../server/agent-tools.mjs";
@@ -14,8 +15,10 @@ import {
   nativeToolProcess,
 } from "../server/tool-browser-driver.mjs";
 
+const privateStateParent = toolPrivateStateParent(test);
+
 test("exact nested identities reject similarly prefixed orders and result reads cannot cross panels", async (t) => {
-  const driver = toolBrowserFixture();
+  const driver = toolBrowserFixture({ platform: "darwin" });
   t.after(() => driver.close());
   const tab = driver.add("Safari", "https://www.walmart.com/orders/123"),
     document = crypto.randomUUID();
@@ -57,7 +60,7 @@ test("exact nested identities reject similarly prefixed orders and result reads 
 });
 
 test("exact input equality does not accept an older query with the same prefix", async (t) => {
-  const driver = toolBrowserFixture();
+  const driver = toolBrowserFixture({ platform: "darwin" });
   t.after(() => driver.close());
   const tab = driver.add(
       "Chrome",
@@ -80,7 +83,7 @@ test("exact input equality does not accept an older query with the same prefix",
 });
 
 test("one acknowledged effect cannot be executed again even if the transport repeats the command", async (t) => {
-  const driver = toolBrowserFixture();
+  const driver = toolBrowserFixture({ platform: "darwin" });
   t.after(() => driver.close());
   const tab = driver.add("Chrome", "https://example.com/"),
     document = crypto.randomUUID();
@@ -211,9 +214,10 @@ test("native command timeout waits for process termination before freeing its ca
   assert.ok(Date.now() - start >= 120);
 });
 
-test("a whole tool deadline stops later effects and private results use a durable request record", async (t) => {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tool-kernel-")),
-    driver = toolBrowserFixture();
+for (const [platform, browser] of [["darwin", "Chrome"], ["win32", "Chrome"], ["win32", "Edge"]])
+test(`${platform === "darwin" ? "" : `${platform} ${browser}: `}a whole tool deadline stops later effects and private results use a durable request record`, async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(privateStateParent(), "reach-tool-kernel-")),
+    driver = toolBrowserFixture({ platform });
   const client = {
     id: "a",
     name: "Agent",
@@ -226,14 +230,10 @@ test("a whole tool deadline stops later effects and private results use a durabl
     { dataDir },
     {
       driver,
+      platform,
       runMs: 150,
       desktop: {
-        catalog: async () => [
-          {
-            id: "/Applications/Google Chrome.app",
-            bundleId: "com.google.Chrome",
-          },
-        ],
+        catalog: async () => toolAppsFor(platform),
         withBrowser: async (_client, _app, auth, work) =>
           work(async () => auth()),
       },
@@ -253,7 +253,7 @@ test("a whole tool deadline stops later effects and private results use a durabl
     result = await tools.run(() => client, {
       id: "example_task",
       values: {},
-      browser: "Chrome",
+      browser,
       requestId,
     });
   assert.equal(result.code, "time_limit");

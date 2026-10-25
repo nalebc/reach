@@ -509,3 +509,236 @@ test("terminal watch crash recovery survives an old pending initial read and kee
     await watch.starting;
   } finally { finishRead({ sessions: [], providers: [] }); watch.end(); }
 });
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+};
+function heldWatchHelper() {
+  const retired = deferred(), stopped = deferred();
+  const helper = new EventEmitter();
+  helper.send = () => {};
+  helper.stop = () => { helper.stopped = true; stopped.resolve(); return retired.promise; };
+  helper.finish = () => retired.resolve({ code: 0, signal: null });
+  helper.stopRequested = stopped.promise;
+  return helper;
+}
+
+test("final watch close waits for its stopped helper and refuses later retains", async () => {
+  const helper = heldWatchHelper();
+  let starts = 0;
+  const watch = new MacTerminalWatch({ terminals: { list: async () => ({ sessions: [], providers: [] }) },
+    start: async () => { starts++; return helper; } });
+  try {
+    watch.retain(); await watch.starting;
+    const closing = watch.close();
+    assert.equal(watch.close(), closing, "final shutdown has one completion barrier");
+    await helper.stopRequested;
+    let done = false; void closing.then(() => { done = true; });
+    await Promise.resolve();
+    assert.equal(done, false, "sending EOF does not prove process close");
+    watch.retain(); assert.equal(starts, 1, "shutdown cannot prepare another helper");
+    helper.finish(); await closing;
+    assert.equal(done, true);
+  } finally { helper.finish(); watch.end(); }
+});
+
+test("final watch close joins a replacement and a cancelled preparation that arrives late", async () => {
+  const preparations = [], first = heldWatchHelper(), current = heldWatchHelper();
+  const watch = new MacTerminalWatch({ terminals: { list: async () => ({ sessions: [], providers: [] }) },
+    start: () => { const pending = deferred(); preparations.push(pending); return pending.promise; } });
+  try {
+    watch.retain(); const staleStarting = watch.starting;
+    watch.end();
+    watch.retain(); const currentStarting = watch.starting;
+    preparations[1].resolve(current); await currentStarting;
+    const closing = watch.close();
+    current.finish();
+    preparations[0].resolve(first);
+    await first.stopRequested;
+    let done = false; void closing.then(() => { done = true; });
+    await Promise.resolve();
+    assert.equal(done, false, "a late cancelled helper remains owned until it closes");
+    first.finish(); await Promise.all([closing, staleStarting]);
+    assert.equal(watch.helper, null);
+    assert.deepEqual(watch.timers, {});
+  } finally {
+    first.finish(); current.finish();
+    for (const p of preparations) p.resolve(first);
+    watch.end();
+  }
+});
+
+test("final watch close joins a helper already ended before its replacement started", async () => {
+  const old = heldWatchHelper(), current = heldWatchHelper(), helpers = [old, current];
+  const watch = new MacTerminalWatch({ terminals: { list: async () => ({ sessions: [], providers: [] }) }, start: async () => helpers.shift() });
+  try {
+    watch.retain(); await watch.starting;
+    watch.end(); await old.stopRequested;
+    watch.retain(); await watch.starting;
+    const closing = watch.close();
+    current.finish();
+    let done = false; void closing.then(() => { done = true; });
+    await Promise.resolve();
+    assert.equal(done, false, "dropping the old current pointer cannot drop process ownership");
+    old.finish(); await closing;
+  } finally { old.finish(); current.finish(); watch.end(); }
+});
+
+test("final watch close reports a failed retirement from a late cancelled preparation", async () => {
+  const pending = deferred(), helper = new EventEmitter(), refusal = Error("owned helper retirement could not be verified");
+  helper.stop = () => Promise.reject(refusal);
+  const watch = new MacTerminalWatch({ terminals: { list: () => assert.fail("cancelled helper cannot inspect terminals") }, start: () => pending.promise });
+  try {
+    watch.retain();
+    const closing = watch.close();
+    pending.resolve(helper);
+    await assert.rejects(closing, error => error instanceof AggregateError && error.errors.includes(refusal));
+    assert.equal(watch.helper, null);
+  } finally { pending.resolve(helper); watch.end(); }
+});
+
+test("final watch close waits for helper retirement independently of a held initial terminal read", async () => {
+  const helper = heldWatchHelper(), reading = deferred();
+  const watch = new MacTerminalWatch({ terminals: { list: () => reading.promise }, start: async () => helper });
+  try {
+    watch.retain(); await until(() => watch.helper);
+    const starting = watch.starting, closing = watch.close();
+    helper.finish(); await closing;
+    assert.equal(watch.helper, null);
+    reading.resolve({ sessions: [], providers: [] }); await starting;
+    assert.deepEqual(watch.timers, {}, "late read cannot revive a finally closed watcher");
+  } finally { helper.finish(); reading.resolve({ sessions: [], providers: [] }); watch.end(); }
+});
+
+test("final shutdown fences a queued terminal refresh after its held initial list", async () => {
+  const helper = heldWatchHelper(), initial = deferred();
+  let lists = 0;
+  const watch = new MacTerminalWatch({ terminals: { list: async () => {
+    lists++; return lists === 1 ? initial.promise : { sessions: [], providers: [] };
+  } }, start: async () => helper });
+  try {
+    watch.retain(); await until(() => lists === 1);
+    const starting = watch.starting;
+    watch.refresh(); // one additional request is queued behind the held list
+    const closing = watch.close(); helper.finish(); await closing;
+    initial.resolve({ sessions: [], providers: [] }); await starting;
+    await watch.refresh();
+    assert.equal(lists, 1, "neither queued nor explicit refresh can dispatch native discovery after close");
+    assert.deepEqual(watch.timers, {});
+  } finally { helper.finish(); initial.resolve({ sessions: [], providers: [] }); watch.end(); }
+});
+
+test("final shutdown fences a native terminal read waiting for its read gap", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const helper = heldWatchHelper();
+  let actions = 0;
+  const watch = new MacTerminalWatch({ readGap: 100, start: async () => helper, terminals: {
+    list: async () => ({ sessions: [{ id: "tab", tty: "fixture" }], providers: [] }),
+    action: async () => { actions++; return { text: "fixture" }; },
+  } });
+  try {
+    watch.retain(); await watch.starting;
+    watch.tabs.get("tab").readAt = Date.now();
+    const reading = watch.read("tab"), closing = watch.close();
+    helper.finish(); await closing;
+    t.mock.timers.tick(100); await reading;
+    assert.equal(actions, 0, "the old read must recheck ownership at actual native dispatch");
+    assert.deepEqual(watch.timers, {});
+  } finally { helper.finish(); watch.end(); }
+});
+
+test("replacement fences an old tab read waiting for its read gap and permits a fresh read", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const old = heldWatchHelper(), current = heldWatchHelper(), helpers = [old, current];
+  let actions = 0;
+  const watch = new MacTerminalWatch({ readGap: 100, start: async () => helpers.shift(), terminals: {
+    list: async () => ({ sessions: [{ id: "tab", tty: "fixture" }], providers: [] }),
+    action: async () => { actions++; return { text: "fresh" }; },
+  } });
+  try {
+    watch.retain(); await watch.starting;
+    watch.tabs.get("tab").readAt = Date.now();
+    const reading = watch.read("tab");
+    watch.end(); old.finish();
+    watch.retain(); await watch.starting;
+    t.mock.timers.tick(100); await reading;
+    assert.equal(actions, 0, "an old tab object cannot read through its replacement's id");
+    await watch.read("tab", 0);
+    assert.equal(actions, 1, "ordinary end remains restartable with an explicit fresh retain");
+  } finally { old.finish(); current.finish(); watch.end(); }
+});
+
+test("final shutdown fences late404 discovery from a previously dispatched terminal read", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const helper = heldWatchHelper();
+  let rejectRead, lists = 0;
+  const watch = new MacTerminalWatch({ readGap: 0, start: async () => helper, terminals: {
+    list: async () => { lists++; return { sessions: [{ id: "tab", tty: "fixture" }], providers: [] }; },
+    action: () => new Promise((_resolve, reject) => { rejectRead = reject; }),
+  } });
+  try {
+    watch.retain(); await watch.starting;
+    const reading = watch.read("tab"), closing = watch.close();
+    helper.finish(); await closing;
+    rejectRead(Object.assign(Error("fixture terminal closed"), { status: 404 }));
+    await reading;
+    assert.deepEqual(watch.timers, {}, "a held read result cannot rearm discovery after final close");
+    t.mock.timers.tick(0);
+    assert.equal(lists, 1);
+  } finally { helper.finish(); watch.end(); }
+});
+
+test("watch EOF stop waits for an actual owned child close and is idempotent", async t => {
+  // Actual local Node process and pipes; only the win32 launch admission is
+  // adapted here. The real Windows/Swift watchers have separate native tests.
+  let child;
+  const messages = [], observed = [];
+  const next = stage => messages.includes(stage) ? Promise.resolve() : new Promise(resolve => observed.push({ stage, resolve }));
+  const start = terminalWatchHelper({}, { platform: "win32", build: async () => process.execPath,
+    start: file => {
+      child = spawn(file, ["-e", `
+        process.on('disconnect', () => process.exit(0));
+        process.stdin.resume();
+        process.stdin.on('end', () => process.send({ stage: 'eof' }));
+        process.on('message', m => { if (m === 'finish') process.exit(0); });
+        process.send({ stage: 'ready' });
+      `], { stdio: ["pipe", "pipe", "ignore", "ipc"] });
+      child.on("message", message => {
+        messages.push(message.stage);
+        for (const waiting of observed) if (waiting.stage === message.stage) waiting.resolve();
+      });
+      return child;
+    } });
+  const helper = await start();
+  const closed = once(child, "close");
+  t.after(async () => { if (child.connected) child.send("finish"); await closed; });
+  await next("ready");
+  const stopped = helper.stop();
+  assert.equal(helper.stop(), stopped, "repeated stop shares actual retirement");
+  await next("eof");
+  let done = false; void Promise.resolve(stopped).then(() => { done = true; });
+  await Promise.resolve();
+  assert.equal(done, false, "the owned child is deliberately still alive after EOF");
+  child.send("finish");
+  assert.deepEqual(await stopped, { code: 0, signal: null });
+  await closed;
+  assert.equal(child.stdout.readableEnded, true);
+  assert.equal(child.stdin.writableEnded, true);
+});
+
+test("Reach close joins its owned terminal watcher before returning", async t => {
+  const mac = fakeMac(), helper = heldWatchHelper();
+  mac.start = async () => { mac.helpers.push(helper); return helper; };
+  const { reach, presence } = await start(t, mac);
+  const phone = await presence(); await until(phone.latest);
+  try {
+    const closing = reach.close();
+    await helper.stopRequested;
+    let done = false; void closing.then(() => { done = true; });
+    await new Promise(setImmediate);
+    assert.equal(done, false, "backend shutdown cannot finish before its helper retirement");
+    helper.finish(); await closing;
+  } finally { helper.finish(); }
+});

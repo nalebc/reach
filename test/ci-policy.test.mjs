@@ -278,6 +278,12 @@ test("Windows CI runs the real screen helpers under a normal PC's script policy"
     assert.ok(ci.includes(`test/${name}.test.mjs`), `${name} must execute in the Restricted native lane`);
   for (const name of ["app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
+  for (const name of ["agent-tabs", "browser-worker", "browser-extension-bridge"])
+    assert.ok(suites.windows.includes(name), `${name} must retain tab ownership, queued dispatch and cleanup retirement regressions on Windows`);
+  for (const name of ["agent-tools", "tool-page-runtime", "mac-terminal-watch"])
+    assert.ok(suites.windows.includes(name), `${name} must retain explicit browser platform and watcher shutdown regressions on Windows`);
+  for (const name of ["app-icons", "windows-app-icons", "file-icons"])
+    assert.ok(suites.windows.includes(name), `${name} must retain icon/catalog helper shutdown and native close regressions on Windows`);
   // Workstream C: the sandbox unit tests in the lane, and the escape e2e in the
   // real-Windows step as a standard user (docs/parity/C-sandbox.md §9.3).
   for (const name of ["windows-sandbox", "windows-path-validation", "windows-sandbox-e2e", "windows-file-boundary-e2e"])
@@ -494,7 +500,7 @@ test("publishing isolation covers multiline commands, script settings and same-r
 
 test("Windows CI enforces private-first selection, fallback, recovery and private bootstrap boundaries", () => {
   for (const name of [
-    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-bootstrap-chrome", "private-gateway",
+    "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command", "headless-chrome-lifecycle",

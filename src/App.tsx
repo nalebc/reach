@@ -3,6 +3,8 @@ import "./storage-fallback";
 import { useFleetConnections } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
+import ConnectionReport from "./ConnectionReport";
+import FallbackSetup, { FallbackNotice } from "./FallbackSetup";
 import KeepInSync from "./KeepInSync";
 import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
@@ -921,7 +923,10 @@ function ReachWorkspace() {
             onHome={() => navigate("overview")}
           >
             {loading && !device ? (
-              <Spinner />
+              <>
+                <Spinner />
+                <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
+              </>
             ) : error && !device ? (
               <>
                 {page === "overview" && (
@@ -959,12 +964,14 @@ function ReachWorkspace() {
                     Reach retries connection interruptions automatically. Keep
                     your computer awake and Tailscale connected on both devices.
                   </Empty>
+                  <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
                 </section>
               </>
             ) : device && peer && pageAccessible(page, features) ? (
               <>
+                {error && <FallbackNotice peer={peer} device={device} />}
                 {page === "overview" && (
-                  <PhonePrompts owner={features.owner} url={peer.url} />
+                  <PhonePrompts owner={features.owner} url={peer.url} peer={peer} device={device} />
                 )}
                 {page === "overview" && (
                   <HomeLive
@@ -1728,6 +1735,8 @@ export function SettingsPage({
           <ChevronRight className="gs-chevron" size={18} />
         </button>
         <InterfaceUpdates peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
+        <ConnectionReport peer={peer} toast={toast} />
+        <FallbackSetup peer={peer} device={device} />
       </div>
 
       {/* What Reach drives here, behind or too old: Update (KeepInSync.tsx). */}

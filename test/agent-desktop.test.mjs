@@ -9,7 +9,7 @@ import { createAgentPauses } from "../server/agent-pauses.mjs";
 // native helper. Nothing here touches this computer.
 const chrome = { id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome" };
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString("base64");
-function world({ leaseMs = 2500, onSpawn } = {}) {
+function world({ leaseMs = 2500, onSpawn, platform = "darwin" } = {}) {
   const clients = new Map();
   const make = (id, preset, extra = {}) => {
     const policy = { invite: true, browser: true, preset, roots: preset === "apps" ? [] : ["/Users/me"], ...(preset === "apps" ? { apps: [chrome] } : {}), ...extra };
@@ -47,13 +47,57 @@ function world({ leaseMs = 2500, onSpawn } = {}) {
   const desktop = createAgentDesktop({ screen: true }, {
     available: () => true, hosts: () => ["mac.tail1.ts.net"], titles: () => ["reach"], protectedPaths: () => ["/Users/me/.reach"], home: "/Users/me",
     verifyClient: (id) => clients.get(id), phoneControls: () => phone, paused: () => pausedNow,
-    onActivity: (id, entry) => activity.push({ id, ...entry }), spawnHelper, now: () => clock, leaseMs, pauses: createAgentPauses(),
+    onActivity: (id, entry) => activity.push({ id, ...entry }), spawnHelper, now: () => clock, leaseMs, pauses: createAgentPauses(), platform,
   });
   return { desktop, make, helpers, activity, clients,
     setFront: (value) => { front = { ...front, ...value }; }, setAct: (fn) => { actAnswer = fn; },
     phone: (value) => { phone = value; }, pause: (value) => { pausedNow = value; }, tick: (ms) => { clock += ms; } };
 }
 const authorize = (client) => () => client;
+for (const platform of ["darwin", "win32"])
+test(`concurrent first looks share one helper startup (${platform} stand-in)`, async t => {
+  let ready;
+  const gate = new Promise(resolve => { ready = resolve; });
+  const w = world({ platform, onSpawn: () => gate });
+  t.after(() => { ready(); w.desktop.close(); });
+  const client = w.make("shared-start", "full"), auth = authorize(client);
+  const looks = [w.desktop.front(client, auth), w.desktop.elements(client, auth), w.desktop.screenshot(client, auth)];
+  ready();
+  await Promise.all(looks);
+  assert.equal(w.helpers.length, 1, "one startup for three concurrent reads");
+});
+
+test("cancelled startup cannot attach its helper to a rejoined session", async t => {
+  let ready;
+  const gate = new Promise(resolve => { ready = resolve; });
+  let starts = 0;
+  const w = world({ onSpawn: () => ++starts === 1 ? gate : undefined });
+  t.after(() => { ready(); w.desktop.close(); });
+  const client = w.make("rejoined", "full"), auth = authorize(client);
+  const old = w.desktop.front(client, auth);
+  const rejected = assert.rejects(old, /session.*ended/i);
+  w.desktop.cancelClient(client.id);
+  await w.desktop.front(client, auth);
+  ready();
+  await rejected;
+  assert.equal(w.helpers[0].stopped, true);
+  assert.equal(w.helpers[0].requests.length, 0);
+  assert.equal(w.helpers[1].stopped, false);
+});
+
+test("a failed shared startup clears once so a later look can recover", async t => {
+  let starts = 0;
+  const w = world({ onSpawn(helper) {
+    if (++starts === 1) { helper.stop(); throw Error("fixture startup failed"); }
+  } });
+  t.after(() => w.desktop.close());
+  const client = w.make("recover", "full"), auth = authorize(client);
+  const results = await Promise.allSettled([w.desktop.front(client, auth), w.desktop.elements(client, auth)]);
+  assert.ok(results.every(result => result.status === "rejected" && /startup failed/.test(result.reason.message)));
+  assert.equal(starts, 1);
+  await w.desktop.front(client, auth);
+  assert.equal(starts, 2);
+});
 test("Full control ignores hidden apps and content filters while protecting typed credentials in logs", async t => {
   const w = world();
   t.after(() => w.desktop.close());
@@ -375,6 +419,72 @@ test("requests arriving during a capture share it instead of queueing more", asy
   assert.equal(w.helpers[0].requests.filter((request) => request.op === "shot").length, 2, "the next one captures again");
 });
 
+for (const input of ["same agent", "another agent", "browser tool"])
+test(`a look after ${input} input does not share a capture started before that input`, async t => {
+  let ready, started;
+  const gate = new Promise(resolve => { ready = resolve; });
+  const entered = new Promise(resolve => { started = resolve; });
+  let captures = 0;
+  const w = world({ onSpawn(helper) {
+    const send = helper.send.bind(helper);
+    helper.send = async (request, beforeSend) => {
+      const result = await send(request, beforeSend);
+      if (request.op !== "shot") return result;
+      const width = ++captures;
+      if (width === 1) { started(); await gate; }
+      return { ...result, width };
+    };
+  } });
+  t.after(() => { ready(); w.desktop.close(); });
+  const client = w.make("fresh", "full"), auth = authorize(client);
+  const before = w.desktop.screenshot(client, auth);
+  await entered;
+  if (input === "browser tool") await w.desktop.withBrowser(client, chrome.id, auth, async guard => { await guard(); });
+  else {
+    const actor = input === "another agent" ? w.make("actor", "full") : client;
+    await w.desktop.act(actor, { type: "key", key: "tab" }, authorize(actor));
+  }
+  const after = w.desktop.screenshot(client, auth);
+  ready();
+  assert.equal((await before).width, 1);
+  assert.equal((await after).width, 2, "the new look captures the changed screen");
+});
+
+test("repeated post-input looks share one fresh pending capture instead of building a minute-long queue", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  let captures = 0;
+  const w = world({ onSpawn(helper) {
+    const send = helper.send.bind(helper);
+    helper.send = async (request, beforeSend) => {
+      const result = await send(request, beforeSend);
+      if (request.op !== "shot") return result;
+      const width = ++captures;
+      if (width === 1) { entered(); await gate; }
+      return { ...result, width };
+    };
+  } });
+  t.after(() => { release(); w.desktop.close(); });
+  const viewer = w.make("viewer", "full"), actor = w.make("actor", "full"), auth = authorize(viewer);
+  const first = w.desktop.screenshot(viewer, auth);
+  await started;
+  const later = [];
+  for (let i = 0; i < 7; i++) {
+    w.tick(1500);
+    await w.desktop.act(actor, { type: "key", key: "tab" }, authorize(actor));
+    later.push(w.desktop.screenshot(viewer, auth));
+  }
+  await rejects(() => w.desktop.screenshot(viewer, auth, { displayId: 2 }), 409, /not queued/, "busy");
+  await rejects(() => w.desktop.screenshot(viewer, auth, { maxWidth: 3840 }), 409, /not queued/, "busy");
+  release();
+  assert.equal((await first).width, 1);
+  assert.ok((await Promise.all(later)).every(shot => shot.width === 2));
+  assert.equal(captures, 2, "seven later looks need one fresh capture, not seven serial captures");
+  w.tick(1500);
+  assert.equal((await w.desktop.screenshot(viewer, auth, { displayId: 2 })).width, 3, "pending capacity is released");
+});
+
 test("vault values reach sign-in fields hidden, never a terminal, and plain text never a password field", async () => {
   const w = world();
   const full = w.make("muse", "apps");
@@ -648,7 +758,7 @@ function inertQueueWorld() {
   let current = client, permitted = true, phone = false;
   const authorize = () => { if (!permitted) throw Object.assign(Error("Access ended."), { status: 401 }); return current; };
   const desktop = createAgentDesktop({ screen: true }, {
-    available: () => true, spawnHelper: async () => helper, verifyClient: () => current, phoneControls: () => phone, pauses: createAgentPauses(),
+    available: () => true, spawnHelper: async () => helper, verifyClient: () => current, phoneControls: () => phone, pauses: createAgentPauses(), platform: "darwin",
   });
   return { desktop, helper, writes, client, authorize,
     reply: () => child.stdout.emit("data", Buffer.from('{"ok":true,"app":"Synthetic App","title":"Synthetic"}\n')),
@@ -722,7 +832,7 @@ for (const op of ["act", "open"]) {
 }
 
 
-test("helper timeout drains queued work and retains termination until a forced native exit", async t => {
+for (const [platform, graceMs] of [["darwin", 300], ["win32", 1500]]) test(`${platform} helper timeout drains queued work and retains termination until a forced native exit`, async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // No child process is launched: an inert process ignores graceful shutdown.
   const child = new EventEmitter(), events = [];
@@ -735,7 +845,7 @@ test("helper timeout drains queued work and retains termination until a forced n
     if (signal === "SIGKILL") { child.signalCode = signal; child.emit("exit", null, signal); }
     return true;
   };
-  const helper = new AgentDesktopHelper(child);
+  const helper = new AgentDesktopHelper(child, { platform });
   let terminated = false;
   helper.terminated.then(() => { terminated = true; });
   const active = outcome(helper.send({ op: "act" }));
@@ -751,7 +861,7 @@ test("helper timeout drains queued work and retains termination until a forced n
   assert.equal(helper.queue.length, 0);
   assert.equal(terminated, false, "rejecting send is not proof the native process stopped");
   await assert.rejects(helper.send({ op: "act" }), { status: 503 });
-  t.mock.timers.tick(299);
+  t.mock.timers.tick(graceMs - 1);
   assert.deepEqual(events, ["write:act", "stdin-end"]);
   t.mock.timers.tick(1);
   assert.deepEqual(events, ["write:act", "stdin-end", "SIGTERM"]);
@@ -880,7 +990,7 @@ test("every action the Mac does or refuses is logged for the owner, in words", a
         if (request.op === "open") return { ok: true, app: "Numbers", bundle: "com.apple.Numbers" };
         if (request.op === "open-file") return { ok: true, app: "Preview", bundle: "com.apple.Preview" };
         return { ok: true }; }, stop() { this.stopped = true; } }),
-    actions: (client, entry) => logged.push([client.id, entry]), now: () => 1_000_000,
+    actions: (client, entry) => logged.push([client.id, entry]), now: () => 1_000_000, platform: "darwin",
   });
   await desktop.act(full, { type: "type", text: "diapers" }, authorize(full));
   await desktop.act(full, { type: "press", name: "Add to cart" }, authorize(full));

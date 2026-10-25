@@ -692,10 +692,16 @@ test("actual Windows releases a partially inserted typing key and preserves an u
   code = code.replace(declaration, `
  [DllImport("user32.dll",EntryPoint="SendInput",SetLastError=true)] static extern uint NativeSendInput(uint count,Input[] inputs,int size);
  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+ [DllImport("user32.dll",EntryPoint="SetForegroundWindow")] static extern bool FixtureSetForegroundWindow(IntPtr window);
  public static IntPtr FixtureWindow;
  public static uint FixtureLimit=uint.MaxValue;
  static Input? fixtureHeld;
  static bool fixtureCanary;
+ public static bool ActivateFixtureWindow(IntPtr window){
+  uint owner;GetWindowThreadProcessId(window,out owner);
+  if(window==IntPtr.Zero || window!=FixtureWindow || owner!=(uint)System.Diagnostics.Process.GetCurrentProcess().Id)throw new InvalidOperationException("Only the fixture's own form can be activated");
+  return FixtureSetForegroundWindow(window);
+ }
  static uint SendInput(uint count,Input[] inputs,int size){
   if(FixtureWindow==IntPtr.Zero || GetForegroundWindow()!=FixtureWindow)throw new InvalidOperationException("Fixture lost its own foreground window");
   uint take=Math.Min(count,FixtureLimit);FixtureLimit=uint.MaxValue;
@@ -710,6 +716,7 @@ test("actual Windows releases a partially inserted typing key and preserves an u
   return sent;
  }
  public static void StartCanary(){
+  if(FixtureWindow==IntPtr.Zero || GetForegroundWindow()!=FixtureWindow)throw new InvalidOperationException("Fixture lost its own foreground window");
   if((GetAsyncKeyState(135)&0x8000)!=0)throw new InvalidOperationException("Canary key was already held");
   if(NativeSendInput(1,new Input[]{KeyEvent(135,0,0)},Marshal.SizeOf(typeof(Input)))!=1)throw new InvalidOperationException("Canary down was refused");
   fixtureCanary=true;
@@ -733,36 +740,74 @@ $field=New-Object System.Windows.Forms.TextBox
 $field.Multiline=$true;$field.AcceptsReturn=$true;$field.AcceptsTab=$true;$field.Dock='Fill'
 $form.Controls.Add($field)
 $observations=New-Object System.Collections.Generic.List[object]
+$fixtureClock=[System.Diagnostics.Stopwatch]::StartNew()
+$script:fixtureCase='setup';$script:fixtureStage='created';$script:traceCount=0;$script:traceBytes=0
 function Pump {for($i=0;$i -lt 10;$i++){[System.Windows.Forms.Application]::DoEvents();Start-Sleep -Milliseconds 20}}
+function MarkFixture($stage) {
+ $previous=$script:fixtureStage;$script:fixtureStage=$stage
+ try{
+  if($script:traceCount -ge 48){return}
+  # Only this disposable process and its own controls: never enumerate or
+  # identify the other foreground window, read a title, text or clipboard.
+  $formHandle=[IntPtr]::Zero;$fieldHandle=[IntPtr]::Zero
+  if($form.IsHandleCreated){$formHandle=$form.Handle}
+  if($field.IsHandleCreated){$fieldHandle=$field.Handle}
+  $entry=@{case=$script:fixtureCase;stage=$stage;previousStage=$previous;elapsedMs=$fixtureClock.ElapsedMilliseconds;processId=$PID;formHandle=$formHandle.ToInt64();fieldHandle=$fieldHandle.ToInt64();formVisible=$form.Visible;formContainsFocus=$form.ContainsFocus;fieldFocused=$field.Focused;foregroundOwned=($formHandle -ne [IntPtr]::Zero -and [ReachDesktopInput]::GetForegroundWindow() -eq $formHandle)}
+  $line='PartialTypingStage='+($entry|ConvertTo-Json -Compress)
+  $bytes=[System.Text.Encoding]::UTF8.GetByteCount($line)+1
+  if($script:traceBytes+$bytes -gt 16384){return}
+  $script:traceCount++;$script:traceBytes+=$bytes
+  [Console]::Error.WriteLine($line)
+ }catch{ } # Evidence must never prevent the owned-key finally cleanup.
+}
+function PrepareFixture {
+ MarkFixture 'prepare-begin'
+ # One preparation, using the existing Pump budget. Every target is our
+ # form or field; no other desktop window is raised, closed or minimized.
+ $form.Show();$form.BringToFront();$form.Activate()
+ [ReachDesktopInput]::ActivateFixtureWindow($form.Handle)|Out-Null
+ $form.ActiveControl=$field;$field.Select();$field.Focus()|Out-Null;Pump
+ MarkFixture 'prepared'
+}
 function CheckPartial($name,$action,$initial,$expected,$prefix) {
- $field.Text=$initial;$field.SelectionStart=$field.TextLength;$field.Focus()|Out-Null;Pump
+ $script:fixtureCase=$name
+ $field.Text=$initial;$field.SelectionStart=$field.TextLength;PrepareFixture
  if([ReachDesktopInput]::GetForegroundWindow() -ne $form.Handle){throw 'Input fixture is not in front'}
  foreach($key in @(8,9,13)){if(([ReachDesktopInput]::GetAsyncKeyState($key) -band 0x8000) -ne 0){throw "Key $key was already held"}}
  [ReachDesktopInput]::FixtureLimit=$prefix
+ MarkFixture 'dispatch-begin'
  $failure=$null
  try{& $action}catch{$failure=$_.Exception;while($failure -and $failure -isnot [ReachRefusal]){$failure=$failure.InnerException}}
  if(!$failure -or !$failure.Fatal -or $failure.Message -ne 'Windows refused the typing.'){throw 'A partial edit was not a fatal refusal'}
+ MarkFixture 'expected-refusal'
  Pump
  if($field.Text.Replace("\`r",'') -cne $expected){throw "Unexpected partial edit: $($field.Text | ConvertTo-Json -Compress)"}
  foreach($key in @(8,9,13)){if(([ReachDesktopInput]::GetAsyncKeyState($key) -band 0x8000) -ne 0){throw "Key $key stayed held"}}
  if(([ReachDesktopInput]::GetAsyncKeyState(135) -band 0x8000) -eq 0){throw 'Unrelated canary was released'}
  $observations.Add(@{name=$name;injectedPrefix=$prefix;text=$field.Text.Replace("\`r",'');ownedForeground=([ReachDesktopInput]::GetForegroundWindow() -eq $form.Handle);typingKeysReleased=$true;unrelatedCanaryHeld=$true;fatal=$failure.Fatal})
+ MarkFixture 'verified'
 }
 try {
- $form.Show();$form.Activate();Pump
- if([ReachDesktopInput]::GetForegroundWindow() -ne $form.Handle){throw 'No owned foreground input sink'}
+ MarkFixture 'created'
  [ReachDesktopInput]::FixtureWindow=$form.Handle
+ PrepareFixture
+ if([ReachDesktopInput]::GetForegroundWindow() -ne $form.Handle){throw 'No owned foreground input sink'}
+ MarkFixture 'canary-begin'
  [ReachDesktopInput]::StartCanary();Pump
  if(([ReachDesktopInput]::GetAsyncKeyState(135) -band 0x8000) -eq 0){throw 'Canary did not become held'}
+ MarkFixture 'canary-started'
  CheckPartial 'Return' {[ReachDesktopInput]::Type("\`nTAIL")} '' "\`n" 1
  CheckPartial 'Tab' {[ReachDesktopInput]::Type("\`tTAIL")} '' "\`t" 1
  CheckPartial 'Backspace-odd' {[ReachDesktopInput]::Back(3)} 'abc' 'ab' 1
  CheckPartial 'Backspace-even' {[ReachDesktopInput]::Back(3)} 'abc' 'ab' 2
  CheckPartial 'Unicode' {[ReachDesktopInput]::Type('qTAIL')} '' 'q' 1
  CheckPartial 'Surrogate' {[ReachDesktopInput]::Type([Regex]::Unescape('\\ud83d\\ude00TAIL'))} '' ([Regex]::Unescape('\\ud83d\\ude00')) 3
+} catch {
+ MarkFixture 'failed'
+ throw
 } finally {
- [ReachDesktopInput]::FinishFixture()
- $form.Close();$form.Dispose()
+ MarkFixture 'cleanup-begin'
+ try{[ReachDesktopInput]::FinishFixture();MarkFixture 'cleanup-end'}finally{$form.Close();$form.Dispose()}
 }
 if(([ReachDesktopInput]::GetAsyncKeyState(135) -band 0x8000) -ne 0){throw 'Fixture-owned canary cleanup failed'}
 $report=@{actualWindows=$true;injectedPartial=$true;powerShell=$PSVersionTable.PSVersion.ToString();pointerBytes=[IntPtr]::Size;cases=@($observations.ToArray());canaryFinallyReleased=$true}
@@ -772,9 +817,14 @@ Write-Output ('ActualWindowsPartialTyping='+($report|ConvertTo-Json -Compress -D
   const file = path.join(dir, "partial.ps1");
   await fs.writeFile(file, "\ufeff" + script, "utf8");
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const { stdout } = await exec("powershell.exe", powershellFile(file, [], { sta: true }), {
+  const stages = (stderr) => String(stderr || "").split(/\r?\n/).filter(line => line.startsWith("PartialTypingStage=")).slice(-48).join("\n").slice(-16384);
+  const { stdout, stderr } = await exec("powershell.exe", powershellFile(file, [], { sta: true }), {
     timeout: 90000, windowsHide: true, maxBuffer: 65536,
+  }).catch(error => {
+    t.diagnostic(stages(error.stderr) || "No partial-typing fixture stage records were captured.");
+    throw error;
   });
+  t.diagnostic(stages(stderr));
   const line = stdout.split(/\r?\n/).find((value) => value.startsWith("ActualWindowsPartialTyping="));
   assert.ok(line, "the actual OS fixture returned its observations");
   const report = JSON.parse(line.slice("ActualWindowsPartialTyping=".length));

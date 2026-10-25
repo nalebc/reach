@@ -171,6 +171,20 @@ export function createAppShortcuts({
   locateCli = findCli,
   bundleId = readBundleId,
 } = {}) {
+  let closed = false, stopping;
+  const pending = new Set();
+  const open = () => {
+    if (closed) throw fail(503, "Reach is shutting down.");
+  };
+  // A catalog read may be compiling a Windows helper or awaiting a Mac
+  // lookup. Fence new admissions before shutdown snapshots its owned work.
+  const read = (operation) => {
+    try { open(); } catch (error) { return Promise.reject(error); }
+    const result = Promise.resolve().then(() => { open(); return operation(); });
+    pending.add(result);
+    void result.then(() => pending.delete(result), () => pending.delete(result));
+    return result;
+  };
   // A terminal opens on the computer itself, in its own terminal app
   // (desktop-terminals.mjs): Terminal on a Mac, Windows Terminal or a console
   // window on a Windows PC, the folder given separately there.
@@ -190,7 +204,7 @@ export function createAppShortcuts({
   const bundleOf = (app) => {
     if (typeof app.bundleId === "string") return app.bundleId;
     if (!bundles.has(app.id))
-      bundles.set(app.id, Promise.resolve(app.id).then(bundleId).catch(() => null));
+      bundles.set(app.id, Promise.resolve(app.id).then((id) => { open(); return bundleId(id); }).catch(() => null));
     return bundles.get(app.id);
   };
   let cliCache = { at: 0, commands: new Map() };
@@ -199,7 +213,9 @@ export function createAppShortcuts({
     if (Date.now() - cliCache.at > 300000) {
       const commands = new Map();
       for (const recipe of RECIPES) {
+        open();
         const command = await locateCli(recipe.cli, recipe.bundled);
+        open();
         if (command) commands.set(recipe.id, command);
       }
       cliCache = { at: Date.now(), commands };
@@ -210,14 +226,18 @@ export function createAppShortcuts({
     loadIcon
       ? async (ids) => {
           const found = [];
-          for (const id of ids)
-            found.push(await Promise.resolve(id).then(loadIcon).catch(() => null));
+          for (const id of ids) {
+            if (closed) break;
+            found.push(await Promise.resolve(id).then((value) => { open(); return loadIcon(value); }).catch(() => null));
+          }
           return found;
         }
       : loadIcons,
   );
   const installedIds = async (ids) => {
-    const installed = new Set((await listApps()).map((a) => a.id));
+    open();
+    const installed = new Set((await listApps({ authorize: open })).map((a) => a.id));
+    open();
     return ids.filter((id) => installed.has(id));
   };
   const file = dataDir ? path.join(dataDir, "shortcuts.json") : null;
@@ -236,15 +256,18 @@ export function createAppShortcuts({
     if (file) atomicJson(file, next);
     custom = next;
   };
-  const catalog = async () => {
-    const installed = await listApps();
+  const catalog = () => read(async () => {
+    const installed = await listApps({ authorize: open });
+    open();
     // The app registering codex://, by bundle id; the name only when ids are
     // unknown. ChatGPT's name alone does not establish that Codex is installed.
     const ids = await Promise.all(installed.map(bundleOf));
+    open();
     const codex =
       installed.find((a, i) => ids[i] === CODEX_BUNDLE) ||
       installed.find((a, i) => !ids[i] && /^codex$/i.test(a.name));
     const commands = await recipeCommands();
+    open();
     return [
       // Multi-step shortcuts: open a terminal in the shared folder and start an agent.
       ...RECIPES.filter((r) => commands.has(r.id)).map((r) => ({
@@ -291,7 +314,7 @@ export function createAppShortcuts({
         };
       }),
     ];
-  };
+  });
   const list = async () => {
     const builtins = await catalog();
     return [
@@ -327,18 +350,27 @@ export function createAppShortcuts({
   };
   return {
     list,
-    async icon(appId) {
+    close() {
+      if (stopping) return stopping;
+      closed = true;
+      const icons = icon.close();
+      return stopping = Promise.allSettled([icons, ...pending]).then(() => {});
+    },
+    icon(appId) { return read(async () => {
       if (
         typeof appId !== "string" ||
         appId.length > 4096 ||
-        !(await listApps()).some((a) => a.id === appId)
+        !(await listApps({ authorize: open })).some((a) => a.id === appId)
       )
         throw fail(404, "Choose an installed app.");
-      return { icon: await icon(appId) };
-    },
+      open();
+      const result = await icon(appId);
+      open();
+      return { icon: result };
+    }); },
     // Icons for a screenful of apps in one request. Ids that aren't installed
     // are left out and never reach the native reader.
-    async icons(ids) {
+    icons(ids) { return read(async () => {
       if (
         !Array.isArray(ids) ||
         !ids.length ||
@@ -348,8 +380,9 @@ export function createAppShortcuts({
         throw fail(400, "Choose up to 64 installed apps.");
       const found = await installedIds([...new Set(ids)]);
       const result = await Promise.all(found.map(icon));
+      open();
       return { icons: Object.fromEntries(found.map((id, i) => [id, result[i]])) };
-    },
+    }); },
     async customList() {
       const builtins = await catalog();
       return custom.map((c) => ({

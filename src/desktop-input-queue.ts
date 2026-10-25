@@ -172,6 +172,10 @@ export class DesktopInputQueue {
       try {
         this.transmit(id, item.action);
       } catch {
+        // Refused before it left (its socket was already closing): it is
+        // never-transmitted input, not one of unknown delivery.
+        this.pending.delete(id);
+        this.queued.unshift(item);
         this.close(true);
         this.fail(
           "Desktop input disconnected. No pending actions were replayed.",

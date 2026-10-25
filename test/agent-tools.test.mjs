@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { createAgentTools } from "../server/agent-tools.mjs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createAgentTools, sameToolPage } from "../server/agent-tools.mjs";
 import {
   validateToolDefinition,
   toolInputs,
@@ -24,19 +25,32 @@ import {
 import {
   toolBrowserFixture,
   toolApps,
+  toolAppsFor,
+  toolPrivateStateParent,
   exampleTool,
 } from "./helpers/tool-browser-fixture.mjs";
+import { windowsAcl, othersAllowed } from "./helpers/windows-acl.mjs";
+
+const privateStateParent = toolPrivateStateParent(test);
+
+async function assertPrivateFile(target) {
+  // The modeled browser platform is independent of the actual filesystem.
+  if (process.platform === "win32") assert.deepEqual(othersAllowed(await windowsAcl("file", target)), []);
+  else assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+}
 
 function setup(t, extra = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-tool-test-")),
-    driver = toolBrowserFixture();
+  const { platform = "darwin", ...optionsExtra } = extra;
+  const apps = toolAppsFor(platform);
+  const dataDir = fs.mkdtempSync(path.join(privateStateParent(), "reach-tool-test-")),
+    driver = toolBrowserFixture({ platform });
   let client = {
     id: "agent",
     name: "Test agent",
     kind: "agent",
     status: "accepted",
     expiresAt: Date.now() + 600000,
-    policy: { browser: true, preset: "apps", apps: toolApps, roots: [] },
+    policy: { browser: true, preset: "apps", apps, roots: [] },
     scopes: [
       "browser:read",
       "browser:open",
@@ -48,7 +62,7 @@ function setup(t, extra = {}) {
   const desktop = {
     catalog: async (auth) => {
       auth();
-      return toolApps;
+      return apps;
     },
     withBrowser: async (_client, _app, auth, work) =>
       work(
@@ -62,10 +76,11 @@ function setup(t, extra = {}) {
     options = {
       desktop,
       driver,
+      platform,
       waitMs: 250,
       runMs: 5000,
       pdf: async () => Buffer.from("%PDF-1.4 test snapshot").toString("base64"),
-      ...extra,
+      ...optionsExtra,
     };
   let tools = createAgentTools(config, options);
   t.after(() => {
@@ -100,6 +115,28 @@ function setup(t, extra = {}) {
     },
   };
 }
+
+// Native browser operations are modeled. Keep the app inventory, driver and
+// production allowlist on the same explicit platform on every CI host.
+const modeledBrowsers = [
+  { platform: "darwin", browser: "Chrome", label: "Chrome" },
+  { platform: "darwin", browser: "Safari", label: "Safari" },
+  { platform: "win32", browser: "Chrome", label: "win32 Chrome" },
+  { platform: "win32", browser: "Edge", label: "win32 Edge" },
+];
+
+test("Windows tool-state privacy rejects an inherited Everyone read grant", { skip: process.platform !== "win32" }, async (t) => {
+  // Only dummy fixture bytes receive the deliberately broad inherited grant.
+  const parent = fs.mkdtempSync(path.join(privateStateParent(), "inherited-acl-control-"));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const system = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");
+  await promisify(execFile)(path.win32.join(system, "icacls.exe"), [parent, "/grant", "*S-1-1-0:(OI)(CI)R", "/Q"], { windowsHide: true, timeout: 10000 });
+  const target = path.join(parent, "dummy-ledger.json");
+  fs.writeFileSync(target, "[]", { mode: 0o600 });
+  const acl = await windowsAcl("file", target);
+  assert.ok(othersAllowed(acl).some((rule) => rule.sid === "S-1-1-0" && rule.inherited), "The control must actually inherit the Everyone read ACE.");
+  await assert.rejects(() => assertPrivateFile(target), { code: "ERR_ASSERTION" });
+});
 
 test("every prebuilt tool and the protocol example use the identical definition validator", () => {
   for (const tool of PREBUILT_TOOLS)
@@ -142,9 +179,9 @@ test("every prebuilt tool and the protocol example use the identical definition 
   );
 });
 
-for (const browser of ["Chrome", "Safari"])
-  test(`${browser}: Gmail search → exact message → attachment → one saved draft, with idempotent replay`, async (t) => {
-    const f = setup(t);
+for (const { platform, browser, label } of modeledBrowsers)
+  test(`${label}: Gmail search → exact message → attachment → one saved draft, with idempotent replay`, async (t) => {
+    const f = setup(t, { platform });
     const search = await f.run(
       "builtin_gmail_find",
       { query: "invoice October" },
@@ -205,15 +242,12 @@ for (const browser of ["Chrome", "Safari"])
         !persisted.includes(values.body) &&
         !persisted.includes(values.to),
     );
-    assert.equal(
-      fs.statSync(path.join(f.dataDir, "agent-tool-runs.json")).mode & 0o777,
-      0o600,
-    );
+    await assertPrivateFile(path.join(f.dataDir, "agent-tool-runs.json"));
   });
 
-for (const browser of ["Chrome", "Safari"])
-  test(`${browser}: order handles produce a receipt snapshot and verified tracking`, async (t) => {
-    const f = setup(t);
+for (const { platform, browser, label } of modeledBrowsers)
+  test(`${label}: order handles produce a receipt snapshot and verified tracking`, async (t) => {
+    const f = setup(t, { platform });
     const orders = await f.run(
       "builtin_walmart_find",
       { query: "chair" },
@@ -229,12 +263,7 @@ for (const browser of ["Chrome", "Safari"])
     );
     assert.equal(receipt.status, "completed", JSON.stringify(receipt));
     assert.equal(receipt.data.file.mime, "application/pdf");
-    assert.equal(
-      fs.statSync(
-        path.join(f.dataDir, "agent-tool-files", receipt.data.file.handle),
-      ).mode & 0o777,
-      0o600,
-    );
+    await assertPrivateFile(path.join(f.dataDir, "agent-tool-files", receipt.data.file.handle));
     const refreshed = await f.run(
       "builtin_walmart_find",
       { query: "ORDER-123" },
@@ -249,11 +278,17 @@ for (const browser of ["Chrome", "Safari"])
     assert.match(tracking.data.tracking, /Delivered/);
   });
 
+test("the modeled win32 tool allowlist rejects Safari before browser traffic", async t => {
+  const f = setup(t, { platform: "win32" });
+  await assert.rejects(f.run("builtin_gmail_find", { query: "invoice" }, "Safari"), error => error.status === 400);
+  assert.equal(f.driver.calls.length, 0);
+});
+
 test(
   "agents create, discover and execute a custom tool using the same catalog, browser bridge and MCP contract",
   privateIngressTest,
   async (t) => {
-    const driver = toolBrowserFixture();
+    const driver = toolBrowserFixture({ platform: "darwin" });
     t.after(() => driver.close());
     const f = await presetFixture(t, {
       desktopExtras: {
@@ -264,7 +299,7 @@ test(
         withBrowser: async (_client, _app, auth, work) =>
           work(async () => auth()),
       },
-      browserToolOptions: { driver, waitMs: 250 },
+      browserToolOptions: { driver, platform: "darwin", waitMs: 250 },
     });
     const agent = await f.join({
       preset: "apps",
@@ -665,6 +700,92 @@ test("existing drafts are preserved and missing or tampered file handles fail be
     /expired or belongs/,
   );
   assert.equal(f.driver.counters.drafts, 0);
+});
+
+test("Gmail search query spelling preserves the exact account, path, query and origin", () => {
+  const wanted = "https://mail.google.com/mail/u/0/#search/unpaid%20invoice%20from%3Aacme";
+  assert.equal(sameToolPage(wanted, wanted), true);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/unpaid+invoice+from:acme", wanted), true);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/unpaid+invoice", wanted), false, "another search");
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/1/#search/unpaid+invoice+from:acme", wanted), false, "another account");
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/?x=1#search/unpaid+invoice+from:acme", wanted), false, "another query string");
+  assert.equal(sameToolPage("https://evil.example/mail/u/0/#search/unpaid+invoice+from:acme", wanted), false, "another site");
+  // A literal plus asked for (%2B) is not a space written back as +.
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/a+b", "https://mail.google.com/mail/u/0/#search/a%2Bb"), false);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/a%2Bb", "https://mail.google.com/mail/u/0/#search/a%2Bb"), true);
+  // Without a fragment asked for, only the exact address.
+  assert.equal(sameToolPage("https://example.com/a?b=c+d", "https://example.com/a?b=c%20d"), false);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/%E0%A4%A", wanted), false, "unreadable");
+});
+
+for (const [boundary, actual, wanted] of [
+  ["another SPA's plus identifier", "https://example.com/#search/invoice+October", "https://example.com/#search/invoice%20October"],
+  ["another SPA's encoded route separator", "https://example.com/#item/invoice%2Fmessage", "https://example.com/#item/invoice/message"],
+  ["a Gmail non-search route", "https://mail.google.com/mail/u/0/#inbox/invoice+October", "https://mail.google.com/mail/u/0/#inbox/invoice%20October"],
+  ["an encoded Gmail search route separator", "https://mail.google.com/mail/u/0/#search%2Finvoice+October", "https://mail.google.com/mail/u/0/#search/invoice%20October"],
+  ["a raw slash in a Gmail route", "https://mail.google.com/mail/u/0/#search/invoice/message", "https://mail.google.com/mail/u/0/#search/invoice%2Fmessage"],
+  ["a raw hash in a Gmail route", "https://mail.google.com/mail/u/0/#search/invoice#message", "https://mail.google.com/mail/u/0/#search/invoice%23message"],
+  ["an unrelated Gmail-origin path", "https://mail.google.com/other/#search/invoice+October", "https://mail.google.com/other/#search/invoice%20October"],
+  ["an HTTP Gmail origin", "http://mail.google.com/mail/u/0/#search/invoice+October", "http://mail.google.com/mail/u/0/#search/invoice%20October"],
+]) test(`Gmail normalization never equates ${boundary}`, () => {
+  assert.equal(sameToolPage(actual, wanted), false);
+  assert.equal(sameToolPage(wanted, wanted), true, "unchanged addresses retain exact-match behavior");
+});
+
+test("an arbitrary SPA's changed fragment stops the saved tool before a click", async t => {
+  const f = setup(t), definition = exampleTool("exact_spa");
+  definition.steps[0].url = "https://example.com/#item/invoice%20October";
+  await f.tools.define(f.authorize, definition);
+  f.driver.rewrite = url => url.replace(/%20/g, "+");
+  const result = await f.run(definition.id);
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "loading");
+  assert.equal(f.driver.counters.clicks, 0, "different SPA page identifiers cannot authorize the tool's click");
+  assert.equal(f.driver.calls.some(call => call.op === "bind"), false);
+});
+
+for (const [encoded, raw] of [["%2F", "/"], ["%23", "#"]]) test(`a Gmail search cannot adopt a rewritten ${encoded} route boundary`, async t => {
+  const f = setup(t);
+  f.driver.rewrite = url => url.replace(encoded, raw);
+  const result = await f.run("builtin_gmail_find", { query: `invoice${raw}message` });
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "loading");
+  assert.equal(f.driver.calls.some(call => call.op === "bind"), false);
+});
+
+test("Gmail's own spelling of a search address is the page the search asked for", async (t) => {
+  const f = setup(t);
+  f.driver.rewrite = (url) => url.replace(/%20/g, "+");
+  const search = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(search.status, "completed");
+  assert.equal(search.data.messages.items.length, 1);
+  const binds = f.driver.calls.filter(call => call.op === "bind");
+  assert.ok(binds.length > 0);
+  assert.ok(binds.every(call => call.expectedURL === "https://mail.google.com/mail/u/0/#search/unpaid+invoice"),
+    "document binding uses the exact reached address, never the loosely equivalent requested spelling");
+  // A page that says something else is still not the one asked for.
+  f.driver.rewrite = (url) => url.replace(/#search\/.*/, "#search/other");
+  const other = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(other.status, "stopped");
+  assert.equal(other.code, "loading");
+});
+
+test("an equivalent Gmail spelling that changes before binding still loses the exact document", async t => {
+  const f = setup(t);
+  f.driver.rewrite = url => url.replace(/%20/g, "+");
+  let changed = false;
+  f.driver.before = (browser, request) => {
+    if (request.op !== "bind" || changed) return;
+    changed = true;
+    const tab = f.driver.browsers.get(browser)[0];
+    const next = tab.url.replace(/\+/g, "%20");
+    tab.dom.reconfigure({ url: next }); tab.url = next;
+  };
+  const result = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(changed, true);
+  assert.equal(result.status, "stopped");
+  assert.equal(result.code, "stale");
+  assert.equal(f.driver.calls.some(call => call.op === "collect"), false);
 });
 
 test("declared empty results are distinguished from page drift, and hidden matches do not cause ambiguity", async (t) => {

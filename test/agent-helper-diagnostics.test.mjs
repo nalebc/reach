@@ -5,7 +5,7 @@ import { AgentDesktopHelper } from "../server/agent-desktop.mjs";
 import { agentErrorDetails } from "../server/agent-transport.mjs";
 
 const outcome = promise => promise.then(value => ({ value }), error => ({ error }));
-function inert(t) {
+function inert(t, options) {
   // A protocol stand-in only: no process is started and no input is posted.
   const child = new EventEmitter(), writes = [];
   child.pid = 123456789; child.exitCode = null; child.signalCode = null;
@@ -13,7 +13,7 @@ function inert(t) {
   child.stdin.write = line => { writes.push(JSON.parse(line)); return true; };
   child.stdin.end = () => { child.exitCode = 0; child.emit("exit", 0); };
   child.kill = () => assert.fail("the inert child already exited");
-  const helper = new AgentDesktopHelper(child);
+  const helper = new AgentDesktopHelper(child, options);
   t.after(() => helper.stop());
   return { child, helper, writes, reply: line => child.stdout.emit("data", Buffer.from(line + "\n")) };
 }
@@ -94,6 +94,44 @@ test("unsolicited native replies end the helper and cannot become a future reque
   w.reply('{"ok":true,"app":"PRIVATE-old-app"}');
   diagnostic((await outcome(w.helper.send({ op: "front" }))).error, "unexpected_reply", "front", "not_dispatched");
   assert.deepEqual(w.writes, []);
+});
+
+for (const platform of ["darwin", "win32"])
+test(`slow successful reads cannot leave queued work waiting for minutes (${platform} stand-in)`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const w = inert(t, { platform });
+  const reads = Array.from({ length: 8 }, (_, i) => outcome(w.helper.send({ op: i === 7 ? "act" : "front" })));
+  // Each read takes 14 s, just below the 15 s native timeout. Previously the
+  // eighth request could wait 98 s to start and return after 112 s.
+  t.mock.timers.tick(14000);
+  w.reply('{"ok":true}');
+  assert.equal((await reads[0]).value.ok, true);
+  assert.equal(w.writes.length, 2);
+  t.mock.timers.tick(1000);
+  assert.equal(w.helper.queue.length, 0, "queue wait is bounded from arrival");
+  for (let i = 2; i < reads.length; i++) {
+    const { error } = await reads[i];
+    diagnostic(error, "queue_timeout", i === 7 ? "act" : "front", "not_dispatched");
+    assert.equal(agentErrorDetails(error).helperReason, "queue_timeout");
+  }
+  assert.equal(w.helper.stopped, false, "expiring undispatched work does not stop the active read");
+  t.mock.timers.tick(13000);
+  w.reply('{"ok":true}');
+  assert.equal((await reads[1]).value.ok, true);
+  assert.equal(w.writes.length, 2, "expired requests never dispatch later");
+});
+
+test("a full helper queue refuses excess work immediately without stopping pending requests", async t => {
+  const w = inert(t);
+  const pending = Array.from({ length: 33 }, () => outcome(w.helper.send({ op: "front" })));
+  const { error } = await outcome(w.helper.send({ op: "act" }));
+  assert.equal(error.kind, "busy");
+  assert.match(error.message, /not sent/);
+  assert.equal(w.helper.queue.length, 32);
+  assert.equal(w.helper.stopped, false);
+  w.helper.stop();
+  await Promise.all(pending);
+  assert.deepEqual(w.writes.map(item => item.op), ["front"]);
 });
 
 test("valid native refusals and dispatch authorization retain their original semantics", async t => {

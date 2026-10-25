@@ -360,6 +360,67 @@ export function useRemoteScreen(peer, enabled, live, display) {
     assert.deepEqual(result.afterConfirmation.map(a => a.text), ["cd"], "only never-transmitted cd is retained; unknown ab is not replayed");
     assert.equal(result.afterConfirmation[0].focus, `field-${connections.indexOf(freshConnection)}`);
   });
+  // One real touch on the visible desktop, as in fresh(): never retried.
+  const tapSurface = async (boundary) => {
+    const setup = { boundary, connection: connections.length - 1, samples: [] };
+    outcomes.push(setup);
+    setup.point = await touchPoint(setup);
+    await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [setup.point] });
+    await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    return setup;
+  };
+  const focusQueries = (connection) => connection.received.filter(m => m.type === "input" && m.action.type === "focus").length;
+  await t.test("a reconnect with nothing waiting lets the next field tap type again", async () => {
+    const old = await fresh();
+    await tab.send("Input.insertText", { text: "ab" });
+    await until(() => typing(old).length === 1, "acknowledged ab");
+    const before = connections.length;
+    old.ws.close(1012, "Fixture restart");
+    await until(() => connections.length > before, "replacement input connection");
+    await ready();
+    const next = connections.at(-1);
+    const paused = await tab.evaluate("/Typing paused/.test(document.body.textContent)");
+    const setup = await tapSurface("reconnect-nothing-waiting");
+    await until(() => focusQueries(next) > 0, "field confirmation on the new connection");
+    await until(() => tab.evaluate(`document.activeElement === ${sink}`), "typing sink after the new tap");
+    await tab.send("Input.insertText", { text: "xy" });
+    await until(() => typing(next).length === 1, "new typing on the new connection");
+    Object.assign(setup, { paused, oldTransmitted: typing(old), after: typing(next) });
+    assert.equal(paused, true, "the reconnect paused typing first");
+    assert.deepEqual(typing(old).map(a => a.text), ["ab"]);
+    assert.deepEqual(typing(next).map(a => a.text), ["xy"], "only the new typing; nothing is replayed");
+    assert.equal(typing(next)[0].focus, `field-${connections.indexOf(next)}`);
+  });
+  await t.test("waiting typing survives a field tap and is never sent until Send; Discard lets typing start over", async () => {
+    const old = await fresh();
+    holdTyping = true;
+    await tab.send("Input.insertText", { text: "ab" });
+    await until(() => typing(old).length === 1, "unknown dispatched ab");
+    await tab.send("Input.insertText", { text: "cd" });
+    const before = connections.length;
+    old.ws.close(1012, "Fixture restart");
+    await until(() => connections.length > before, "replacement input connection");
+    await ready();
+    holdTyping = false;
+    const next = connections.at(-1);
+    await until(() => tab.evaluate(`!!${button("Discard waiting typing")}`), "Discard for waiting typing");
+    const held = await tapSurface("reconnect-waiting-tap");
+    await pause(600);
+    held.focusQueries = focusQueries(next);
+    held.sent = typing(next);
+    assert.deepEqual(typing(next), [], "a tap is not consent to send the waiting cd");
+    assert.equal(focusQueries(next), 0, "waiting typing keeps its own pause");
+    assert.equal(await tab.evaluate(`!!${button("Discard waiting typing")}`), true, "still waiting after the tap");
+    await tab.evaluate(`${button("Discard waiting typing")}.click()`);
+    await until(() => tab.evaluate(`!${button("Discard waiting typing")} && !/Typing paused/.test(document.body.textContent)`), "discarded");
+    const fresh2 = await tapSurface("after-discard-tap");
+    await until(() => focusQueries(next) > 0, "field confirmation after Discard");
+    await until(() => tab.evaluate(`document.activeElement === ${sink}`), "typing sink after Discard");
+    await tab.send("Input.insertText", { text: "zz" });
+    await until(() => typing(next).length === 1, "new typing after Discard");
+    fresh2.after = typing(next);
+    assert.deepEqual(typing(next).map(a => a.text), ["zz"], "discarded cd and unknown ab never reach the computer");
+  });
   await t.test("a real typing refusal still closes typing and says why", async () => {
     const connection = await fresh();
     refuseTyping = true;

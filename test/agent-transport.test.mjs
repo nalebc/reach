@@ -21,6 +21,22 @@ test("one-call dispatch has room for long tools only on its exact route and runt
   assert.equal(agentRequestTimeout("/api/browser/mcp/call"), 35000);
 });
 const expected = { ...busy, status: 409 };
+test("blank and malformed error messages always retain useful text", () => {
+  for (const message of ["", " \n\t", {}, null]) {
+    assert.equal(agentErrorDetails({ message, body: { error: "Try after the current operation." } }).error, "Try after the current operation.");
+    assert.equal(agentErrorDetails({ message, body: { error: " \n" } }).error, "Reach could not complete the request.");
+  }
+});
+
+test("MCP discovery failures have a nonempty message even when the connector throws no Error", async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  let text = "";
+  output.on("data", chunk => { text += chunk; });
+  const done = serveMcp({ api: async () => { throw {}; }, input, output });
+  input.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+  await done;
+  assert.equal(JSON.parse(text).error.message, "Reach could not complete the request.");
+});
 const head = (status, body) => {
   let sent = false;
   return {

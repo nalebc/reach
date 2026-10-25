@@ -105,6 +105,38 @@ test("page comparison detects changed hashed assets and tolerates offline respon
     }),
     null,
   );
+  assert.equal(await currentPageMatches(doc, async () => new Response(doc.documentElement.outerHTML,
+    { headers: { "X-Reach-Cached-Shell": "old-complete-cohort" } })), null,
+  "the saved interface cannot certify that the host still serves this build");
+});
+
+test("a saved interface is completed before reload, and failed saves retry without discarding the page", async () => {
+  reload.forgetBuild();
+  const waits = []; let attempts = 0, reloads = 0;
+  const options = { busy: () => false, wait: fn => waits.push(fn), reload: () => reloads++,
+    prepare: async () => ++attempts > 1, currentPage: async () => true };
+  reload.noteBuild("old", options); await Promise.resolve();
+  reload.noteBuild("new", options);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reloads, 0); assert.equal(waits.length, 1); assert.equal(attempts, 1);
+  waits.shift()(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reloads, 1); assert.equal(attempts, 2);
+});
+
+test("held preparation rechecks typing and cannot reload a retired update generation", async () => {
+  for (const retired of [false, true]) {
+    reload.forgetBuild();
+    let finish, reloads = 0, busy = false; const waits = [];
+    const options = { busy: () => busy, wait: fn => waits.push(fn), reload: () => reloads++,
+      prepare: () => new Promise(resolve => { finish = resolve; }), currentPage: async () => true };
+    reload.noteBuild("old", options); await Promise.resolve(); reload.noteBuild("new", options);
+    assert.equal(typeof finish, "function"); busy = true;
+    if (retired) reload.forgetBuild();
+    finish(true); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(reloads, 0);
+    if (retired) assert.equal(waits.length, 0);
+    else { assert.equal(waits.length, 1); busy = false; waits.shift()(); assert.equal(reloads, 1); }
+  }
 });
 
 test("a failed initial page comparison retries on the next same-build presence packet", async () => {

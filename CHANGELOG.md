@@ -8,21 +8,6 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-### Added
-
-- Agents' browser tabs close once they're done. A tab an agent opened with
-  `reach_open_url` or `reach_open_bank` closes 5 minutes after the agent last
-  used the computer, as soon as its access ends, or when the agent calls the
-  new `reach_close_tabs`. An agent keeps at most 5 such tabs; opening another
-  closes its oldest one behind. Reach closes only tabs it saw appear for that
-  agent's open: tabs already there, and tabs opened by a link or a keyboard
-  shortcut, are never touched. A tab stays open while someone uses the
-  computer through Reach, when it's in front and the computer was used since
-  the agent's last action, or when it's on another site than the agent left
-  it. Chrome on a Mac (once Reach may control it), and Chrome and Edge on
-  Windows (with Reach's extension connected). Safari and other browsers aren't
-  covered: their tabs have no stable id, so agents close those themselves.
-
 ## [0.4.2] — 2026-10-24
 
 Early-access candidate including the file editing, terminal clipboard paste
@@ -32,6 +17,21 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 
 ### Added
 
+- Set up a browser fallback from the existing private Reach link. The browser
+  keeps its own Tailscale identity and separate device approval with the same
+  access. Preparing this link also saves Reach's public interface files so it
+  can reopen when the native connection is unavailable; computer data and
+  credentials are never cached by that preparation. Home suggests this
+  one-time setup while the Tailscale app connection is on, so it is ready
+  before the app is turned off; Settings keeps the same setup.
+- Let agents close their tracked tabs with `reach_close_tabs`, or automatically
+  after five minutes without agent activity or when their access ends. Opening
+  a sixth tracked tab tries to close its oldest eligible background tab.
+  Supported browsers are Chrome on macOS and Chrome/Edge on Windows, with
+  their existing browser permissions. Pre-existing, ambiguous, redirected and
+  navigated pages are left open, including changed paths, queries or fragments.
+  Cleanup waits while the owner is using Reach; uncertain closes are never
+  retried automatically.
 - Edit UTF-8 text files from Files, preserving Windows line endings and checking
   the original file hash before saving. Unsaved drafts survive closing a preview
   and verified private handoffs; a save still requires an explicit action.
@@ -41,6 +41,28 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 
 ### Fixed
 
+- Reopen a prepared private-port link after the native route disappears,
+  authenticate through the browser's own saved approval, and return to native
+  automatically. Complete interface versions keep the normal browser security
+  policy; interrupted preparation keeps the previous complete version.
+- Keep agent desktop tools responsive during concurrent startup, refuse work
+  after its grant changes, bound pending native input and report helper
+  failures as structured tool errors. Screenshot results must remain fresh.
+- Wait for the terminal watcher's process to close before Reach finishes
+  shutting down, and prevent queued refreshes or delayed terminal reads from
+  starting another helper after shutdown.
+- Wait for active file icons, app shortcuts, installed-app catalogs and agent
+  logos to finish their native lookups when Reach stops. Refuse queued and
+  delayed lookups after shutdown so their Windows helper can be removed.
+- Reject non-web site filters for tab cleanup before taking control or sending
+  a close. Closing tabs is advertised as a write that can lose unsaved state.
+- "Find Gmail message" no longer stops at "The browser has not reached the
+  exact requested page." Gmail writes a search's spaces back as `+`, so the
+  tool's exact address match never came. Equivalent spelling is accepted only
+  within Gmail's single search-query segment. The HTTPS site, account, path
+  and query string still match exactly; other pages and route boundaries
+  retain exact address matching. The browser document binds to the exact
+  reached address, and another search still stops.
 - Keep a terminal's last row and column inside its screen above the keys,
   and keep following the newest output when its box is fitted again.
 - Recover live screen, sound, control and terminals through a brief identity
@@ -51,8 +73,12 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
   presses and typing ordered during reconnects.
 - Preserve known-unsent typing after reconnecting until the user confirms
   the current field. Never replay typing whose delivery is unknown or send
-  a waiting draft automatically into a replacement field. Keep native secure
-  keyboard context synchronized with the phone after Return.
+  a waiting draft automatically into a replacement field. With nothing
+  waiting, the next tap on a text field types again and an ordinary tap
+  dismisses the keyboard; waiting typing can be sent or discarded. Input the
+  browser couldn't hand to an already-closing connection counts as never
+  sent, not as of unknown delivery. Keep native secure keyboard context
+  synchronized with the phone after Return.
 - Keep known-unsent typing across verified private handoffs and media gaps.
   A different approved device credential requires Control again, and delayed
   replies from an old grant cannot enable or release its replacement.

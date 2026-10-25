@@ -17,10 +17,11 @@ const options = {
 let appCache = [],
   appCacheAt = 0,
   appScan;
-export async function apps() {
+export async function apps({ authorize = () => {} } = {}) {
+  authorize();
   if (appCacheAt && Date.now() - appCacheAt < 30000) return appCache;
   if (!appScan)
-    appScan = scanApps()
+    appScan = scanApps({ authorize })
       .then((result) => {
         appCacheAt = Date.now();
         return result;
@@ -30,7 +31,7 @@ export async function apps() {
       });
   return appScan;
 }
-async function scanApps() {
+async function scanApps({ authorize }) {
   if (process.platform === "darwin") {
     const directories = [
       "/Applications",
@@ -48,7 +49,7 @@ async function scanApps() {
     }
     appCache = found.sort((a, b) => a.name.localeCompare(b.name));
   } else if (process.platform === "win32") {
-    appCache = await readWindowsApps();
+    appCache = await readWindowsApps({ authorize });
   } else {
     appCache = [];
   }
