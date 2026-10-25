@@ -49,6 +49,9 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 - Wait for the terminal watcher's process to close before Reach finishes
   shutting down, and prevent queued refreshes or delayed terminal reads from
   starting another helper after shutdown.
+- Wait for active file icons, app shortcuts, installed-app catalogs and agent
+  logos to finish their native lookups when Reach stops. Refuse queued and
+  delayed lookups after shutdown so their Windows helper can be removed.
 - Reject non-web site filters for tab cleanup before taking control or sending
   a close. Closing tabs is advertised as a write that can lose unsaved state.
 - "Find Gmail message" no longer stops at "The browser has not reached the
