@@ -1,9 +1,10 @@
 import { useOpenWantedNeed } from "./deep-link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Bell, ChevronRight } from "lucide-react";
 import { type AgentRequest, type Device, type Peer, type Session } from "./api";
 import type { WorkspaceCapabilities } from "./capabilities";
 import type { FleetConnections } from "./useFleetConnections";
+import { MotionContext } from "./motion";
 import { ReachScene } from "./ReachIdentity";
 import type { AgentSession, MacPrompt } from "./agent-sessions";
 import { NeedsYouStrip, agentNeeds, type NeedItem } from "./NeedsYou";
@@ -115,6 +116,7 @@ export default function HomeLive({
   toast: (message: string) => void;
 }) {
   const visible = usePageVisible();
+  const motion = useContext(MotionContext);
   const logos = useAgentLogos(openAgentSession ? peer : null);
   const state = connections[active]?.state || "connecting";
   const online = state === "connected";
@@ -288,17 +290,8 @@ export default function HomeLive({
             toast={toast}
           />
         )}
-        <button
-          className="home-hero-scene"
-          aria-label={
-            features.screen
-              ? `Open ${device.name}'s screen`
-              : features.screenSetup
-                ? "Set up screen"
-                : "Screen unavailable"
-          }
-          disabled={!features.screen && !features.screenSetup}
-          onClick={() => navigate(features.screen ? "screen" : "settings")}
+        <div
+          className={`home-hero-scene${motion.enabled && !motion.reduced && !motion.hidden && visible && heroOnScreen ? " is-playing" : ""}`}
         >
           {features.screen && (
             <canvas
@@ -310,18 +303,32 @@ export default function HomeLive({
           <ReachScene
             mode="computer"
             companion
+            interactive
             liveScreen={live}
             className="home-scene"
           />
-          <span className="home-screen-open">
-            {features.screen
-              ? "Open screen"
-              : features.screenSetup
-                ? "Set up screen"
-                : "Screen unavailable"}
-            <ChevronRight size={17} aria-hidden="true" />
-          </span>
-        </button>
+          <button
+            className="home-screen-launch"
+            aria-label={
+              features.screen
+                ? `Open ${device.name}'s screen`
+                : features.screenSetup
+                  ? "Set up screen"
+                  : "Screen unavailable"
+            }
+            disabled={!features.screen && !features.screenSetup}
+            onClick={() => navigate(features.screen ? "screen" : "settings")}
+          >
+            <span className="home-screen-open">
+              {features.screen
+                ? "Open screen"
+                : features.screenSetup
+                  ? "Set up screen"
+                  : "Screen unavailable"}
+              <ChevronRight size={17} aria-hidden="true" />
+            </span>
+          </button>
+        </div>
         {heroPill && (
           // The last picture stays, dimmed; this says why. Tap: try again.
           <button

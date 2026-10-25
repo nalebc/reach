@@ -37,11 +37,13 @@ test(
         sourcefile: "home-layout-fixture.tsx",
         loader: "tsx",
         contents: `
-import React, { useState } from "react";
+import React, { useState, useContext } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { Home, MonitorUp, LayoutGrid, Bell, Settings, ChevronDown } from "lucide-react";
 import HomeLive from ${abs("src/HomeLive.tsx")};
+import { WorkspaceAtmosphere } from ${abs("src/WorkspaceAtmosphere.tsx")};
+import { MotionContext } from ${abs("src/motion.ts")};
 import Screen from ${abs("src/Screen.tsx")};
 import { PinnedTools, usePinnedTools } from ${abs("src/ToolsPage.tsx")};
 import MobileNav from ${abs("src/MobileNav.tsx")};
@@ -54,18 +56,20 @@ const features = workspaceCapabilities(device);
 const routes = { "/api/handoffs": [], "/api/agents/admissions": [], "/api/agents/browser-requests": [], "/api/clients": { clients: [] }, "/api/agents/permissions": { permissions: [] }, "/api/agents/services": { access: [] }, "/api/screen/displays": { displays: [] }, "/api/screen/control": { enabled: true }, "/api/notifications": { items: [] } };
 window.fetch = async input => new Response(JSON.stringify(routes[new URL(typeof input === "string" ? input : input.url, location.href).pathname] || {}), { headers: { "Content-Type": "application/json" } });
 if (!localStorage.getItem("reach.pinnedTools")) localStorage.setItem("reach.pinnedTools", '["sessions"]');
+sessionStorage.setItem("reach.arrival.v1", "seen");
 function Fixture() {
+ const motion = useContext(MotionContext);
  const [page, setPage] = useState("overview");
  const [pending, setPending] = useState(false);
  const { pinned, toggle, move } = usePinnedTools();
- window.__fixture = { show: p => flushSync(() => setPage(p)), needs: () => flushSync(() => setPending(true)), frame: () => computer.frame() };
+ window.__fixture = { page, toggleMotion: () => flushSync(() => motion.toggle()), show: p => flushSync(() => setPage(p)), needs: () => flushSync(() => setPending(true)), frame: () => computer.frame() };
  return <div className="app-shell"><div className="main-shell">
  <header className="topbar"><button className="workspace-computer"><i className="status-dot"/><span>{device.name}</span><ChevronDown size={16}/></button><div className="topbar-right"><button className="icon-button notification-bell"><Bell size={20}/></button><button className="icon-button workspace-settings"><Settings size={20}/></button></div></header>
  <main className={"main-content page-" + page}>{page === "screen" ? <Screen peer={peer} device={device} toast={() => {}} onChanged={() => {}}/> : <HomeLive features={features} device={device} peer={peer} active="mac" connections={{ mac: { state: "connected", devices: [] } }} connection="Tailscale" chats={[]} pending={pending ? [{ id: "ask", name: "Sam", scopes: ["screen"] }] : []} decide={() => {}} navigate={setPage} openChat={() => {}} refreshSessions={() => {}} toast={() => {}} pinnedTools={<PinnedTools features={features} pinned={pinned} onTogglePin={toggle} onMove={move} onNavigate={() => {}}/>}/>}</main>
  <MobileNav current={page} items={[{ id:"overview", label:"Home", icon:<Home/> },{ id:"screen", label:"Screen", icon:<MonitorUp/> },{ id:"tools", label:"Tools", icon:<LayoutGrid/> }]} onNavigate={setPage}/>
  </div></div>;
 }
-flushSync(() => createRoot(document.getElementById("root")).render(<Fixture/>));
+flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtmosphere><Fixture/></WorkspaceAtmosphere>));
 `,
       },
       plugins: [
@@ -162,6 +166,8 @@ flushSync(() => createRoot(document.getElementById("root")).render(<Fixture/>));
     await tab.send("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "reduce" }],
     });
+    const pause = ms => tab.evaluate(`new Promise(resolve => setTimeout(resolve, ${ms}))`);
+    const pose = () => tab.evaluate(`(() => { const actor = document.querySelector('.home-scene .courier-actor'); return [actor.getAttribute('transform'), ...[...actor.querySelectorAll('.actor-arm')].map(a => a.getAttribute('d'))]; })()`);
     const results = [];
     for (const [width, height] of [
       [320, 740],
@@ -205,6 +211,17 @@ flushSync(() => createRoot(document.getElementById("root")).render(<Fixture/>));
         result.shortcuts.bottom < height - 65,
         "shortcuts fit in the first screen",
       );
+      assert.equal(await tab.evaluate("document.querySelectorAll('button button').length"), 0, "mascot and Screen have independent native buttons");
+      const reducedPose = await pose();
+      await click('[aria-label="Say hello to Reach"]');
+      assert.equal(await tab.evaluate("window.__fixture.page"), "overview", "greeting never opens Screen");
+      assert.equal(await tab.evaluate("document.querySelector('.reach-mascot-feedback').textContent"), "Reach says hello!");
+      assert.equal(await tab.evaluate("document.querySelector('.reach-mascot-button').closest('[aria-hidden=true]') === null"), true, "the greeting is accessible");
+      await pause(120);
+      assert.deepEqual(await pose(), reducedPose, "Reduce Motion keeps the mascot still after a tap");
+      assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.home-hero-scene'), '::before').animationName"), "none");
+      const heartShot = await tab.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(report, `greeting-${width}.png`), Buffer.from(heartShot.data, "base64"));
       await click('[aria-label="Edit shortcuts"]');
       await click('[aria-label="Add Files to Shortcuts"]');
       await click('[aria-label="Move Files earlier"]');
@@ -250,6 +267,52 @@ flushSync(() => createRoot(document.getElementById("root")).render(<Fixture/>));
         );
       }
     }
+    await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await tab.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
+    await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
+    await frame();
+    assert.equal(await tab.evaluate("document.querySelector('.courier-actor').getAttribute('data-action')"), "wave", "Home opens with a welcome wave");
+    assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.home-hero-scene'), '::before').animationName"), "home-glow");
+    const waveBefore = await pose();
+    await pause(180);
+    assert.notDeepEqual(await pose(), waveBefore, "the greeting is actually animated");
+    await tab.evaluate(`new Promise((resolve, reject) => {
+      const until = performance.now() + 8000;
+      const check = () => {
+        if (document.querySelector('.courier-actor').getAttribute('data-action') === 'walk') return resolve();
+        if (performance.now() > until) return reject(Error('the welcome did not finish'));
+        requestAnimationFrame(check);
+      };
+      check();
+    })`);
+    const roaming = await pose();
+    await pause(180);
+    assert.notDeepEqual((await pose())[0], roaming[0], "the existing route resumes after the welcome");
+    const at = await tab.evaluate(`(() => { const b = document.querySelector('.reach-mascot-button'); const r = b.getBoundingClientRect(); return { x:r.x+r.width/2, y:r.y+r.height/2 }; })()`);
+    await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
+    await frame();
+    const heldPose = await pose();
+    await pause(200);
+    assert.deepEqual(await pose(), heldPose, "the moving target stays put while pressed");
+    await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await frame();
+    assert.equal(await tab.evaluate("window.__fixture.page"), "overview");
+    assert.equal(await tab.evaluate("document.querySelector('.reach-mascot-feedback').textContent"), "Reach says hello!");
+    assert.equal(await tab.evaluate("document.querySelector('.courier-actor').getAttribute('data-action')"), "wave", "a tap waves from the current position");
+    await tab.evaluate("window.__previousHeart = document.querySelector('.reach-mascot-heart'); document.querySelector('.reach-mascot-button').focus()");
+    await tab.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", unmodifiedText: "\r", windowsVirtualKeyCode: 13 });
+    await tab.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await frame();
+    assert.equal(await tab.evaluate("window.__fixture.page"), "overview", "keyboard greeting never opens Screen");
+    assert.equal(await tab.evaluate("window.__previousHeart !== document.querySelector('.reach-mascot-heart')"), true, "Enter triggers a fresh greeting");
+    await tab.evaluate("document.activeElement.blur(); window.__fixture.toggleMotion()");
+    await frame();
+    const pausedPose = await pose();
+    await pause(180);
+    assert.deepEqual(await pose(), pausedPose, "Reach's motion setting also stops the mascot");
+    assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.home-hero-scene'), '::before').animationName"), "none");
+    await click('.home-screen-open');
+    assert.equal(await tab.evaluate("window.__fixture.page"), "screen", "the original Open screen action still works");
     fs.writeFileSync(
       path.join(report, "layout.json"),
       JSON.stringify(

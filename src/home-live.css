@@ -22,6 +22,7 @@
   width: 100%;
   max-width: 420px;
   aspect-ratio: 400 / 275;
+  isolation: isolate;
   margin: 0 auto;
   padding: 0;
   border: 0;
@@ -31,12 +32,13 @@
 .home-hero-scene .home-scene {
   position: absolute;
   inset: 0;
-  z-index: 1;
+  z-index: 3;
+  pointer-events: none;
 }
 /* The original 400 × 275 scene; overscan keeps the live display behind its bezel. */
 .home-peek {
   position: absolute;
-  z-index: 0;
+  z-index: 1;
   left: 33.7%;
   top: 31.2%;
   width: 39.4%;
@@ -96,10 +98,10 @@
   font-size: 12px;
   font-weight: 500;
 }
-.home-hero-scene:active .home-screen-open {
+.home-screen-launch:active .home-screen-open {
   background: #b9efd42b;
 }
-.home-hero-scene:disabled {
+.home-screen-launch:disabled {
   cursor: default;
   opacity: 0.65;
 }
@@ -213,5 +215,112 @@
 @media (prefers-reduced-motion: reduce) {
   .home-peek {
     transition: none;
+  }
+}
+
+/* A soft light moves behind the existing scene, independently of live pixels. */
+.home-hero-scene::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 8% 2% 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at center,
+    #b9efd419,
+    #88c7a108 48%,
+    transparent 72%
+  );
+  pointer-events: none;
+  opacity: 0.7;
+}
+.home-hero-scene.is-playing::before {
+  animation: home-glow 10s ease-in-out infinite;
+}
+@keyframes home-glow {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: translate(-2%, 1%) scale(0.96);
+  }
+  50% {
+    opacity: 0.95;
+    transform: translate(2%, -2%) scale(1.04);
+  }
+}
+.home-screen-launch {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.home-scene .reach-mascot-button {
+  position: absolute;
+  left: 19.5%;
+  top: 90.909%;
+  transform: translate(-50%, calc(-100% + 6px));
+  width: 44px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--lime);
+  pointer-events: auto;
+  touch-action: manipulation;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.home-scene .reach-mascot-button:active {
+  background: #b9efd414;
+}
+.reach-mascot-heart {
+  position: absolute;
+  bottom: calc(100% - 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.reach-mascot-heart svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.home-scene.is-playing .reach-mascot-heart {
+  animation: mascot-heart 1.8s ease-out both;
+}
+@keyframes mascot-heart {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 4px) scale(0.8);
+  }
+  20%,
+  65% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(1);
+  }
+}
+.reach-mascot-feedback {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-hero-scene.is-playing::before,
+  .home-scene.is-playing .reach-mascot-heart {
+    animation: none;
   }
 }
