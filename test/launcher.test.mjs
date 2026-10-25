@@ -146,8 +146,10 @@ test(
     const waitFor = async (check) => {
       const deadline = Date.now() + 12000;
       while (!check()) {
+        // What the launcher said (on Windows it refuses folders others can
+        // change, and says which): the failure names its own cause.
         if (child.exitCode !== null || Date.now() > deadline)
-          throw Error("Launcher did not become ready.");
+          throw Error(`Launcher did not become ready (exit ${child.exitCode ?? "none"}):\n${output.slice(-2000)}`);
         await new Promise((r) => setTimeout(r, 30));
       }
     };
