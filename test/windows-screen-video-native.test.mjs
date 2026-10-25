@@ -14,6 +14,7 @@ import { AnnexBFrames, forgetWindowsVideo, windowsVideoChoice } from "../server/
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
+import { closeServer } from "./helpers/close-server.mjs";
 import { clearRunnerDesktop, lookAtRunnerDesktop } from "./helpers/windows-fixtures.mjs";
 
 // Windows' live screen as H.264 with nothing installed (parity audit #26):
@@ -360,9 +361,8 @@ async function decodeInBrowser(t, packets, points, every = false) {
     const result = await tab.evaluate(`decodeAll(${JSON.stringify(points)}, ${every})`);
     return { browser: (await chrome.send("Browser.getVersion")).product, problems: tab.problems, ...result };
   } finally {
-    // Chrome first: the server's close waits for its connections.
     await chrome.close();
-    server.close();
+    await closeServer(server, { label: "video page server" });
   }
 }
 // Within a few levels per channel of what was on screen (BT.709, video
