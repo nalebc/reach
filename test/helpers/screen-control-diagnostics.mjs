@@ -3,6 +3,29 @@
 export function createScreenControlDiagnostics() {
   const events = [], lifecycle = [];
   let dropped = 0, lifecycleDropped = 0;
+  // A page that stops for a second or more (Oct 24-25, the iPad page sent and
+  // received nothing for 8.4 s): long tasks inside the gap mean the page's own
+  // work ran long; a gap without them means the browser itself was starved.
+  const gaps = [], longTasks = [];
+  let lastTick;
+  const tick = now => {
+    if (!Number.isFinite(now)) return;
+    if (Number.isFinite(lastTick) && now - lastTick >= 1000) {
+      gaps.push({ from: lastTick, to: now, visible: typeof document === "object" && document ? document.visibilityState === "visible" : null });
+      if (gaps.length > 32) gaps.shift();
+    }
+    lastTick = now;
+  };
+  const taskNames = new Set(["self", "same-origin", "same-origin-ancestor", "same-origin-descendant", "cross-origin-ancestor", "cross-origin-descendant", "cross-origin-unreachable", "multiple-contexts", "unknown"]);
+  const longTask = entry => {
+    if (!entry || !Number.isFinite(entry.startTime) || !Number.isFinite(entry.duration) || entry.duration < 200) return;
+    longTasks.push({ start: Math.round(entry.startTime), duration: Math.round(entry.duration), name: taskNames.has(entry.name) ? entry.name : "unknown" });
+    if (longTasks.length > 64) longTasks.shift();
+  };
+  if (typeof window === "object" && window && typeof setInterval === "function") {
+    try { setInterval(() => tick(performance.now()), 100); } catch {}
+    try { new PerformanceObserver(list => { for (const entry of list.getEntries()) longTask(entry); }).observe({ type: "longtask", buffered: true }); } catch {}
+  }
   const messages = new Set([
     "Authenticate first.",
     "Desktop control ended.",
@@ -66,8 +89,20 @@ export function createScreenControlDiagnostics() {
   };
   return {
     record,
+    tick,
+    longTask,
     drain() {
-      const result = { version: 1, events: events.splice(0), dropped, lifecycle: lifecycle.splice(0), lifecycleDropped };
+      // Overlap is computed here: a long task's entry can arrive after the
+      // tick that ended its gap.
+      const tasks = longTasks.splice(0);
+      const stalls = {
+        gaps: gaps.splice(0).map(gap => ({
+          t: Math.round(gap.from), gapMs: Math.round(gap.to - gap.from), visible: gap.visible,
+          longTaskMs: tasks.reduce((sum, task) => sum + Math.max(0, Math.min(gap.to, task.start + task.duration) - Math.max(gap.from, task.start)), 0),
+        })),
+        longTasks: tasks,
+      };
+      const result = { version: 1, events: events.splice(0), dropped, lifecycle: lifecycle.splice(0), lifecycleDropped, stalls };
       dropped = lifecycleDropped = 0;
       return result;
     },
