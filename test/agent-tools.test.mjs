@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { createAgentTools } from "../server/agent-tools.mjs";
+import { createAgentTools, sameToolPage } from "../server/agent-tools.mjs";
 import {
   validateToolDefinition,
   toolInputs,
@@ -665,6 +665,35 @@ test("existing drafts are preserved and missing or tampered file handles fail be
     /expired or belongs/,
   );
   assert.equal(f.driver.counters.drafts, 0);
+});
+
+test("a page is the one asked for when its address says the same thing, spelled the site's way", () => {
+  const wanted = "https://mail.google.com/mail/u/0/#search/unpaid%20invoice%20from%3Aacme";
+  assert.equal(sameToolPage(wanted, wanted), true);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/unpaid+invoice+from:acme", wanted), true);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/unpaid+invoice", wanted), false, "another search");
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/1/#search/unpaid+invoice+from:acme", wanted), false, "another account");
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/?x=1#search/unpaid+invoice+from:acme", wanted), false, "another query string");
+  assert.equal(sameToolPage("https://evil.example/mail/u/0/#search/unpaid+invoice+from:acme", wanted), false, "another site");
+  // A literal plus asked for (%2B) is not a space written back as +.
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/a+b", "https://mail.google.com/mail/u/0/#search/a%2Bb"), false);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/a%2Bb", "https://mail.google.com/mail/u/0/#search/a%2Bb"), true);
+  // Without a fragment asked for, only the exact address.
+  assert.equal(sameToolPage("https://example.com/a?b=c+d", "https://example.com/a?b=c%20d"), false);
+  assert.equal(sameToolPage("https://mail.google.com/mail/u/0/#search/%E0%A4%A", wanted), false, "unreadable");
+});
+
+test("Gmail's own spelling of a search address is the page the search asked for", async (t) => {
+  const f = setup(t);
+  f.driver.rewrite = (url) => url.replace(/%20/g, "+");
+  const search = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(search.status, "completed");
+  assert.equal(search.data.messages.items.length, 1);
+  // A page that says something else is still not the one asked for.
+  f.driver.rewrite = (url) => url.replace(/#search\/.*/, "#search/other");
+  const other = await f.run("builtin_gmail_find", { query: "unpaid invoice" });
+  assert.equal(other.status, "stopped");
+  assert.equal(other.code, "loading");
 });
 
 test("declared empty results are distinguished from page drift, and hidden matches do not cause ambiguity", async (t) => {
