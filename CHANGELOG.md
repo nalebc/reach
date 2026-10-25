@@ -8,7 +8,7 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-## [0.4.2] — 2026-10-24
+## [0.4.2] — 2026-10-25
 
 Early-access candidate including the file editing, terminal clipboard paste
 and Windows setup fixes prepared for the unpublished 0.4.0 and 0.4.1 candidates.
