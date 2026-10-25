@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 import { assertDisposableWindows, desktopRequiredForSelection, desktopSourcePayload, lastDesktopCheckpoint } from "../.github/scripts/prepare-windows-desktop.mjs";
+import * as desktopDiagnostics from "../.github/scripts/prepare-windows-desktop.mjs";
 
 const hosted = { SystemRoot: "C:\\Windows", GITHUB_ACTIONS: "true", CI: "true", RUNNER_ENVIRONMENT: "github-hosted",
   GITHUB_REPOSITORY: "nalebc/reach", REACH_CI_DESKTOP_PREFLIGHT: "1" };
@@ -42,6 +43,52 @@ test("CI desktop progress retains only the last exact allowlisted marker", () =>
     `${marker}probe-show\u0000`, `${marker}probe-show `]) assert.equal(lastDesktopCheckpoint(line), null);
   assert.equal(lastDesktopCheckpoint(undefined), null);
   assert.equal(lastDesktopCheckpoint(`${marker}compiled\n${marker}secret-token`), "compiled");
+});
+
+test("desktop diagnostic timing tuples retain only bounded known stages and one monotonic own process", () => {
+  assert.equal(typeof desktopDiagnostics.desktopTimingEvidence, "function");
+  const parse = desktopDiagnostics.desktopTimingEvidence;
+  const prefix = "REACH_CI_DESKTOP_TIME:";
+  const result = parse(`${prefix}compile-start:4:4321\r\n${prefix}compiled:1200:4321\n${prefix}probe-pixel-copied:1410:4321\n`);
+  assert.deepEqual(result, { samples: [
+    { stage: "compile-start", elapsedMs: 4, pid: 4321 },
+    { stage: "compiled", elapsedMs: 1200, pid: 4321 },
+    { stage: "probe-pixel-copied", elapsedMs: 1410, pid: 4321 },
+  ], rejected: 0, truncated: false });
+  for (const tuple of ["secret-token:1:4321", "compiled secret-token:1:4321", "compiled:-1:4321",
+    "compiled:1.5:4321", "compiled:1e3:4321", "compiled:120001:4321", "compiled:9999999:4321",
+    "compiled:1:-1", "compiled:1:0", "compiled:1:1", "compiled:1:2147483648", "compiled:1:999999999999",
+    "compiled:1:4321:secret-token", "compiled:1:4321\0", "compiled:1:4321 secret-token"])
+    assert.deepEqual(parse(prefix + tuple), { samples: [], rejected: 1, truncated: false }, tuple);
+  assert.deepEqual(parse(`${prefix}compiled:10:4321\n${prefix}probe-pixel:9:4321\n${prefix}probe-pixel:11:4322\n`),
+    { samples: [{ stage: "compiled", elapsedMs: 10, pid: 4321 }], rejected: 2, truncated: false });
+  assert.deepEqual(parse(` ${prefix}compiled:1:4321\nprivate stderr`), { samples: [], rejected: 0, truncated: false });
+  assert.deepEqual(parse(`${prefix}compiled:1:4321\n` + "x".repeat(128 * 1024)), { samples: [], rejected: 0, truncated: false });
+  const many = parse(Array.from({ length: 49 }, (_, i) => `${prefix}compiled:${i}:4321`).join("\n"));
+  assert.equal(many.samples.length, 48);
+  assert.equal(many.truncated, true);
+  assert.equal(many.rejected, 0);
+  assert.equal(JSON.stringify(parse(`${prefix}secret-token:1:4321`)).includes("secret-token"), false);
+});
+
+test("desktop failure diagnostics expose only bounded exit facts and native completion booleans", () => {
+  assert.equal(typeof desktopDiagnostics.desktopFailureEvidence, "function");
+  const parse = desktopDiagnostics.desktopFailureEvidence;
+  const stdout = JSON.stringify({ schema: 1, ready: true, secret: "secret-token", actions: ["private command"] });
+  assert.deepEqual(parse({ code: "ETIMEDOUT", status: null, signal: "SIGTERM", stdout: Buffer.from(stdout),
+    message: "secret-token", args: ["private command"], env: { secret: "secret-token" } }),
+    { code: "ETIMEDOUT", status: null, signal: "SIGTERM", stdoutBytes: Buffer.byteLength(stdout), nativeReportComplete: true, nativeReady: true });
+  assert.equal(JSON.stringify(parse({ code: "secret-token", signal: "private command", status: Infinity, stdout })).includes("secret-token"), false);
+  for (const status of [-2147483648, 0, 1, 4294967295]) assert.equal(parse({ status }).status, status);
+  for (const status of [-2147483649, 4294967296, 1.5, Infinity, "1"]) assert.equal(parse({ status }).status, null);
+  for (const body of ["secret-token", "{}", "[]", '{"schema":1,"ready":"secret-token"}', "x".repeat(128 * 1024 + 1)]) {
+    const result = parse({ stdout: body });
+    assert.equal(result.nativeReportComplete, false);
+    assert.equal(result.nativeReady, null);
+    assert.ok(result.stdoutBytes <= 128 * 1024 + 1);
+    assert.equal(JSON.stringify(result).includes("secret-token"), false);
+  }
+  assert.equal(parse({ stdout: '{"schema":1,"ready":false}' }).nativeReady, false);
 });
 
 test("the actual checked-in C# has one bounded payload across LF and CRLF filesystem checkouts", () => {
