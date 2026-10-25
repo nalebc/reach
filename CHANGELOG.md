@@ -75,8 +75,10 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
   the current field. Never replay typing whose delivery is unknown or send
   a waiting draft automatically into a replacement field. With nothing
   waiting, the next tap on a text field types again and an ordinary tap
-  dismisses the keyboard; waiting typing can be sent or discarded. Keep
-  native secure keyboard context synchronized with the phone after Return.
+  dismisses the keyboard; waiting typing can be sent or discarded. Input the
+  browser couldn't hand to an already-closing connection counts as never
+  sent, not as of unknown delivery. Keep native secure keyboard context
+  synchronized with the phone after Return.
 - Keep known-unsent typing across verified private handoffs and media gaps.
   A different approved device credential requires Control again, and delayed
   replies from an old grant cannot enable or release its replacement.

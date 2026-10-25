@@ -72,14 +72,20 @@ class FakeSocket {
   static last;
   constructor() {
     this.sent = [];
+    // A browser socket's states: connecting, then open; closed once closed.
+    this.readyState = 0;
     FakeSocket.last = this;
-    setTimeout(() => this.onopen?.(), 0);
+    setTimeout(() => {
+      this.readyState = 1;
+      this.onopen?.();
+    }, 0);
   }
   send(m) {
     this.sent.push(JSON.parse(m));
   }
   close() {
     this.closed = true;
+    this.readyState = 3;
   }
   push(m) {
     this.onmessage?.({ data: JSON.stringify(m) });

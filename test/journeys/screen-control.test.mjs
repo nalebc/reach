@@ -200,7 +200,22 @@ async function stressRun(t, kind) {
       caption: document.querySelector(".simple-screen-caption")?.innerText || "",
       shown: [...document.querySelectorAll(".screen-feedback, .screen-gesture-feedback, .screen-error, [role=alert], .toast")].map((e) => e.innerText).filter(Boolean).join(" | ").slice(0, 300),
     }))()`);
+    // A phone button, pressed as a person does (a touch at its middle).
+    const pressButton = async (label) => {
+      const b = await page.evaluate(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      if (!b) return false;
+      await touchDown(b.x, b.y);
+      await sleep(80);
+      await touchUp();
+      return true;
+    };
     const ensureControl = async (scenario) => {
+      // Typing still waiting from an earlier reconnect would hold this
+      // scenario's typing too: say so, and start it from fresh typing.
+      if (await pressButton("Discard waiting typing")) {
+        problem(scenario, "typing was still waiting from an earlier reconnect (discarded it)", await status());
+        await sleep(400);
+      }
       const s = await status();
       if (s.control && !/View only|Connecting|Reconnecting/.test(s.caption)) return;
       problem(scenario, "control was off before the scenario (turning it back on)", s);
@@ -531,16 +546,8 @@ async function stressRun(t, kind) {
         // unconfirmed edit is missing; nothing is doubled or reordered.
         reconnect = { closes, before: got?.now.slice(start.length) };
         const paused = await page.see(() => /Typing paused/.test(document.body.innerText), "typing paused after the reconnect", 10000).then(() => true, () => false);
-        const press = async (label) => {
-          const b = await page.evaluate(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-          if (!b) return false;
-          await touchDown(b.x, b.y);
-          await sleep(80);
-          await touchUp();
-          return true;
-        };
         if (!paused) problem(name, "controls reconnected mid-typing but typing wasn't paused", { ...reconnect, phone: await status() });
-        else if (!(await page.see(() => [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Send waiting typing to current field" && !b.disabled), "Send enabled", 15000).then(() => press("Send waiting typing to current field"), () => false)))
+        else if (!(await page.see(() => [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Send waiting typing to current field" && !b.disabled), "Send enabled", 15000).then(() => pressButton("Send waiting typing to current field"), () => false)))
           problem(name, "couldn't send the typing that waited after the reconnect", { ...reconnect, phone: await status() });
         const want = expected.slice(start.length);
         // `have` is `want` with one contiguous piece of at most 8 characters
@@ -556,7 +563,7 @@ async function stressRun(t, kind) {
         reconnect.after = got?.now.slice(start.length);
         if (!got?.ok) problem(name, "after the reconnect, waiting typing didn't arrive exactly once", { expected: want, ...reconnect, phone: await status() });
         // Whatever happened, the next scenario starts from fresh typing.
-        if (await page.evaluate(`/Typing paused/.test(document.body.innerText)`)) await press("Discard waiting typing");
+        if (await page.evaluate(`/Typing paused/.test(document.body.innerText)`)) await pressButton("Discard waiting typing");
         log = [...log, ...(await trace())];
       } else if (!got?.ok) problem(name, "typed text differs from what reached the Mac", { expected: expected.slice(start.length), got: got?.now.slice(start.length), phone: await status() });
       const drops = log.filter((e) => e.dir === "in" && e.m?.type === "ack" && e.m.ok === false);

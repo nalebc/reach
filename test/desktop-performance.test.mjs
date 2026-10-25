@@ -132,6 +132,28 @@ test("only a transient connection end marks rejected input; only never-transmitt
     assert.deepEqual(sent.map(item => item.action.text), ["ab"]);
   }
 });
+test("input the socket refused to transmit is notSent, never an unknown delivery", async () => {
+  // The browser's socket is already closing (the computer closed it first):
+  // the hook refuses to hand it anything, so that action never left.
+  const sent = [], failures = [];
+  let open = true;
+  const queue = new DesktopInputQueue((id, action) => {
+    if (!open) throw Error("Desktop input disconnected.");
+    sent.push({ id, action });
+  }, (line) => { failures.push(line); queue.close(true); }, 2);
+  const delivered = queue.enqueue({ type: "type-edit", delete: 0, text: "ab", focus: "old" }).catch(e => e);
+  open = false;
+  const refused = queue.enqueue({ type: "type-edit", delete: 0, text: "cd", focus: "old" }).catch(e => e);
+  const after = queue.enqueue({ type: "key", key: "enter", modifiers: [] }).catch(e => e);
+  const [unknown, unsent, later] = await Promise.all([delivered, refused, after]);
+  assert.deepEqual(sent.map(item => item.action.text), ["ab"]);
+  assert.equal(unknown.notSent, undefined, "ab left: its outcome stays unknown");
+  assert.equal(unsent.notSent, true, "cd was never transmitted");
+  assert.equal(isInputReconnect(unsent), true);
+  assert.equal(later.notSent, true);
+  assert.equal(failures.length, 1);
+});
+
 test("a host typing refusal cannot copy local reconnect or notSent markers", async () => {
   const queue = new DesktopInputQueue(() => {}, () => {}, 1);
   const refused = queue.enqueue({ type: "text", text: "refused" }).catch(e => e);
