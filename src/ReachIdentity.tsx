@@ -121,10 +121,13 @@ export const ReachScene = memo(function ReachScene({
   className = "",
   connected = false,
   liveScreen = false,
+  compact = false,
 }: {
   connected?: boolean;
   /** A live view of the computer is placed under the laptop's display. */
   liveScreen?: boolean;
+  /** Tighter Home framing; keeps the courier’s whole route visible. */
+  compact?: boolean;
   mode?: "journey" | "computer" | "loading";
   companion?: boolean;
   className?: string;
@@ -165,7 +168,10 @@ export const ReachScene = memo(function ReachScene({
       }
       aria-hidden="true"
     >
-      <svg viewBox={single ? "0 -40 400 275" : "0 0 480 265"} fill="none">
+      <svg
+        viewBox={single ? (compact ? "20 -16 360 236" : "0 -40 400 275") : "0 0 480 265"}
+        fill="none"
+      >
         <g className="scene-specks" fill="currentColor">
           {Array.from({ length: liveScreen ? 0 : 24 }, (_, i) => (
             <rect

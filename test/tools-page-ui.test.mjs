@@ -44,8 +44,11 @@ test("Tools works for Mac and Windows, with chat as an optional destination and 
       );
       for (const link of links) link.click();
       assert.equal(calls.length, expected.length);
-      if (!scopes)
+      if (!scopes) {
         assert.match(view.container.textContent, /2 conversations need you/);
+        view.container.querySelector(".tools-invite").click();
+        assert.equal(calls.at(-1), "invite:new");
+      } else assert.equal(view.container.querySelector(".tools-invite"), null);
       if (!expected.length)
         assert.match(view.container.textContent, /No additional tools/);
       await view.unmount();
@@ -101,6 +104,48 @@ test("pinning gives inline feedback, persists on Home, and never bypasses anothe
   await settle();
   assert.equal(view.container.querySelector(".home-pinned"), null);
   assert.deepEqual(JSON.parse(localStorage.getItem("reach.pinnedTools")), []);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});
+
+test("Home shortcuts can be added, removed and reordered; hidden permissions keep their saved place", async () => {
+  localStorage.setItem("reach.pinnedTools", JSON.stringify(["sessions", "terminal", "files", "sessions", "invalid"]));
+  function Home({ scopes }) {
+    const { pinned, toggle, move } = usePinnedTools();
+    return dom.React.createElement(PinnedTools, { features: features("win32", scopes), pinned,
+      onNavigate() {}, onTogglePin: toggle, onMove: move });
+  }
+  const names = () => [...dom.document.querySelectorAll(".shortcut-open span")].map(el => el.textContent);
+  let view = await dom.render(dom.React.createElement(Home, { scopes: ["files:read", "terminal"] }));
+  assert.deepEqual(names(), ["Terminal", "Files"]);
+  view.container.querySelector('[aria-label="Edit shortcuts"]').click();
+  await settle();
+  assert.equal(view.container.querySelector('[aria-label="Move Terminal earlier"]').disabled, true);
+  assert.equal(view.container.querySelector('[aria-label="Move Files later"]').disabled, true);
+  view.container.querySelector('[aria-label="Move Files earlier"]').click();
+  await settle();
+  assert.deepEqual(JSON.parse(localStorage.getItem("reach.pinnedTools")), ["sessions", "files", "terminal"]);
+  assert.match(view.container.querySelector('[role="status"]').textContent, /Files moved earlier/);
+  assert.doesNotMatch(view.container.textContent, /Chat/);
+  await view.unmount();
+  view = await dom.render(dom.React.createElement(Home));
+  assert.deepEqual(names(), ["Chat", "Files", "Terminal"], "saved order survives remount and a different grant");
+  view.container.querySelector('[aria-label="Edit shortcuts"]').click();
+  await settle();
+  view.container.querySelector('[aria-label="Remove Terminal from Shortcuts"]').click();
+  await settle();
+  view.container.querySelector('[aria-label="Add Terminal to Shortcuts"]').click();
+  await settle();
+  view.container.querySelector('[aria-label="Done editing shortcuts"]').click();
+  await settle();
+  assert.deepEqual(names(), ["Chat", "Files", "Terminal"]);
+  await view.unmount();
+  localStorage.removeItem("reach.pinnedTools");
+  view = await dom.render(dom.React.createElement(Home));
+  assert.deepEqual(names(), [], "no tools are automatically pinned");
+  view.container.querySelector(".shortcuts-add").click();
+  await settle();
+  assert.ok(view.container.querySelector('[aria-label="Add Chat to Shortcuts"]'));
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });

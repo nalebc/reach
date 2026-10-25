@@ -291,7 +291,7 @@ function ReachWorkspace() {
     agent: AgentName | "openclaw";
     id: string;
   } | null>(null);
-  const { pinned, toggle: togglePin } = usePinnedTools();
+  const { pinned, toggle: togglePin, move: movePin } = usePinnedTools();
   const visiblePages = menuPages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
     .filter((p) => mobileOrder.includes(p.id))
@@ -1051,7 +1051,7 @@ function ReachWorkspace() {
                 {page === "overview" && (
                   <HomeLive
                     pinnedTools={
-                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} />
+                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} onTogglePin={togglePin} onMove={movePin} />
                     }
                     features={features}
                     device={device}

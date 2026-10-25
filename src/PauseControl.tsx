@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Pause, Play } from "lucide-react";
+import { LoaderCircle, Pause, Play } from "lucide-react";
 import type { Peer } from "./api";
 import { computerWord, setPaused } from "./pause";
 import "./pause.css";
@@ -27,6 +27,7 @@ export function usePauseToggle(
     setBusy(true);
     try {
       await setPaused(peer, value);
+      toast?.(value ? "Reach paused" : "Reach resumed");
       settle.current = setTimeout(() => setWant(null), 4000);
     } catch (e) {
       setWant(null);
@@ -62,11 +63,14 @@ export function PauseButton({
       className={`icon-button pause-button ${pause.paused ? "is-paused" : ""} ${className}`}
       aria-label={label}
       aria-pressed={pause.paused}
+      aria-busy={pause.busy || undefined}
       title={label}
       disabled={pause.busy}
       onClick={() => void pause.toggle()}
     >
-      {pause.paused ? (
+      {pause.busy ? (
+        <LoaderCircle size={17} className="spin" />
+      ) : pause.paused ? (
         <Play size={17} fill="currentColor" />
       ) : (
         <Pause size={17} fill="currentColor" />
@@ -108,9 +112,15 @@ export function PausedCover({
         <button
           className="button primary small"
           disabled={pause.busy || !pause.paused}
+          aria-busy={pause.busy || undefined}
           onClick={() => void pause.toggle(false)}
         >
-          <Play size={15} fill="currentColor" /> Resume
+          {pause.busy ? (
+            <LoaderCircle size={15} className="spin" />
+          ) : (
+            <Play size={15} fill="currentColor" />
+          )}{" "}
+          {pause.busy ? "Resuming…" : "Resume"}
         </button>
       )}
       {children}

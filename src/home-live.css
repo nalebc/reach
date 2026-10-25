@@ -1,4 +1,4 @@
-/* Home: the live computer, access, requests that need you, and pinned tools. */
+/* The same Reach artwork and palette, with attention before everyday actions. */
 .home-live {
   display: flex;
   flex-direction: column;
@@ -9,19 +9,18 @@
 }
 .home-hero {
   position: relative;
-  padding: 14px 14px 18px;
+  padding: 12px 14px 14px;
   border: 1px solid #b5e9dc20;
   border-radius: 24px;
   background:
     radial-gradient(ellipse at 50% 70%, #22473e30, transparent 65%), #0d171d;
-  text-align: center;
 }
 .home-hero-scene {
   position: relative;
   display: block;
   width: 100%;
-  max-width: 420px;
-  aspect-ratio: 400 / 275;
+  max-width: 360px;
+  aspect-ratio: 360 / 236;
   margin: 0 auto;
   padding: 0;
   border: 0;
@@ -33,66 +32,172 @@
   inset: 0;
   z-index: 1;
 }
-/* The laptop's display in the scene's 400 × 275 drawing, slightly oversized so
-   no seam shows under the bezel. */
+/* The original laptop's display, in the tighter 20 -16 360 236 framing. */
 .home-peek {
   position: absolute;
   z-index: 0;
-  left: 33.7%;
-  top: 31.2%;
-  width: 39.4%;
-  height: 34.8%;
+  left: 31.95%;
+  top: 26.2%;
+  width: 43.8%;
+  height: 40.4%;
   object-fit: cover;
   background: #101b18;
   opacity: 0;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.3s ease;
 }
 .home-peek.is-live {
   opacity: 1;
 }
-/* No fresh picture (asleep, locked, reconnecting): the last one, dimmed. */
 .home-peek.is-live.is-held {
   opacity: 0.45;
   filter: grayscale(0.6);
 }
-/* Why, top right across from Pause: one small pill; tap tries again. */
-.home-hero-status {
+.home-preview-state {
   position: absolute;
   z-index: 2;
-  top: 10px;
-  right: 10px;
-  max-width: 45%;
-  padding: 4px 10px;
+  top: 18px;
+  right: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+.home-hero-status {
+  display: block;
+  position: relative;
+  z-index: 2;
+  margin: 0 auto 8px;
+  min-height: 44px;
+  padding: 8px 14px;
   border: 1px solid #b5e9dc26;
   border-radius: 999px;
   background: #0d171dcc;
-  color: var(--muted, #93a096);
+  color: var(--text);
   font: inherit;
-  font-size: 11.5px;
-  line-height: 16px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 13px;
   cursor: pointer;
 }
-.home-live .home-hero-text h1 {
-  margin: 6px 0 2px;
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+.home-hero-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
-.home-live .home-hero-text p {
+.home-screen-open {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--muted, #93a096);
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #b9efd414;
+  color: var(--lime);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+}
+.home-screen-open:active {
+  background: #b9efd42b;
+}
+.home-screen-open:disabled,
+.home-hero-scene:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+.home-connection {
+  position: relative;
+  min-width: 0;
+}
+.home-connection summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  min-height: 44px;
+  padding: 8px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.home-connection summary::-webkit-details-marker {
+  display: none;
+}
+.home-connection summary::after {
+  content: "⌄";
+  font-size: 16px;
+}
+.home-connection[open] summary::after {
+  transform: rotate(180deg);
+}
+.home-connection-info {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(270px, calc(100vw - 76px));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #18221c;
+  box-shadow: 0 12px 30px #0005;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.home-connection p {
+  margin: 0 0 8px;
+}
+.home-connection p:last-child {
+  margin-bottom: 0;
+}
+.home-app-link {
+  color: var(--lime);
 }
 .home-needs {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.home-presence {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--muted);
+  background: #ffffff05;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+}
+.home-presence > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-presence > svg,
+.home-presence > i {
+  flex-shrink: 0;
+}
+.home-presence.controlling {
+  color: #fac775;
+  background: #fac7750d;
+  border-color: #fac77530;
+}
+.home-presence:active {
+  background: #ffffff0c;
+}
+.home-hero button:focus-visible,
+.home-connection summary:focus-visible,
+.home-presence:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 3px;
 }
 /* Shared with agent handoff requests in Needs you. */
 .agent-logo.fill {
@@ -109,145 +214,4 @@
   .home-peek {
     transition: none;
   }
-}
-/* Access (who can use this computer), right under it: faces, one line, a
-   white Invite pill. The card opens Agents & people. Amber while someone
-   controls it. */
-.home-access {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 6px 6px 4px;
-  border-radius: 22px;
-  background: #ffffff0a;
-  box-shadow: inset 0 0 0 1px #ffffff0d;
-}
-.home-access.controlling {
-  background: #fac77514;
-  box-shadow: inset 0 0 0 1px #fac77533;
-}
-.home-access-who {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 48px;
-  padding: 4px 6px 4px 10px;
-  border: 0;
-  border-radius: 18px;
-  background: none;
-  color: #eef4ef;
-  text-align: left;
-}
-.home-access-who:active {
-  background: #ffffff0d;
-}
-.home-access-faces {
-  display: flex;
-  flex: none;
-}
-.home-access-faces i {
-  position: relative;
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  margin-left: -8px;
-  border: 2px solid #0f1613;
-  border-radius: 50%;
-  background: #24302a;
-  color: #dce5dd;
-  font: normal 600 12.5px system-ui, sans-serif;
-}
-.home-access-faces i:first-child {
-  margin-left: 0;
-}
-.home-access-faces i.agent {
-  background: color-mix(in srgb, var(--lime, #b9efd4) 18%, #1a231e);
-  color: var(--lime, #b9efd4);
-}
-.home-access-faces i.you {
-  width: auto;
-  padding: 0 9px;
-  border-radius: 999px;
-  font-size: 11.5px;
-}
-/* Here now: a green dot on their face. */
-.home-access-faces i.here::after {
-  content: "";
-  position: absolute;
-  right: -2px;
-  bottom: -2px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid #0f1613;
-  border-radius: 50%;
-  background: #5fd38d;
-}
-.home-access-faces b {
-  font-weight: 600;
-}
-.home-access-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.home-access-text strong {
-  overflow: hidden;
-  font: 550 15px system-ui, sans-serif;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.home-access.controlling .home-access-text strong {
-  color: #fac775;
-}
-.home-access-text small {
-  font-size: 12.5px;
-  color: var(--muted, #93a096);
-}
-.home-access-text small.waiting {
-  color: #f2c879;
-}
-.home-access-go {
-  flex: none;
-  color: #6f7c73;
-}
-.home-access-add {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 40px;
-  padding: 0 15px 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: #ededed;
-  color: #111;
-  font: 600 14px system-ui, sans-serif;
-}
-.home-access-add:active {
-  background: #fff;
-}
-
-.home-screen-open {
-  position: absolute;
-  z-index: 2;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 32px;
-  padding: 4px 12px;
-  border-radius: 999px;
-  background: #b9efd412;
-  color: var(--lime);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.home-hero-scene:active .home-screen-open {
-  background: #b9efd428;
 }

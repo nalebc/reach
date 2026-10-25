@@ -218,3 +218,20 @@ test("while agents wait for you: one quiet pill, and Let them back ends control 
   await quiet.unmount();
   assert.deepEqual(dom.errors, []);
 });
+
+test("the current pointer mode is visible and opens its existing controls", async () => {
+  for (const platform of ["darwin", "win32"]) {
+    const view = await render(platform);
+    const bar = await control();
+    const mode = bar.querySelector('[aria-label="Pointer mode: Direct touch"]');
+    assert.ok(mode);
+    mode.click();
+    const select = await dom.waitFor(() => $('[aria-label="Touch mode"]'));
+    select.value = "trackpad";
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    await dom.waitFor(() => bar.querySelector('[aria-label="Pointer mode: Trackpad"]'));
+    assert.equal(select.value, "trackpad");
+    await view.unmount();
+  }
+  assert.deepEqual(dom.errors, []);
+});

@@ -1200,11 +1200,12 @@ export default function Screen({
                   aria-label={control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
                   title={control ? "Stop controlling" : holder?.canTakeOver ? "Take over" : "Control your computer"}
                   aria-pressed={control}
+                  aria-busy={busy || undefined}
                   // Stop stays available through a reconnect.
                   disabled={busy || (!control && (!stream.ready || !live))}
                   onClick={() => void toggleControl()}
                 >
-                  <MousePointer2 size={19} />
+                  {busy ? <RefreshCw size={19} className="spin" /> : <MousePointer2 size={19} />}
                 </button>
               )}
               {control && (
@@ -1231,10 +1232,17 @@ export default function Screen({
               {control && (
                 <button
                   aria-label="Paste from your phone"
+                  className="screen-bar-secondary"
                   disabled={!usable || clipboardBusy}
                   onClick={() => void pastePhone()}
                 >
                   <ClipboardPaste size={18} />
+                </button>
+              )}
+              {control && !typing && (
+                <button className="screen-pointer-mode" aria-label={`Pointer mode: ${mode === "direct" ? "Direct touch" : mode === "pan" ? "Pan and zoom" : "Trackpad"}`}
+                  title="Change touch and mouse controls" onClick={() => setPanel("touch")}>
+                  {mode === "direct" ? "Direct" : mode === "pan" ? "Pan/zoom" : "Trackpad"}
                 </button>
               )}
               {/* Desktops, as the keys menu sends them: previous, all
@@ -1260,7 +1268,7 @@ export default function Screen({
                   title={`${sound.on ? "Stop hearing" : "Hear"} the ${computerWord(device.platform)}`}
                   aria-pressed={sound.on}
                   aria-busy={sound.state === "starting" || undefined}
-                  className={sound.state === "starting" ? "screen-bar-pending" : undefined}
+                  className={`screen-bar-secondary${sound.state === "starting" ? " screen-bar-pending" : ""}`}
                   onClick={() => (sound.on ? sound.stop() : sound.start())}
                 >
                   {sound.on ? <Volume2 size={18} /> : <VolumeX size={18} />}
@@ -1313,10 +1321,21 @@ export default function Screen({
                   <ChevronRight size={18} /> Back
                 </button>
               )}
-              {/* One menu, as ChatGPT lays one out: the keys and commands
-                  first, then short grouped lists, little text. */}
+              {/* Secondary controls and commands share one options panel. */}
               {panel === "more" && (
                 <>
+                  {(control || (hears && !paused)) && <div className="gs-group">
+                    {control && <button className="gs-row" disabled={!usable || clipboardBusy}
+                      onClick={() => { setPanel(null); void pastePhone(); }}>
+                      <ClipboardPaste /><span className="gs-label">Paste from your phone</span>
+                    </button>}
+                    {hears && !paused && <button className="gs-row" aria-pressed={sound.on}
+                      aria-busy={sound.state === "starting" || undefined}
+                      onClick={() => sound.on ? sound.stop() : sound.start()}>
+                      {sound.on ? <Volume2 /> : <VolumeX />}<span className="gs-label">Sound</span>
+                      <span className="gs-value">{sound.state === "starting" ? "Starting…" : sound.on ? "On" : "Off"}</span>
+                    </button>}
+                  </div>}
                   {control && appContext.app && (
                     <AppCommandList
                       app={appContext.app}

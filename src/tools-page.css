@@ -171,3 +171,128 @@
     transition: none;
   }
 }
+
+/* Home shortcuts keep Reach's rounded tiles, in the order chosen here. */
+.home-pinned > header,
+.tools-manage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.home-pinned h2,
+.tools-manage-heading h2 {
+  margin: 0;
+}
+.home-pinned > header {
+  margin-bottom: 8px;
+}
+.home-pinned .shortcuts-edit,
+.tools-invite {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--lime);
+  font: inherit;
+  font-size: 13px;
+}
+.home-pinned > .shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.home-pinned .shortcut-open {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 88px;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: #ffffff05;
+  font: inherit;
+  font-size: 14px;
+}
+.home-pinned .shortcut-open > svg:last-child {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  width: 13px;
+}
+.home-pinned > .shortcut-editor {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+}
+.shortcut-edit-row {
+  display: flex;
+  align-items: center;
+  padding: 4px;
+}
+.shortcut-edit-row + .shortcut-edit-row {
+  border-top: 1px solid var(--border);
+}
+.home-pinned .shortcut-choice {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.shortcut-choice span {
+  flex: 1;
+}
+.shortcut-choice[aria-pressed="true"] > svg:last-child {
+  color: var(--lime);
+}
+.shortcut-order {
+  display: flex;
+}
+.home-pinned .shortcut-order button {
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  background: none;
+}
+.shortcut-order button:disabled {
+  opacity: 0.25;
+}
+.home-pinned .shortcuts-add {
+  width: 100%;
+  min-height: 64px;
+  border-style: dashed;
+  color: var(--muted);
+  background: none;
+  font: inherit;
+  font-size: 14px;
+}
+.shortcuts-feedback {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.shortcuts-feedback:empty {
+  display: none;
+}
+.tools-invite:active {
+  background: #ffffff0c;
+}
+@media (min-width: 600px) {
+  .home-pinned .shortcut-open {
+    min-height: 100px;
+  }
+}

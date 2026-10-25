@@ -40,6 +40,7 @@ let dom, React, Screen, AppThread, PauseButton, computer;
 const asked = [];
 // The computer's answer to a pause, when it refuses one.
 let refuse = "";
+let holdPause;
 before(async () => {
   dom = await startDom({
     mobile: true,
@@ -56,10 +57,11 @@ before(async () => {
         if (enabled) computer.lease = true;
         return { enabled };
       },
-      "/api/settings/pause": (init) => {
+      "/api/settings/pause": async (init) => {
         if (refuse) throw new Error(refuse);
         const { paused } = JSON.parse(init.body);
         asked.push(["pause", paused]);
+        if (holdPause) await holdPause;
         return { paused };
       },
       "/api/screen/displays": () => ({ displays: [] }),
@@ -77,6 +79,7 @@ beforeEach(() => {
   dom.errors.length = 0;
   asked.length = 0;
   refuse = "";
+  holdPause = undefined;
   computer.reset();
 });
 
@@ -312,6 +315,8 @@ test("the pause button switches at once and asks the computer; a refusal puts it
       toast: (m) => toasts.push(m),
     }),
   );
+  let confirm;
+  holdPause = new Promise(resolve => { confirm = resolve; });
   const pause = button("Pause Reach on your Mac");
   assert.equal(pause.getAttribute("aria-pressed"), "false");
   pause.click();
@@ -321,6 +326,16 @@ test("the pause button switches at once and asks the computer; a refusal puts it
     "true",
   );
   assert.deepEqual(asked, [["pause", true]]);
+  assert.equal(pause.getAttribute("aria-busy"), "true");
+  assert.equal(pause.disabled, true);
+  assert.deepEqual(toasts, [], "success waits for the computer");
+  pause.click();
+  assert.equal(asked.length, 1, "pending tap cannot submit twice");
+  confirm();
+  await dom.waitFor(() => toasts.length === 1);
+  assert.deepEqual(toasts, ["Reach paused"]);
+  toasts.length = 0;
+  holdPause = undefined;
   await view.unmount();
 
   // Not the owner (or the computer can't): it says why and stays as it was.

@@ -189,8 +189,9 @@ test("Home's connection line links to the Tailscale app when signed in from the 
     }),
   );
   const link = await dom.waitFor(() => dom.document.querySelector(".home-app-link"));
-  assert.equal(link.textContent, "faster with the app");
+  assert.equal(link.textContent, "Tailscale app · optional, potentially faster");
   assert.equal(link.getAttribute("href"), "https://apps.apple.com/app/tailscale/id1470499037");
-  assert.match(link.closest("p").textContent, /Online · Tailscale in browser · faster with the app/);
+  assert.match(link.closest("details").textContent, /Connected · Tailscale in browser/);
+  assert.equal(link.closest("details").open, false, "transport details are available on demand");
   await view.unmount();
 });
