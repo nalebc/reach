@@ -1090,17 +1090,17 @@ test("a message waiting for the Claude app is never lost: it shows, survives a R
 });
 
 // Messages typed into the Claude app's own window go through the Mac's helper
-// (claude-compose.mjs). A Windows PC has none yet: there Reach's own Claude
-// Code continues the chat (server/agent-sessions/index.mjs, appWindow).
-const noAppWindow = process.platform === "win32" &&
-  "the Claude app's window is typed into only on a Mac: on Windows Reach's own Claude Code continues the chat (server/agent-sessions/index.mjs appWindow)";
+// (claude-compose.mjs): these model a Mac on every host (the sessions'
+// platform decides, server/agent-sessions/index.mjs appWindow). A Windows PC
+// has no such helper yet; its Claude Code fallback is tested beside them.
 
-test("a message to a chat the Claude app lists goes into the app itself (its window shows it), never through Reach's own process", { skip: noAppWindow }, async () => {
+test("a message to a chat the Claude app lists goes into the app itself (its window shows it), never through Reach's own process", async () => {
   const claude = fakeClaude();
   const app = { pid: 4747, alive: true, busy: true, signals: [], open: true };
   const delivered = [];
   let refuse = "Goes in when you open this chat in the Claude app, or step away from your Mac.";
   const sessions = createAgentSessions({
+    platform: "darwin",
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
     codex: { list: async () => [], health: async () => ({}), read: async () => ({}) },
     claude: {
@@ -2246,9 +2246,9 @@ test("a user's explicit stop never becomes an automatic continuation", async (t)
 });
 
 for (const scenario of ["native", "already running", "queued reply", "uncertain delivery", "read unavailable"]) {
-  // Into the Claude app's window: a Mac's (noAppWindow).
+  // Into the Claude app's window: a Mac's, modeled on every host.
   const appWindow = ["native", "queued reply", "uncertain delivery"].includes(scenario);
-  test(`restart recovery: ${scenario}`, { skip: appWindow && noAppWindow }, async (t) => {
+  test(`restart recovery: ${scenario}`, async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-recovery-route-"));
     const workingFile = path.join(dir, "working.json");
     fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID, cwd: "/work/site", model: "old-model", effort: "max" }], stoppedAt: Date.now() }));
@@ -2258,6 +2258,7 @@ for (const scenario of ["native", "already running", "queued reply", "uncertain 
     let attempts = 0, reads = 0;
     const received = [];
     const sessions = createAgentSessions({
+      ...(appWindow ? { platform: "darwin" } : {}),
       dataDir: dir, outbox, claudeHost: h,
       daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
       codex: { list: async () => [], health: async () => ({}) },
