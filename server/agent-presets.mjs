@@ -165,7 +165,7 @@ export function presetRouteAllowed(client, method, route) {
   if (read && ["/browser/desktop/elements", "/browser/desktop/describe", "/browser/desktop/menus", "/browser/desktop/read"].includes(route)) return has("browser:control");
   if (method === "POST" && ["/browser/desktop/input", "/browser/desktop/wait", "/browser/desktop/find"].includes(route)) return has("browser:control");
   if (read && ["/browser/desktop/apps", "/browser/desktop/mac-shortcuts"].includes(route)) return has("browser:open");
-  if (method === "POST" && ["/browser/desktop/open", "/browser/desktop/open-url", "/browser/desktop/focus", "/browser/desktop/mac-shortcuts/run"].includes(route)) return has("browser:open");
+  if (method === "POST" && ["/browser/desktop/open", "/browser/desktop/open-url", "/browser/desktop/close-tabs", "/browser/desktop/focus", "/browser/desktop/mac-shortcuts/run"].includes(route)) return has("browser:open");
   if (method === "POST" && route === "/browser/desktop/open-file") return has("browser:open") && policy.roots.length > 0;
   if (method === "POST" && route === "/browser/shell") return has("browser:shell");
   if (read && route === "/browser/shell/history") return has("browser:shell");

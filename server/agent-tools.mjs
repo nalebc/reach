@@ -1387,6 +1387,8 @@ export function createAgentTools(
         scheduleSweep();
       }
     },
+    // The browser transport, shared with the tabs agents open (agent-tabs.mjs).
+    driver,
     cancelClient(id) {
       // Its batch tabs close now, with nobody left to use their handles.
       for (const entry of batchTabs.values())
