@@ -7,6 +7,29 @@ import { windowsFixture } from "./windows-fixtures.mjs";
 const sourceHash = () => crypto.createHash("sha256").update(fs.readFileSync(new URL("../fixtures/windows/browser-job.cs", import.meta.url))).digest("hex");
 const fileHash = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const marker = (onStage) => (stage, details = {}) => { try { onStage?.(stage, details); } catch {} };
+const progressStages = new Set(["main", "stdio-ready", "job-ready", "create-process-begin", "create-process-returned", "assigned", "resumed", "control-ready", "terminate-requested", "dispose-begin", "dispose-complete"]);
+const errorStages = new Set(["stdio", "job", "create-suspended", "assign", "resume", "wait", "terminate", "termination-deadline"]);
+const boundedInteger = (value, max = 0xffffffff) => Number.isSafeInteger(value) && value >= 0 && value <= max;
+
+// These optional observations never enter the ownership-event ledger. Fixed
+// fields keep target stderr, arguments and native exception text out of logs.
+export function parseWindowsBrokerProgress(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).length !== 3 || Object.keys(value).some(key => !["kind", "stage", "elapsedMs"].includes(key))
+      || value.kind !== "progress" || !progressStages.has(value.stage) || !boundedInteger(value.elapsedMs, 86400000)) return null;
+  return { kind: "progress", stage: value.stage, elapsedMs: value.elapsedMs };
+}
+
+export function windowsBrokerStatusDetails(event) {
+  if (!event || !["started", "parent-exit", "empty", "error"].includes(event.kind)) return null;
+  const result = { nativeKind: event.kind };
+  for (const key of ["pid", "exitCode", "active", "total", "win32", "elapsedMs"])
+    if (boundedInteger(event[key], key === "elapsedMs" ? 86400000 : 0xffffffff)) result[key === "elapsedMs" ? "nativeElapsedMs" : key] = event[key];
+  for (const key of ["assignedBeforeResume", "terminated"])
+    if (typeof event[key] === "boolean") result[key] = event[key];
+  if (errorStages.has(event.stage)) result.nativeStage = event.stage;
+  return result;
+}
 
 // The parent builds its actual fixture before the failed-start behavior budget.
 // Only an explicit child-bound descriptor bypasses the normal per-process build.
@@ -65,11 +88,36 @@ export async function windowsBrowserProcess(binary, flags, { onStage, preparedBr
   const child = spawn(broker, [binary, ...flags], {
     stdio: ["pipe", "ignore", "pipe", "pipe", "pipe", "pipe"],
     windowsHide: true,
+    ...(typeof onStage === "function" ? { env: { ...process.env, REACH_TEST_BROWSER_JOB_PROGRESS: "1" } } : {}),
   });
   mark("broker-spawn-returned", { pid: Number.isInteger(child.pid) ? child.pid : null });
   const events = [];
-  let buffered = "", protocolError, empty, settleEmpty;
+  let buffered = "", protocolError, empty, settleEmpty, progressCount = 0;
   const stopped = new Promise(resolve => { settleEmpty = resolve; });
+  const progress = (event, channel) => {
+    if (typeof onStage !== "function" || progressCount >= 16) return;
+    progressCount++;
+    mark("broker-progress", { nativeStage: event.stage, nativeElapsedMs: event.elapsedMs, channel });
+  };
+  // The one early Main marker precedes fd 5 setup. Read only its fixed prefix;
+  // arbitrary child stderr is neither logged nor interpreted as ownership.
+  if (typeof onStage === "function") {
+    let stderrLine = "", discard = false;
+    child.stderr.on("data", chunk => {
+      for (const part of chunk.toString("utf8").split(/(?<=\n)/)) {
+        if (!discard && stderrLine.length + part.length > 2048) { discard = true; stderrLine = ""; }
+        if (!discard) stderrLine += part;
+        if (!part.endsWith("\n")) continue;
+        if (!discard && stderrLine.startsWith("reach-browser-job-progress ")) {
+          try {
+            const event = parseWindowsBrokerProgress(JSON.parse(stderrLine.slice(27)));
+            if (event?.stage === "main") progress(event, "stderr");
+          } catch {}
+        }
+        stderrLine = ""; discard = false;
+      }
+    });
+  }
   const fields = new Set(["kind", "pid", "creationTime", "assignedBeforeResume", "exitCode", "active", "total", "terminated", "win32", "stage", "elapsedMs"]);
   child.stdio[5].setEncoding("utf8").on("data", chunk => {
     buffered += chunk;
@@ -80,10 +128,13 @@ export async function windowsBrowserProcess(binary, flags, { onStage, preparedBr
       const line = buffered.slice(0, at); buffered = buffered.slice(at + 1);
       try {
         const event = JSON.parse(line);
+        const observation = parseWindowsBrokerProgress(event);
+        if (observation) { progress(observation, "status"); continue; }
         if (!event || !["started", "parent-exit", "empty", "error"].includes(event.kind)
             || Object.keys(event).some(key => !fields.has(key))) throw Error("invalid broker status");
         if (events.length >= 32) throw Error("too many broker statuses");
         events.push(event);
+        mark("broker-status", windowsBrokerStatusDetails(event));
         if (event.kind === "error") protocolError = "broker reported a native error";
         if (event.kind === "empty" && event.active === 0 && Number.isInteger(event.total) && event.total >= 1) {
           empty = event; settleEmpty();
