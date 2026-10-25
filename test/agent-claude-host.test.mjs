@@ -16,6 +16,8 @@ import { createClaudeImports } from "../server/agent-sessions/claude-import.mjs"
 import { createOutbox } from "../server/agent-sessions/outbox.mjs";
 import { tooOld } from "../server/agent-sessions/compatibility.mjs";
 import { eventually } from "./helpers/eventually.mjs";
+import { agentAskSocket, readAgentAskPipe } from "../server/agent-sessions/agent-asks.mjs";
+import { ADMINISTRATORS, othersAllowed, WRITES, windowsAcl } from "./helpers/windows-acl.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -92,11 +94,15 @@ function fakeClaude({ models = [], title = "Proposed title" } = {}) {
   };
   return { runs, spawn, last: () => runs.at(-1) };
 }
+// A Mac's Claude Code (its claude, its HOME, folders like /work/app) on any
+// host: a Windows PC's starts only in a drive-letter folder (claude-host.mjs
+// start), modelled by the tests that pass platform: "win32".
 const host = (claude, extra = {}) =>
   createClaudeHost({
     locate: async () => "/usr/local/bin/claude",
     spawn: claude.spawn,
     env: { PATH: "/usr/bin", HOME: "/Users/me", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "x", ANTHROPIC_API_KEY: "k", REACH_DATA: "/d" },
+    platform: "darwin",
     ...extra,
   });
 
@@ -874,7 +880,7 @@ test("one Claude session everywhere: Reach continues it, waits its turn when the
 // with waits its turn.
 test("on Windows a reply to a chat the Claude app holds goes in as on a Mac: at once when idle, after its turn when busy", async (t) => {
   const claude = fakeClaude();
-  const claudeHost = host(claude);
+  const claudeHost = host(claude, { platform: "win32" });
   const app = { pid: 5150, alive: true, busy: true, signals: [] };
   const sessions = createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {}, onRequest() {}, onClose() {} },
@@ -1083,7 +1089,13 @@ test("a message waiting for the Claude app is never lost: it shows, survives a R
   second.close();
 });
 
-test("a message to a chat the Claude app lists goes into the app itself (its window shows it), never through Reach's own process", async () => {
+// Messages typed into the Claude app's own window go through the Mac's helper
+// (claude-compose.mjs). A Windows PC has none yet: there Reach's own Claude
+// Code continues the chat (server/agent-sessions/index.mjs, appWindow).
+const noAppWindow = process.platform === "win32" &&
+  "the Claude app's window is typed into only on a Mac: on Windows Reach's own Claude Code continues the chat (server/agent-sessions/index.mjs appWindow)";
+
+test("a message to a chat the Claude app lists goes into the app itself (its window shows it), never through Reach's own process", { skip: noAppWindow }, async () => {
   const claude = fakeClaude();
   const app = { pid: 4747, alive: true, busy: true, signals: [], open: true };
   const delivered = [];
@@ -1247,6 +1259,9 @@ test("the Claude app's own consent card makes its session wait on you, said as t
     claudeHost: host(fakeClaude()),
     signIn: {},
     liveMs: -1,
+    // A Mac, whose helper presses the card. A Windows PC says to answer it
+    // there instead (claude-consent.mjs consentOnWindows; agent-claude-consent.test.mjs).
+    platform: "darwin",
     claudeImports: { add: async () => {}, close() {} },
     installedApps: async () => [{ id: "/System/Applications/Calculator.app", name: "Calculator" }],
     // The phone's answer: pressed in the app, then the transcript has it.
@@ -1286,6 +1301,12 @@ test("the Claude app's own consent card makes its session wait on you, said as t
   sessions.close();
 });
 
+// Where Claude Code's hook reaches Reach, once it listens (null before): a
+// socket file on a Mac; on Windows a named pipe whose name Reach keeps in its
+// data folder for the hook to read (agent-asks.mjs).
+const hookEndpoint = (dataDir) =>
+  process.platform === "win32" ? readAgentAskPipe(dataDir) : fs.existsSync(agentAskSocket(dataDir)) ? agentAskSocket(dataDir) : null;
+
 // A Claude app chat's permission card couldn't be answered from the phone
 // ("Open screen to answer"): the app keeps the request to itself. Now the
 // phone shows the app's own card (its words, its buttons, in order), read in
@@ -1319,10 +1340,9 @@ test("a Claude app or terminal request is answered from the phone through Claude
     macPrompts: { start() {}, close() {}, current: () => ({ prompts: [] }) },
   });
   // As scripts/agent-hook.mjs asks Reach.
-  const { agentAskSocket } = await import("../server/agent-sessions/agent-asks.mjs");
   const ask = async (body) => {
-    for (let i = 0; i < 100 && !fs.existsSync(agentAskSocket(dataDir)); i++) await settle(10);
-    const socket = net.createConnection(agentAskSocket(dataDir));
+    for (let i = 0; i < 100 && !hookEndpoint(dataDir); i++) await settle(10);
+    const socket = net.createConnection(hookEndpoint(dataDir));
     let reply = "";
     socket.setEncoding("utf8");
     const answered = new Promise((resolve) => socket.on("close", () => resolve(reply ? JSON.parse(reply) : null)));
@@ -1510,10 +1530,22 @@ test("the session service listens for Claude Code's hook privately and keeps its
     macPrompts: { start() {}, close() {}, current: () => ({ prompts: [] }) },
   });
   try {
-    // Only this user can reach the hook's socket.
-    const sock = path.join(dataDir, "agent-hook.sock");
-    for (let i = 0; i < 100 && !(fs.existsSync(sock) && (fs.statSync(sock).mode & 0o777) === 0o600); i++) await settle(10);
-    assert.equal(fs.statSync(sock).mode & 0o777, 0o600);
+    // Only this user can reach the hook: on a Mac its socket is owner-only.
+    // On Windows only this user, SYSTEM and Administrators may write to its
+    // pipe; anyone may open it to read, Windows' default for a pipe Node
+    // makes (as agent-remote.test.mjs checks Reach's other pipe).
+    if (process.platform === "win32") {
+      for (let i = 0; i < 100 && !hookEndpoint(dataDir); i++) await settle(10);
+      const pipe = hookEndpoint(dataDir);
+      assert.ok(pipe, "the hook's pipe is listening");
+      const acl = await windowsAcl("pipe", pipe.slice("\\\\.\\pipe\\".length));
+      assert.deepEqual(othersAllowed(acl, WRITES), [], JSON.stringify(acl));
+      assert.ok([acl.me, ADMINISTRATORS].includes(acl.owner), JSON.stringify(acl));
+    } else {
+      const sock = path.join(dataDir, "agent-hook.sock");
+      for (let i = 0; i < 100 && !(fs.existsSync(sock) && (fs.statSync(sock).mode & 0o777) === 0o600); i++) await settle(10);
+      assert.equal(fs.statSync(sock).mode & 0o777, 0o600);
+    }
     await claudeHost.send(ID, { text: "Check the tests", cwd: "/work" });
     claude.last().print({ type: "control_request", request_id: "real-question", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions: [{ question: "Which tests?", options: [{ label: "Unit", description: "" }], multiSelect: false }] } } });
     assert.equal(sessions.view("claude", ID).prompts[0].id, "real-question");
@@ -2214,7 +2246,9 @@ test("a user's explicit stop never becomes an automatic continuation", async (t)
 });
 
 for (const scenario of ["native", "already running", "queued reply", "uncertain delivery", "read unavailable"]) {
-  test(`restart recovery: ${scenario}`, async (t) => {
+  // Into the Claude app's window: a Mac's (noAppWindow).
+  const appWindow = ["native", "queued reply", "uncertain delivery"].includes(scenario);
+  test(`restart recovery: ${scenario}`, { skip: appWindow && noAppWindow }, async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-recovery-route-"));
     const workingFile = path.join(dir, "working.json");
     fs.writeFileSync(workingFile, JSON.stringify({ chats: [{ id: ID, cwd: "/work/site", model: "old-model", effort: "max" }], stoppedAt: Date.now() }));

@@ -29,8 +29,9 @@ export { parseVersion, compareVersions };
 
 const NAMES = { claude: "Claude Code", codex: "Codex" };
 const quote = (file) => `'${file}'`;
-// A path safe to put in a command between single quotes.
-const plainPath = (file) => typeof file === "string" && path.isAbsolute(file) && !/['\0-\x1f\x7f]/.test(file);
+// A path safe to put in a command between single quotes. A Mac's or Linux's
+// (POSIX) path, read as one on any host, as the platform given says.
+const plainPath = (file) => typeof file === "string" && path.posix.isAbsolute(file) && !/['\0-\x1f\x7f]/.test(file);
 
 // Who updates the copy at `file` (its real path, links followed), from
 // where it lives. null: not a place Reach knows, so nothing is offered.
@@ -50,7 +51,7 @@ export function managerOf(agent, file, { real = fs.realpathSync, home = os.homed
   const cask = /\/Caskroom\/([a-z0-9][a-z0-9@._-]*)\//.exec(target);
   if (agent === "claude") {
     // Claude Code's native installer: ~/.local/bin/claude → its versions.
-    if (target.startsWith(path.join(home, ".local/share/claude/versions") + "/"))
+    if (target.startsWith(path.posix.join(home, ".local/share/claude/versions") + "/"))
       return { manager: "native", channelFeed: true, command: `${quote(file)} update` };
     if (cask?.[1] === "claude-code" || cask?.[1] === "claude-code@latest")
       return { manager: "brew", cask: cask[1], command: `brew upgrade --cask ${cask[1]}` };

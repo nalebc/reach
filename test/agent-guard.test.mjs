@@ -112,6 +112,9 @@ test("typed text is a command in a terminal, and never a protected page address"
   assert.equal(protectedTitle("Amazon.com: Online Shopping"), false);
 });
 
+// A Mac's apps and lists on any host; Windows' own are agent-guard-windows.test.mjs's.
+const mac = { platform: "darwin" };
+
 test("protected apps and terminal-like apps are recognised by id, name or path", () => {
   for (const app of [
     { bundleId: "com.1password.1password", name: "1Password" }, { bundleId: "com.apple.keychainaccess", name: "Keychain Access" },
@@ -119,22 +122,22 @@ test("protected apps and terminal-like apps are recognised by id, name or path",
     { bundleId: "com.apple.ScreenContinuity", name: "iPhone Mirroring" }, { bundleId: "com.apple.ActivityMonitor", name: "Activity Monitor" },
     { bundleId: "io.tailscale.ipn.macos", name: "Tailscale" }, { bundleId: "com.reach.app", name: "Reach" }, { id: "/Applications/Reach.app" },
     { bundleId: "com.bitwarden.desktop" }, { name: "Proton Pass" }, { bundleId: "com.apple.SecurityAgent" },
-  ]) assert.ok(protectedAppReason(app), JSON.stringify(app));
+  ]) assert.ok(protectedAppReason(app, mac), JSON.stringify(app));
   for (const app of [
     { bundleId: "com.google.Chrome", name: "Google Chrome" }, { bundleId: "com.apple.Safari", name: "Safari" }, { bundleId: "com.apple.Terminal", name: "Terminal" },
     { bundleId: "com.apple.finder", name: "Finder" }, { bundleId: "com.apple.systempreferences", name: "System Settings" }, { bundleId: "com.apple.mail", name: "Mail" },
     { bundleId: "com.microsoft.VSCode", name: "Visual Studio Code" }, { id: "/Applications/Preacher.app", name: "Preacher" },
-  ]) assert.equal(protectedAppReason(app), null, JSON.stringify(app));
-  assert.ok(terminalLikeApp({ bundleId: "com.apple.Terminal" }));
-  assert.ok(terminalLikeApp({ bundleId: "com.googlecode.iterm2" }));
-  assert.ok(terminalLikeApp({ name: "Visual Studio Code" }));
-  assert.ok(terminalLikeApp({ bundleId: "dev.warp.Warp-Stable" }));
-  assert.equal(terminalLikeApp({ bundleId: "com.google.Chrome", name: "Google Chrome" }), false);
-  assert.equal(terminalLikeApp({ bundleId: "com.apple.Notes" }), false);
+  ]) assert.equal(protectedAppReason(app, mac), null, JSON.stringify(app));
+  assert.ok(terminalLikeApp({ bundleId: "com.apple.Terminal" }, mac));
+  assert.ok(terminalLikeApp({ bundleId: "com.googlecode.iterm2" }, mac));
+  assert.ok(terminalLikeApp({ name: "Visual Studio Code" }, mac));
+  assert.ok(terminalLikeApp({ bundleId: "dev.warp.Warp-Stable" }, mac));
+  assert.equal(terminalLikeApp({ bundleId: "com.google.Chrome", name: "Google Chrome" }, mac), false);
+  assert.equal(terminalLikeApp({ bundleId: "com.apple.Notes" }, mac), false);
 });
 
 test("native rules carry the whole protected list and the preset's app set", () => {
-  const rules = nativeRules({ preset: "apps", apps: [{ id: "/Applications/Google Chrome.app", bundleId: "com.google.Chrome" }] }, { hosts: ["Mac.tail1.ts.net"], titles: ["Reach"], protectedPaths: ["/Users/me/.reach"], home: "/Users/me" });
+  const rules = nativeRules({ preset: "apps", apps: [{ id: "/Applications/Google Chrome.app", bundleId: "com.google.Chrome" }] }, { hosts: ["Mac.tail1.ts.net"], titles: ["Reach"], protectedPaths: ["/Users/me/.reach"], home: "/Users/me", ...mac });
   assert.equal(rules.mode, "apps");
   assert.deepEqual(rules.hosts, ["mac.tail1.ts.net"]);
   assert.deepEqual(rules.titles, ["reach"]);
