@@ -469,3 +469,24 @@ test("failed launch app output is bounded, plain-file only and collected inside 
   assert.doesNotMatch(JSON.stringify(result), /UNRELATED OUTPUT/);
   assert.equal(result.liveLogs.outputFiles, undefined, "only basenames are exposed with captured app output");
 });
+
+test("the runner's resources are read from vm_stat, sysctl and ps without arguments or failures", async () => {
+  const { parseHostResources, hostResources } = await import("./helpers/ios-diagnostics.mjs");
+  const parsed = parseHostResources({
+    vmStat: "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                 640.\nPages wired down:                         64000.\nPages occupied by compressor:            128000.\nSwapins:                                  12345.\nSwapouts:                                 23456.\n",
+    swap: "total = 4096.00M  used = 2995.69M  free = 1100.31M  (encrypted)",
+    load: "{ 3.10 2.80 2.50 }", memsize: "7516192768", ncpu: "3",
+    ps: " 98.0 812000 /Library/Developer/CoreSimulator/Volumes/iOS_26.2/SpringBoard\n 5.5 10240 /usr/bin/node\n 0.0 100 /sbin/launchd\n",
+  });
+  assert.deepEqual(parsed, {
+    memMB: 7168, cpus: 3, freeMB: 10, compressedMB: 2000, wiredMB: 1000, swapins: 12345, swapouts: 23456,
+    swapUsedMB: 2995.69, swapTotalMB: 4096, load: [3.1, 2.8, 2.5],
+    top: [{ cpu: 98, rssMB: 793, command: "SpringBoard" }, { cpu: 5.5, rssMB: 10, command: "node" }, { cpu: 0, rssMB: 0, command: "launchd" }],
+  });
+  // Missing or unreadable output is recorded as unknown, never a failure.
+  const empty = parseHostResources({});
+  assert.equal(empty.freeMB, null);
+  assert.deepEqual(empty.top, []);
+  const live = await hostResources();
+  assert.ok(typeof live === "object" && live !== null);
+});

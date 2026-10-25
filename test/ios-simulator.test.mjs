@@ -12,7 +12,7 @@ import { startCleanReach } from "./helpers/clean-machine.mjs";
 import { boundedCommand as run } from "./helpers/bounded-command.mjs";
 import { launchIosSmokeApp } from "./helpers/ios-launch.mjs";
 import { createIosLifecycleEvidence, installIosLifecycleProbe } from "./helpers/ios-lifecycle.mjs";
-import { collectIosFailureDiagnostics, commandFailureOutput } from "./helpers/ios-diagnostics.mjs";
+import { collectIosFailureDiagnostics, commandFailureOutput, hostResources } from "./helpers/ios-diagnostics.mjs";
 import { createIosPageEvidence, instrumentIosPage, iosPageDiagnosticScript, iosPageFailureReport, applyIosAssetGate } from "./helpers/ios-page-evidence.mjs";
 import { createIosProxyForwarder } from "./helpers/ios-proxy.mjs";
 
@@ -65,6 +65,9 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // launching a running app returns its pid, install replaces the same app.
   // Each retry waits 5 s longer than the last. The last failure names every
   // attempt; a step that never succeeds fails the test.
+  // The runner's memory, swap and load at the moments a launch can stall.
+  const resources = [];
+  const observeResources = async (at) => { resources.push({ at, seconds: since(started), ...await hostResources() }); };
   const sim = async (name, args, { limit = 60000, attempts = 1, progress, requireProgress = false, observation = "the app requested its test page", beforeRetry } = {}) => {
     const tries = [];
     for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -82,6 +85,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
         steps.push({ step: name, attempt, seconds: since(began), ok: false, error: error.message,
           ...(name === "launch" ? commandFailureOutput(error) : {}) });
         tries.push(`attempt ${attempt} ${error.message} after ${since(began)} s`);
+        if (name === "launch") await observeResources(`launch attempt ${attempt} stalled`);
         process.stderr.write(`iOS simulator test:   ${name}: attempt ${attempt} of ${attempts} ${error.message} (${since(began)} s)\n`);
       }
     }
@@ -96,7 +100,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       const pageState = pageEvidence.snapshot();
       const report = applyIosAssetGate(iosPageFailureReport({ error: failure, last, context: {
         phases, steps, ready, requests, pageSeen, pageLimitMs: pageLimit, pageEvidence: pageState,
-        proxyEvidence: proxyForwarder?.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtimeVersion, diagnostics, physicalDevice: false } }), pageState);
+        proxyEvidence: proxyForwarder?.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtimeVersion, diagnostics, hostResources: resources, physicalDevice: false } }), pageState);
       await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n").catch(() => {});
       if (device) await run("xcrun", ["simctl", "io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], 15000).catch(() => {});
     }
@@ -362,6 +366,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   // screen, the app never started (run 38279745481's screenshot, no requests).
   await sim("install", ["install", device, app], { limit: 150000, attempts: 2 });
   reached("app installed");
+  await observeResources("before launch");
   // A fresh device has no running copy to terminate. Stop a half-started copy
   // only on a retry, while retaining the bounded attempts and all app checks.
   // simctl sometimes stays open after the app has started (PR #45's failing
@@ -423,7 +428,7 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
   if (output) {
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, JSON.stringify({ ...report, requests, phases, steps, ready, pageSeen, pageLimitMs: pageLimit,
-      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version, backgroundedDuringDownload, physicalDevice: false }, null, 2) + "\n");
+      pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version, backgroundedDuringDownload, hostResources: resources, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
     await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });

@@ -227,3 +227,50 @@ export async function collectIosFailureDiagnostics({ device, bundle, deadline, r
   }
   return { ...result, ...(timedOut ? { timedOut: true } : {}) };
 }
+
+// The runner itself at a moment of the run: memory, compression, swap, load
+// and the busiest processes (names only, never arguments). A hosted macOS
+// runner has 3 CPUs and 7 GB; when a launch never starts its app (Oct 24:
+// no app process, no output files, SpringBoard's widgets never drawn), the
+// machine's state beside it says whether the simulator was starved. Each
+// reading is bounded and failure-proof: evidence must never fail the test.
+const bounded = (file, args, timeout = 3000) => new Promise(resolve => {
+  let out = "";
+  let child;
+  try { child = spawn(file, args, { stdio: ["ignore", "pipe", "ignore"] }); }
+  catch { return resolve(""); }
+  const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(out); }, timeout);
+  child.stdout.on("data", chunk => { if (out.length < 200000) out += chunk; });
+  child.on("error", () => { clearTimeout(timer); resolve(""); });
+  child.on("close", () => { clearTimeout(timer); resolve(out); });
+});
+export function parseHostResources({ vmStat = "", swap = "", load = "", memsize = "", ncpu = "", ps = "" } = {}) {
+  const page = Number(vmStat.match(/page size of (\d+) bytes/)?.[1]) || 16384;
+  const pages = name => Number(vmStat.match(new RegExp(`${name}:\\s+(\\d+)`))?.[1]);
+  const mb = count => Number.isFinite(count) ? Math.round(count * page / 1048576) : null;
+  const swapMb = field => Number(swap.match(new RegExp(`${field} = ([\\d.]+)M`))?.[1]);
+  const top = ps.split("\n").map(line => line.trim().match(/^([\d.]+)\s+(\d+)\s+(.+)$/)).filter(Boolean)
+    .map(([, cpu, rss, command]) => ({ cpu: Number(cpu), rssMB: Math.round(Number(rss) / 1024), command: path.basename(command).slice(0, 60) }))
+    .sort((a, b) => b.cpu - a.cpu).slice(0, 8);
+  const loads = load.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [];
+  const finite = value => Number.isFinite(value) ? value : null;
+  return {
+    memMB: Number(memsize) ? Math.round(Number(memsize) / 1048576) : null, cpus: finite(Number(ncpu) || NaN),
+    freeMB: mb(pages("Pages free")), compressedMB: mb(pages("Pages occupied by compressor")), wiredMB: mb(pages("Pages wired down")),
+    swapins: finite(pages("Swapins")), swapouts: finite(pages("Swapouts")),
+    swapUsedMB: finite(swapMb("used")), swapTotalMB: finite(swapMb("total")), load: loads, top,
+  };
+}
+export async function hostResources() {
+  if (process.platform !== "darwin") return { skipped: "macOS runners only" };
+  try {
+    const [vmStat, swap, load, memsize, ncpu, ps] = await Promise.all([
+      bounded("vm_stat", []), bounded("sysctl", ["-n", "vm.swapusage"]), bounded("sysctl", ["-n", "vm.loadavg"]),
+      bounded("sysctl", ["-n", "hw.memsize"]), bounded("sysctl", ["-n", "hw.ncpu"]),
+      bounded("ps", ["-A", "-o", "%cpu=,rss=,comm="]),
+    ]);
+    return parseHostResources({ vmStat, swap, load, memsize, ncpu, ps });
+  } catch (error) {
+    return { error: String(error?.message || error).slice(0, 200) };
+  }
+}
