@@ -99,9 +99,18 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 - Update request parsing, uploads and development HTTP dependencies for current
   security fixes. Build the browser's private Tailscale client with Go 1.27.3,
   including its certificate-verification security update.
+- On Windows, quitting Reach now stops and waits for its process-list helper
+  (the Claude app checks), so no helper outlives Reach or keeps its program
+  file open for an update.
 
 ### Validation
 
+- Make flaky tests fail only when Reach is wrong: browser-test servers close
+  without waiting on idle connections; dropouts are counted against the sound
+  player only when its source kept time; fixed sleeps became waits for the
+  awaited state; macOS CI runners no longer index with Spotlight, which starved
+  the iOS simulator. Tests that never ran on Windows now run there by default
+  (CI's windows-rest job), with known failures being fixed listed explicitly.
 - Restore the source branch's regression tests and include shared identity,
   typing and terminal layout checks in Windows CI. Run the native Windows
   input checks and screen-control journeys with iPhone, iPad and Android
