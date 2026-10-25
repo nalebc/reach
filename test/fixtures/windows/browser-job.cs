@@ -82,19 +82,37 @@ static class BrowserJob {
     ACCOUNTING info; int returned;
     Check(QueryInformationJobObject(job, 1, out info, Marshal.SizeOf(typeof(ACCOUNTING)), out returned)); return info;
   }
+  // Opt-in, bounded timing only. None of these records proves Job ownership.
+  // The first marker uses the existing stderr before the status pipe is ready.
+  static void Progress(StreamWriter status, string stage, Stopwatch clock, bool enabled, ref int count) {
+    if (!enabled || count >= 16) return;
+    count++;
+    try {
+      string line = "{\"kind\":\"progress\",\"stage\":\"" + stage + "\",\"elapsedMs\":" + clock.ElapsedMilliseconds + "}";
+      if (status == null) { Console.Error.WriteLine("reach-browser-job-progress " + line); Console.Error.Flush(); }
+      else status.WriteLine(line);
+    } catch {}
+  }
 
   static int Main(string[] args) {
     IntPtr job = IntPtr.Zero, table = IntPtr.Zero, attributes = IntPtr.Zero, handleList = IntPtr.Zero, nul = Invalid;
     PROCESS_INFORMATION browser = new PROCESS_INFORMATION(); StreamWriter status = null;
     bool attributeListReady = false; string stage = "stdio"; var clock = Stopwatch.StartNew();
+    bool progress = Environment.GetEnvironmentVariable("REACH_TEST_BROWSER_JOB_PROGRESS") == "1"; int progressCount = 0;
+    // The target keeps its ordinary environment; this switch belongs only to
+    // the disposable broker and is never inherited by the browser process.
+    Progress(null, "main", clock, progress, ref progressCount);
     try {
+      if (progress) Environment.SetEnvironmentVariable("REACH_TEST_BROWSER_JOB_PROGRESS", null);
       STARTUPINFO inherited; GetStartupInfoW(out inherited);
       status = new StreamWriter(new FileStream(new SafeFileHandle(Handle(inherited, 5), false), FileAccess.Write), new UTF8Encoding(false)); status.AutoFlush = true;
+      Progress(status, "stdio-ready", clock, progress, ref progressCount);
       if (args.Length == 0) throw new InvalidOperationException("missing browser");
       stage = "job";
       job = CreateJobObjectW(IntPtr.Zero, null); Check(job != IntPtr.Zero);
       var limits = new EXTENDED_LIMITS(); limits.basic.flags = KILL_ON_JOB_CLOSE;
       Check(SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(EXTENDED_LIMITS))));
+      Progress(status, "job-ready", clock, progress, ref progressCount);
       var sa = new SECURITY_ATTRIBUTES { size = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)), inherit = true };
       nul = CreateFileW("NUL", 0x80000000, 3, ref sa, 3, 0, IntPtr.Zero); Check(nul != Invalid);
       table = Marshal.AllocHGlobal(4 + 5 * (1 + IntPtr.Size)); Marshal.WriteInt32(table, 5);
@@ -116,14 +134,19 @@ static class BrowserJob {
       startup.info.reservedHandles = table; startup.info.reservedBytes = (ushort)(4 + 5 * (1 + IntPtr.Size));
       var command = new StringBuilder(); foreach (string arg in args) { if (command.Length > 0) command.Append(' '); command.Append(Quote(arg)); }
       stage = "create-suspended";
+      Progress(status, "create-process-begin", clock, progress, ref progressCount);
       Check(CreateProcessW(args[0], command, IntPtr.Zero, IntPtr.Zero, true,
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, null, ref startup, out browser));
+      Progress(status, "create-process-returned", clock, progress, ref progressCount);
       stage = "assign"; Check(AssignProcessToJobObject(job, browser.process)); bool assigned; Check(IsProcessInJob(browser.process, job, out assigned) && assigned);
+      Progress(status, "assigned", clock, progress, ref progressCount);
       long created, exited, kernel, user; Check(GetProcessTimes(browser.process, out created, out exited, out kernel, out user));
       status.WriteLine("{\"kind\":\"started\",\"pid\":" + browser.pid + ",\"creationTime\":\"" + created + "\",\"assignedBeforeResume\":true,\"elapsedMs\":" + clock.ElapsedMilliseconds + "}");
       stage = "resume"; Check(ResumeThread(browser.thread) != uint.MaxValue); CloseHandle(browser.thread); browser.thread = IntPtr.Zero;
+      Progress(status, "resumed", clock, progress, ref progressCount);
       var terminate = new ManualResetEvent(false);
       new Thread(() => { try { while (Console.ReadLine() != null) { terminate.Set(); break; } } catch {} finally { terminate.Set(); } }) { IsBackground = true }.Start();
+      Progress(status, "control-ready", clock, progress, ref progressCount);
       bool requested = false, parentExited = false; long stopAt = 0;
       stage = "wait";
       for (;;) {
@@ -136,7 +159,7 @@ static class BrowserJob {
           status.WriteLine("{\"kind\":\"empty\",\"active\":0,\"total\":" + count.total + ",\"terminated\":" + (requested ? "true" : "false") + ",\"elapsedMs\":" + clock.ElapsedMilliseconds + "}");
           return 0;
         }
-        if (!requested && terminate.WaitOne(0)) { stage = "terminate"; Check(TerminateJobObject(job, 1)); requested = true; stopAt = clock.ElapsedMilliseconds; }
+        if (!requested && terminate.WaitOne(0)) { stage = "terminate"; Progress(status, "terminate-requested", clock, progress, ref progressCount); Check(TerminateJobObject(job, 1)); requested = true; stopAt = clock.ElapsedMilliseconds; }
         if (requested && clock.ElapsedMilliseconds - stopAt >= 2000) { stage = "termination-deadline"; throw new InvalidOperationException("owned processes remained"); }
         Thread.Sleep(10);
       }
@@ -145,6 +168,7 @@ static class BrowserJob {
       if (status != null) { try { status.WriteLine("{\"kind\":\"error\",\"stage\":\"" + stage + "\",\"win32\":" + (native == null ? 0 : native.NativeErrorCode) + "}"); } catch {} }
       return 1;
     } finally {
+      Progress(status, "dispose-begin", clock, progress, ref progressCount);
       // Assignment failure must never resume an unowned browser.
       if (browser.thread != IntPtr.Zero) { TerminateProcess(browser.process, 1); CloseHandle(browser.thread); }
       if (job != IntPtr.Zero) CloseHandle(job);
@@ -154,6 +178,7 @@ static class BrowserJob {
       if (handleList != IntPtr.Zero) Marshal.FreeHGlobal(handleList);
       if (table != IntPtr.Zero) Marshal.FreeHGlobal(table);
       if (nul != Invalid) CloseHandle(nul);
+      Progress(status, "dispose-complete", clock, progress, ref progressCount);
       if (status != null) status.Dispose();
     }
   }

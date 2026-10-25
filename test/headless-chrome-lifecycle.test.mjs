@@ -9,7 +9,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { promisify } from "node:util";
 import { launchChrome } from "./helpers/headless-chrome.mjs";
-import { prepareWindowsBrowserBroker, verifyPreparedBrowserBroker, windowsBrowserProcess } from "./helpers/windows-browser-lifetime.mjs";
+import { parseWindowsBrokerProgress, prepareWindowsBrowserBroker, verifyPreparedBrowserBroker, windowsBrokerStatusDetails, windowsBrowserProcess } from "./helpers/windows-browser-lifetime.mjs";
 
 let preparedBroker, diagnosticRemaining = 16384;
 test.before(async t => {
@@ -150,16 +150,44 @@ test("a permanent profile cleanup error remains visible and shutdown is not repe
 
 // A real failed child launch must retire CDP timers and cleanup hooks. The
 // subprocess must exit naturally; an unanswered 20 s call used to retain it.
+const failedStartStages = new Set(["script-entered", "handshake-begin", "native-owner-setup-begin", "prepared-broker-check-begin", "prepared-broker-verified", "prepared-broker-refused", "broker-spawn-begin", "broker-spawn-returned", "native-owner-setup-returned", "broker-progress", "broker-status", "child-exit", "child-close", "child-deadline", "handshake-refused", "cleanup-hook-begin", "cleanup-hook-end", "retired"]);
+const timingInteger = value => Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff;
+function failedStartTiming(line) {
+  if (line.length > 1500) return null;
+  let value; try { value = JSON.parse(line); } catch { return null; }
+  if (!value || !failedStartStages.has(value.stage) || !timingInteger(value.elapsedMs)) return null;
+  const result = { childStage: value.stage, childElapsedMs: value.elapsedMs };
+  for (const key of ["pid", "index", "bytes", "hookCount"])
+    if (timingInteger(value[key])) result[key] = value[key];
+  for (const key of ["refused", "ownerReturned"])
+    if (typeof value[key] === "boolean") result[key] = value[key];
+  if (value.exitCode === null || timingInteger(value.exitCode)) result.exitCode = value.exitCode;
+  if ([null, "SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV"].includes(value.signalCode)) result.signalCode = value.signalCode;
+  if (Array.isArray(value.pipes)) result.pipes = value.pipes.slice(0, 5).map(pipe => ({
+    readableEnded: pipe?.readableEnded === true, writableEnded: pipe?.writableEnded === true, destroyed: pipe?.destroyed === true,
+  }));
+  if (value.ownedTree?.owner === "windows-job") result.ownedTree = {
+    owner: "windows-job", protocolError: value.ownedTree.protocolError !== null,
+    events: Array.isArray(value.ownedTree.events) ? value.ownedTree.events.slice(-4).map(windowsBrokerStatusDetails).filter(Boolean) : [],
+  };
+  const progress = parseWindowsBrokerProgress({ kind: "progress", stage: value.nativeStage, elapsedMs: value.nativeElapsedMs });
+  if (progress && ["stderr", "status"].includes(value.channel)) Object.assign(result, { nativeStage: progress.stage, nativeElapsedMs: progress.elapsedMs, channel: value.channel });
+  if (value.stage === "broker-status") Object.assign(result, windowsBrokerStatusDetails({ ...value, kind: value.nativeKind, stage: value.nativeStage, elapsedMs: value.nativeElapsedMs }));
+  return result;
+}
+
 test("failed browser startup releases protocol calls and exits naturally after cleanup", { timeout: 15000 }, async t => {
   const helper = new URL("./helpers/headless-chrome.mjs", import.meta.url).href;
   const windowsOwner = new URL("./helpers/windows-browser-lifetime.mjs", import.meta.url).href;
   const guard = new URL("./helpers/runaway-guard.mjs", import.meta.url).href;
+  const parentBudget = Math.min(6144, diagnosticRemaining);
+  const reserve = Math.min(1024, parentBudget);
   const script = `
     import { launchChrome } from ${JSON.stringify(helper)};
     import { windowsBrowserProcess } from ${JSON.stringify(windowsOwner)};
     const hooks = [];
     const began = performance.now();
-    let remaining = ${diagnosticRemaining}, owner;
+    let remaining = ${Math.max(0, diagnosticRemaining - parentBudget)}, owner;
     const mark = (stage, details = {}) => {
       const base = { stage, elapsedMs: Math.round(performance.now() - began) };
       let line = JSON.stringify({ ...base, ...details });
@@ -174,12 +202,14 @@ test("failed browser startup releases protocol calls and exits naturally after c
       const child = owner.child, tree = owner.snapshot?.();
       return {
         pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode,
-        pipes: [child.stderr, child.stdio[3], child.stdio[4]].map(pipe => ({
+        pipes: [child.stdin, child.stderr, child.stdio[3], child.stdio[4], child.stdio[5]].map(pipe => ({
           readableEnded: pipe?.readableEnded === true, writableEnded: pipe?.writableEnded === true, destroyed: pipe?.destroyed === true,
         })),
         ...(tree ? { ownedTree: { owner: tree.owner, protocolError: tree.protocolError, events: tree.events?.slice(-4) } } : {}),
       };
     };
+    const deadline = setTimeout(() => mark("child-deadline", { hookCount: hooks.length, ...snapshot() }), 8000);
+    deadline.unref();
     mark("script-entered", { platform: process.platform, arch: process.arch });
     const options = { binary: process.execPath };
     if (process.platform === "win32") {
@@ -201,7 +231,7 @@ test("failed browser startup releases protocol calls and exits naturally after c
       await launchChrome({ after: (fn) => hooks.push(fn) }, options);
     } catch (error) {
       refused = error instanceof Error;
-      mark("handshake-refused", { refused, name: error?.name, message: String(error?.message || "").slice(0, 400), ...snapshot() });
+      mark("handshake-refused", { refused, ...snapshot() });
     }
     for (const [index, close] of hooks.entries()) {
       mark("cleanup-hook-begin", { index, ...snapshot() });
@@ -209,17 +239,76 @@ test("failed browser startup releases protocol calls and exits naturally after c
       mark("cleanup-hook-end", { index, ...snapshot() });
     }
     if (!refused) throw Error("The non-browser must fail its handshake");
+    clearTimeout(deadline);
     mark("retired", snapshot());
     process.stdout.write("retired\\n");
   `;
-  const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true,
-    ...(preparedBroker ? { env: { ...process.env, REACH_TEST_PREPARED_BROWSER_BROKER: JSON.stringify(preparedBroker) } } : {}),
-  }).catch(error => {
-    t.diagnostic(typeof error.stderr === "string" && error.stderr ? error.stderr : "No failed-start subprocess stderr markers were captured.");
-    throw error;
-  });
-  t.diagnostic(stderr);
-  assert.equal(stdout.trim(), "retired");
+  // This clock starts before execFile. Arrival includes spawn/startup AND pipe
+  // delivery/parent scheduling; it is not an exact Node-bootstrap duration.
+  const parentBegan = performance.now();
+  let child, remaining = parentBudget - reserve, reservedRemaining = reserve, firstStderrMs = null, firstMarkerMs = null;
+  let stderrBytes = 0, markerCount = 0, line = "", discard = false;
+  const elapsed = () => Math.round(performance.now() - parentBegan);
+  const parentSnapshot = () => ({ pid: child?.pid ?? null, exitCode: child?.exitCode ?? null, signalCode: child?.signalCode ?? null,
+    stderrBytes, markerCount, firstStderrMs, firstMarkerMs });
+  const parentMark = (stage, details = {}, reserved = false) => {
+    const text = JSON.stringify({ phase: "parent", stage, parentElapsedMs: elapsed(), ...details }) + "\n";
+    const bytes = Buffer.byteLength(text);
+    if (bytes > (reserved ? reservedRemaining : remaining)) return;
+    if (reserved) reservedRemaining -= bytes;
+    else remaining -= bytes;
+    process.stderr.write(text);
+  };
+  const deadline = setTimeout(() => parentMark("parent-deadline", parentSnapshot(), true), 8000);
+  deadline.unref();
+  try {
+    const pending = promisify(execFile)(process.execPath, ["--import", guard, "--input-type=module", "-e", script], { timeout: 10000, windowsHide: true,
+      ...(preparedBroker ? { env: { ...process.env, REACH_TEST_PREPARED_BROWSER_BROKER: JSON.stringify(preparedBroker) } } : {}),
+    });
+    child = pending.child;
+    parentMark("parent-exec-returned", parentSnapshot());
+    child.once("spawn", () => parentMark("parent-spawn", parentSnapshot()));
+    child.once("exit", () => parentMark("parent-exit", parentSnapshot()));
+    child.stderr.on("data", chunk => {
+      stderrBytes = Math.min(0xffffffff, stderrBytes + Buffer.byteLength(chunk));
+      if (firstStderrMs === null) { firstStderrMs = elapsed(); parentMark("parent-first-stderr", parentSnapshot()); }
+      for (const part of chunk.toString("utf8").split(/(?<=\n)/)) {
+        if (!discard && line.length + part.length > 1500) { discard = true; line = ""; }
+        if (!discard) line += part;
+        if (!part.endsWith("\n")) continue;
+        const timing = !discard && failedStartTiming(line);
+        if (timing && markerCount < 64) {
+          markerCount++;
+          if (firstMarkerMs === null) firstMarkerMs = elapsed();
+          parentMark("parent-child-marker", timing);
+        }
+        line = ""; discard = false;
+      }
+    });
+    const { stdout } = await pending;
+    parentMark("parent-complete", parentSnapshot());
+    assert.equal(stdout.trim(), "retired");
+  } catch (error) {
+    parentMark("parent-failed", { ...parentSnapshot(), killed: error?.killed === true }, true);
+    // execFile errors embed the whole command/script and raw stderr. The
+    // allowlisted observations above preserve timing without publishing them.
+    throw Error("Failed-start subprocess did not pass its existing 10-second behavior check");
+  } finally { clearTimeout(deadline); }
+});
+
+test("broker timing observations are bounded and cannot masquerade as ownership proof or disclose raw data", () => {
+  assert.deepEqual(parseWindowsBrokerProgress({ kind: "progress", stage: "main", elapsedMs: 0 }), { kind: "progress", stage: "main", elapsedMs: 0 });
+  for (const value of [{ kind: "started", stage: "main", elapsedMs: 0 }, { kind: "progress", stage: "secret-path", elapsedMs: 0 },
+    { kind: "progress", stage: "main", elapsedMs: -1 }, { kind: "progress", stage: "main", elapsedMs: Infinity },
+    { kind: "progress", stage: "main", elapsedMs: 86400001 }, { kind: "progress", stage: "main", elapsedMs: 0, message: "secret" }])
+    assert.equal(parseWindowsBrokerProgress(value), null);
+  assert.equal(windowsBrokerStatusDetails({ kind: "progress", stage: "empty", active: 0 }), null);
+  assert.equal(failedStartTiming("x".repeat(1501)), null);
+  assert.equal(failedStartTiming(JSON.stringify({ stage: "unknown", elapsedMs: 1 })), null);
+  const observed = failedStartTiming(JSON.stringify({ stage: "broker-status", elapsedMs: 7, nativeKind: "empty", nativeElapsedMs: 4,
+    active: 0, total: 1, terminated: false, creationTime: "private-creation-time", message: "secret", argv: ["secret"] }));
+  assert.deepEqual(observed, { childStage: "broker-status", childElapsedMs: 7, nativeKind: "empty", active: 0, total: 1, terminated: false, nativeElapsedMs: 4 });
+  assert.equal(JSON.stringify(observed).includes("secret"), false);
 });
 
 // These are descriptor-refusal models using guard-only bytes. They never run
