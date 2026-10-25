@@ -1077,6 +1077,7 @@ function ReachWorkspace() {
                     openMacTab={(id) => {
                       navigate("terminal", { then: () => setTerminalSource(`mac:${id}`) });
                     }}
+                    onTerminals={() => navigate("terminal", { then: () => setTerminalSource("list") })}
                     agentSessions={agentFeed.sessions || []}
                     macPrompts={agentFeed.macPrompts}
                     showOnScreen={showOnScreen}

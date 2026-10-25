@@ -9,7 +9,8 @@ type Peeks = Record<string, Peek>;
 // Live last lines of each running Reach terminal, streamed over the same
 // connection the terminal page uses. No polling; updates as output arrives.
 export function useTerminalPeeks(peer: Peer, sessions: Session[], limit = 6) {
-  const [peeks, setPeeks] = useState<Peeks>({});
+  const scope = JSON.stringify([peer.id, peer.url, peer.token]);
+  const [held, setPeeks] = useState<{ scope: string; peeks: Peeks }>({ scope, peeks: {} });
   const ids = sessions
     .filter((s) => s.status === "running")
     .slice(0, limit)
@@ -24,14 +25,15 @@ export function useTerminalPeeks(peer: Peer, sessions: Session[], limit = 6) {
     let pending: ReturnType<typeof setTimeout> | undefined;
     const publish = () => {
       pending = undefined;
-      setPeeks((current) => {
-        const next = { ...current };
+      if (stopped) return;
+      setPeeks(() => {
+        const next: Peeks = {};
         for (const id of ids)
           next[id] = {
             lines: terminalPreview(buffers[id] || ""),
             at: arrived[id] || 0,
           };
-        return next;
+        return { scope, peeks: next };
       });
     };
     const schedule = () => {
@@ -50,6 +52,7 @@ export function useTerminalPeeks(peer: Peer, sessions: Session[], limit = 6) {
         ws.send(JSON.stringify({ type: "auth", token: peer.token, sessionId: id }));
       };
       ws.onmessage = (event) => {
+        if (stopped) return;
         let message;
         try {
           message = JSON.parse(event.data);
@@ -85,6 +88,6 @@ export function useTerminalPeeks(peer: Peer, sessions: Session[], limit = 6) {
       clearTimeout(pending);
       for (const ws of sockets) ws.close();
     };
-  }, [peer.url, peer.token, key]);
-  return peeks;
+  }, [scope, key]);
+  return held.scope === scope ? held.peeks : {};
 }

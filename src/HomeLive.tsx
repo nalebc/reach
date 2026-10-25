@@ -44,6 +44,7 @@ import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
 import { useRemoteScreen } from "./useRemoteScreen";
 import { useTerminalPeeks } from "./useTerminalPeeks";
+import HomeTerminals from "./HomeTerminals";
 import { useShortcuts } from "./shortcuts";
 import ShortcutIcon from "./ShortcutIcon";
 import { PauseButton } from "./PauseControl";
@@ -58,8 +59,6 @@ const agentName: Record<string, string> = {
   gemini: "Gemini CLI",
   openclaw: "OpenClaw",
 };
-// Output within this window makes a story ring spin.
-const ACTIVE_MS = 4000;
 // A chat that ended its turn this recently keeps its circle, marked done.
 const DONE_MS = 10 * 60 * 1000;
 
@@ -182,16 +181,19 @@ function useMacTabs(
   visible: boolean,
   changes?: string,
 ) {
+  const peerKey = JSON.stringify([peer.id, peer.url, peer.token]);
+  const [seenPeer, setSeenPeer] = useState(peerKey);
   const [tabs, setTabs] = useState<MacTerminal[]>([]);
   const [peeks, setPeeks] = useState<
     Record<string, { line: string; at: number }>
   >({});
   const list = useRef<MacTerminal[]>([]);
   useEffect(() => {
+    setSeenPeer(peerKey);
     list.current = [];
     setTabs([]);
     setPeeks({});
-  }, [peer.url, peer.token]);
+  }, [peerKey]);
   // A Mac that tells when its Terminal windows change is asked only then
   // (server/mac-terminal-watch.mjs); others every few seconds, as before.
   const pushed = macTerminalsFingerprint(changes);
@@ -201,7 +203,7 @@ function useMacTabs(
     setPeeks((current) =>
       current[id]?.line === line
         ? current
-        : { ...current, [id]: { line, at: Date.now() } },
+        : { ...current, [id]: { line, at: current[id] ? Date.now() : 0 } },
     );
   useEffect(() => {
     if (!enabled || !visible) return;
@@ -217,6 +219,10 @@ function useMacTabs(
         setTabs(r.sessions);
       } catch {
         /* Permission or app missing: no Mac tabs on Home. */
+        if (!stopped) {
+          list.current = [];
+          setTabs([]);
+        }
       }
     };
     void refresh();
@@ -225,7 +231,7 @@ function useMacTabs(
       stopped = true;
       clearInterval(lister);
     };
-  }, [enabled, visible, peer.url, peer.token, told, pushed]);
+  }, [enabled, visible, peerKey, told, pushed]);
   useEffect(() => {
     if (!enabled || !visible) return;
     let stopped = false;
@@ -249,6 +255,7 @@ function useMacTabs(
             // Nothing new right away: never spin.
             if (r.version === version)
               await new Promise((r) => setTimeout(r, 1000));
+            if (stopped) return;
             version = r.version;
             for (const [id, line] of Object.entries(r.peeks || {}))
               note(id, String(line));
@@ -292,8 +299,8 @@ function useMacTabs(
       stopped = true;
       clearInterval(reader);
     };
-  }, [enabled, visible, peer.url, peer.token, told]);
-  return { tabs: enabled ? tabs : [], peeks };
+  }, [enabled, visible, peerKey, told]);
+  return { tabs: enabled && seenPeer === peerKey ? tabs : [], peeks: seenPeer === peerKey ? peeks : {} };
 }
 
 export default function HomeLive({
@@ -313,6 +320,7 @@ export default function HomeLive({
   openChat,
   openTerminal,
   openMacTab,
+  onTerminals,
   agentSessions = [],
   macPrompts = [],
   openAgentSession,
@@ -338,6 +346,7 @@ export default function HomeLive({
   openChat: (id: string) => void;
   openTerminal: (id: string) => void;
   openMacTab: (id: string) => void;
+  onTerminals?: () => void;
   // Codex and Claude Code sessions anywhere on the Mac (the Chat feed).
   agentSessions?: AgentSession[];
   // What macOS itself is asking right now (answered at the Mac).
@@ -470,36 +479,7 @@ export default function HomeLive({
   const needsYou = needItems.length > 0;
   // A notification's request: opened for review the moment it's here.
   useOpenWantedNeed(needItems);
-  const recent = (at: number) => at > 0 && now - at < ACTIVE_MS;
   const stories: Story[] = [
-    ...(features.terminal ? terminals : [])
-      .filter((t) => t.status === "running")
-      .map((t): Story => {
-        const peek = peeks[t.id];
-        const lines = peek ? peek.lines : t.preview;
-        return {
-          key: `terminal:${t.id}`,
-          name: t.name,
-          kind: kindOf(t.name),
-          state: recent(peek?.at || 0) ? "active" : "running",
-          line: lines?.[lines.length - 1],
-          at: peek?.at || 0,
-          open: () => openTerminal(t.id),
-        };
-      }),
-    ...mac.tabs.map((t): Story => {
-      const peek = mac.peeks[t.id];
-      return {
-        key: `mac:${t.id}`,
-        name: t.name || "Terminal",
-        kind: kindOf(t.name || ""),
-        mac: true,
-        state: recent(peek?.at || 0) ? "active" : "running",
-        line: peek?.line,
-        at: peek?.at || 0,
-        open: () => openMacTab(t.id),
-      };
-    }),
     // Agent sessions working anywhere on the Mac: apps, terminals, Reach.
     // Just finished (or failed): kept a few minutes, so you see it's done.
     ...(openAgentSession ? agentSessions : [])
@@ -789,6 +769,19 @@ export default function HomeLive({
       {browserApprovals.review}
       {agentAdmissions.review}
 
+      <HomeTerminals
+        peer={peer}
+        sessions={features.terminal ? terminals : []}
+        tabs={mac.tabs}
+        peeks={peeks}
+        desktopPeeks={mac.peeks}
+        now={now}
+        logos={logos}
+        onOpen={openTerminal}
+        onOpenDesktop={openMacTab}
+        onAll={onTerminals || (() => navigate("terminal"))}
+      />
+
       {(canPlus || stories.length > 0) && (
         <section
           className="home-section"
@@ -844,8 +837,7 @@ export default function HomeLive({
             ))}
             {!stories.length && canStart && (
               <p className="home-stories-hint">
-                Start an agent or a terminal on {device.name}. It shows up
-                here while it runs.
+                Start an agent or a terminal on {device.name}.
               </p>
             )}
           </div>

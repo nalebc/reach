@@ -1,0 +1,63 @@
+.home-terminals {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.home-terminals > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+}
+.home-terminals h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.home-terminals h2 span {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.home-terminals > header button {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 44px;
+  border: 0;
+  padding: 0 4px;
+  background: none;
+  color: var(--lime);
+  font: inherit;
+  font-size: 12px;
+}
+.home-terminal {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 76px;
+  padding: 12px 14px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+.home-terminal:active { background: #b9efd40c; }
+.home-terminal:focus-visible, .home-terminals > header button:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: -3px;
+}
+.home-terminal-icon { display: grid; place-items: center; flex: 0 0 32px; }
+.home-terminal-copy { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.home-terminal-copy > * { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.home-terminal-copy small { color: var(--lime); font-size: 11px; }
+.home-terminal-copy strong { font-size: 14px; font-weight: 600; }
+.home-terminal-copy > span { color: var(--muted); font-size: 12px; }
+.home-terminal > svg { flex-shrink: 0; color: var(--muted); }
+.home-terminals > p { margin: 0; padding: 0 14px 16px; color: var(--muted); font-size: 13px; }

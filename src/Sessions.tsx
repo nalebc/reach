@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -19,6 +19,7 @@ import {
 import { usePhonePaste } from "./TerminalPaste";
 import { useViewportBox } from "./useViewportBox";
 import { useTerminalHistory } from "./useTerminalHistory";
+import { useViewState, viewScope } from "./view-memory";
 import {
   altArrowWords,
   disposeLater,
@@ -88,7 +89,7 @@ export function TerminalView({
   const history = useTerminalHistory();
   const [connected, setConnected] = useState(false),
     [error, setError] = useState(""),
-    [menu, setMenu] = useState<"switch" | "new" | null>(null),
+    [menu, setMenu] = useState<"switch" | "new" | null>(source === "list" ? "switch" : null),
     [ctrl, setCtrl] = useState(false),
     [agents, setAgents] = useState<string[] | null>(null),
     [macTabs, setMacTabs] = useState<MacTerminal[]>(
@@ -103,12 +104,14 @@ export function TerminalView({
     ),
     [macLoaded, setMacLoaded] = useState(() => knownMacTabs.has(peer.id)),
     // Looked at the Mac since this page opened (not just remembered).
-    [macFresh, setMacFresh] = useState(false),
+    [macFreshPeer, setMacFreshPeer] = useState(""),
     [slide, setSlide] = useState<"next" | "previous" | "">(""),
     [starting, setStarting] = useState(false);
   // The computer's own terminal windows: a Mac's, or a Windows PC's.
   const showMacTabs =
     desktopTerminals && ["darwin", "win32"].includes(peer.platform);
+  const peerKey = JSON.stringify([peer.id, peer.url, peer.token]);
+  const macFresh = macFreshPeer === peerKey;
   const word = computerWord(peer.platform);
   const macTab = macTabs.find((t) => t.id === macSelected);
   const current = macTab
@@ -126,6 +129,17 @@ export function TerminalView({
     : current
       ? `reach:${current.id}`
       : "";
+  const [, rememberTerminal] = useViewState(viewScope(peer, "terminal"), "lastViewed", "");
+  // Save before paint so an immediate Back keeps the terminal just opened.
+  useLayoutEffect(() => {
+    if (!menu && ((macTab && macFresh && !macError) || (!macSelected && current?.status === "running")))
+      rememberTerminal(currentKey);
+  }, [currentKey, current?.status, macSelected, macFresh, macError, menu, rememberTerminal]);
+  useEffect(() => {
+    if (source !== "list") return;
+    setMenu("switch");
+    setSource("reach");
+  }, [source]);
   const position = items.findIndex((item) => item.key === currentKey);
   const choose = (item: (typeof items)[number], direction?: "next" | "previous") => {
     setSlide(direction ?? "");
@@ -157,7 +171,7 @@ export function TerminalView({
           (r.providers || []).reduce((n, p) => n + (p.administrator || 0), 0),
         );
         setMacLoaded(true);
-        setMacFresh(true);
+        setMacFreshPeer(peerKey);
         setMacError("");
       } catch (e) {
         if (!stopped) setMacError((e as Error).message);
@@ -172,7 +186,7 @@ export function TerminalView({
       clearInterval(timer);
       document.removeEventListener("visibilitychange", shown);
     };
-  }, [showMacTabs, peer.url, peer.token, told, pushed]);
+  }, [showMacTabs, peerKey, told, pushed]);
   // A shell chosen or started elsewhere (e.g. "In another folder…") comes to
   // the front. Only a real change counts: opening a Mac tab from Home, or the
   // newest shell being picked automatically, keeps the Mac tab.
@@ -613,7 +627,7 @@ export function TerminalView({
         </div>
       )}
       {error && !macTab && <div className="terminal-error">{error}</div>}
-      {menu === "switch" && (
+      {menu === "switch" && !listing && (
         <div className="terminal-sheet">
           <TerminalList
             peer={peer}

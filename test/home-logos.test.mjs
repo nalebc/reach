@@ -21,7 +21,16 @@ before(async () => {
 });
 after(() => dom?.close());
 
-test("Home's circles are filled by the real app icons, terminals included", async () => {
+test("Home uses real app icons for active chats and the resumable terminal", async () => {
+  const { useViewState, viewScope } = await dom.load("/src/view-memory.ts");
+  let remember;
+  function ViewedTerminal() {
+    [, remember] = useViewState(viewScope(peer, "terminal"), "lastViewed", "");
+    return null;
+  }
+  const previous = await dom.render(React.createElement(ViewedTerminal));
+  dom.update(() => remember("mac:t1"));
+  await previous.unmount();
   const view = await dom.render(
     React.createElement(HomeLive, {
       features: { terminal: false, codex: false, screen: false, desktopTerminals: true, shortcuts: false, owner: false, writeFiles: false },
@@ -47,11 +56,11 @@ test("Home's circles are filled by the real app icons, terminals included", asyn
       toast() {},
     }),
   );
-  const icons = () => [...dom.document.querySelectorAll(".story-ring img.agent-logo")];
+  const icons = () => [...dom.document.querySelectorAll(".story-ring img.agent-logo, .home-terminal-icon img.agent-logo")];
   await dom.waitFor(() => icons().length === 2);
   assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex", "Terminal"]);
   // Sized by the frame (drawn larger and cropped), not a small fixed icon in the middle.
-  for (const icon of icons()) {
+  for (const icon of icons().filter(i => i.closest(".story-ring"))) {
     assert.ok(icon.classList.contains("fill"), `${icon.alt} fills its circle`);
     assert.equal(icon.getAttribute("style"), null);
   }
