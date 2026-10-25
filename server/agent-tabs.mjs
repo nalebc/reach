@@ -69,9 +69,13 @@ export function createAgentTabs({
   let timer = null,
     closed = false,
     sweeping = null;
+  let fd = null;
   try {
-    const data = fs.existsSync(file) && !fs.lstatSync(file).isSymbolicLink() && fs.statSync(file).size <= 256 * 1024
-      ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+    // Opened once and read from what was opened, never through a link
+    // (CodeQL js/file-system-race).
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const opened = fs.fstatSync(fd);
+    const data = opened.isFile() && opened.size <= 256 * 1024 ? JSON.parse(fs.readFileSync(fd, "utf8")) : [];
     for (const entry of Array.isArray(data) ? data : [])
       if (isPlainRecord(entry) && typeof entry.clientId === "string" && ["Chrome", "Edge"].includes(entry.browser) &&
           Number.isInteger(entry.window) && Number.isInteger(entry.tab) && typeof entry.url === "string" && tabs.size < AGENT_TABS)
@@ -80,7 +84,9 @@ export function createAgentTabs({
         tabs.set(tabKey(entry), { clientId: entry.clientId, browser: entry.browser, window: entry.window, tab: entry.tab,
           url: entry.url, seenAt: now(), restored: true, attempts: 0 });
   } catch {
-    /* unreadable: nothing to close */
+    /* missing or unreadable: nothing to close */
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch { /* closed */ }
   }
   const save = () => {
     try {

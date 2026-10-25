@@ -48,6 +48,8 @@ function browser() {
       return tab;
     },
     urls: () => windows.flatMap((window) => window.tabs.map((tab) => tab.url)),
+    // Whether a tab is on exactly this address.
+    has: (url) => windows.some((window) => window.tabs.some((tab) => tab.url === url)),
     closes: () => requests.filter((request) => request.op === "close"),
   };
 }
@@ -192,7 +194,7 @@ test("a tab taken to another site, or closed already, is left alone", async (t) 
   await w.tabs.sweep();
   assert.equal(w.b.closes().length, 0);
   assert.deepEqual(w.tabs.list(), []);
-  assert.ok(w.b.urls().includes("https://www.wikipedia.org/"));
+  assert.ok(w.b.has("https://www.wikipedia.org/"));
 });
 
 test("pages the agent went on to are still its own: its activity says where its tabs are", async (t) => {
@@ -203,7 +205,7 @@ test("pages the agent went on to are still its own: its activity says where its 
   // The agent's own click took it there; a moment later Reach looks.
   const result = await w.tabs.closeOwn("grok");
   assert.deepEqual(result, { closed: 1, open: 0 });
-  assert.ok(!w.b.urls().includes("https://en.wikipedia.org/wiki/Tab"));
+  assert.ok(!w.b.has("https://en.wikipedia.org/wiki/Tab"));
 });
 
 test("an agent closes its own tabs when it's done: all, or one site's", async (t) => {
@@ -214,7 +216,7 @@ test("an agent closes its own tabs when it's done: all, or one site's", async (t
   await w.opens("muse", "https://www.amazon.com/");
   assert.deepEqual(await w.tabs.closeOwn("grok", { url: "https://ubereats.com" }), { closed: 1, open: 1 });
   assert.deepEqual(await w.tabs.closeOwn("grok"), { closed: 1, open: 0 });
-  assert.ok(w.b.urls().includes("https://www.amazon.com/"), "another agent's tab stays");
+  assert.ok(w.b.has("https://www.amazon.com/"), "another agent's tab stays");
   const none = await w.tabs.closeOwn("grok");
   assert.equal(none.closed, 0);
   assert.match(none.note, /close them yourself/);
@@ -226,7 +228,7 @@ test("past its own limit, an agent's oldest tab closes behind", async (t) => {
   for (let i = 0; i <= AGENT_TABS_EACH; i++) await w.opens("grok", `https://site${i}.example.com/`);
   await settle(w);
   assert.equal(w.tabs.list().length, AGENT_TABS_EACH);
-  assert.ok(!w.b.urls().includes("https://site0.example.com/"));
+  assert.ok(!w.b.has("https://site0.example.com/"));
   assert.ok(w.b.closes().every((request) => request.behind === true));
 });
 
