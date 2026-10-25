@@ -2,8 +2,7 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { startDom } from "./dom/harness.mjs";
 
-// Home at a glance: who else is on the computer, and chats that just
-// finished keeping their circle.
+// Home keeps access and requests visible, without a chat activity feed.
 const peer = { id: "mac", name: "Mac", url: "https://mac.test", token: "t", platform: "darwin" };
 let dom, React, HomeLive;
 // Who the computer says may use it (for the Access card).
@@ -60,7 +59,7 @@ const home = (props = {}) =>
     ...props,
   });
 
-test("chats that just finished keep their circle a few minutes, marked done or failed", async () => {
+test("Home does not repeat active or recent chats as an activity section", async () => {
   const view = await dom.render(
     home({
       agentSessions: [
@@ -71,13 +70,8 @@ test("chats that just finished keep their circle a few minutes, marked done or f
       ],
     }),
   );
-  const ring = (name) => dom.document.querySelector(`.story[aria-label^="${name}"] .story-ring`);
-  await dom.waitFor(() => ring("Fix login"));
-  assert.ok(ring("Fix login").classList.contains("done"));
-  assert.ok(ring("Fix login").querySelector(".story-mark"));
-  assert.ok(ring("Broken build").classList.contains("failed"));
-  assert.ok(ring("Working").classList.contains("active"));
-  assert.equal(ring("Long done"), null);
+  assert.equal(dom.document.querySelector(".home-section, .home-stories, .home-now"), null);
+  assert.doesNotMatch(view.container.textContent, /Fix login|Broken build|Long done|Working/);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });

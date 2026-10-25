@@ -4,7 +4,7 @@ import os from "node:os";
 import { startComputer, phone, skip, word, desktop } from "../helpers/journey.mjs";
 
 // Home, the first page a new phone sees once it's in: the computer's card
-// with its own name, its status and what's live on it, and the Access card
+// with its own name, screen preview and status, and the Access card
 // (who may use it, one tap from Agents & people and Invite). Its words name
 // the computer as it is: "Mac" on a Mac, "Windows PC" on a Windows PC.
 const name = os.hostname().replace(/\.local$/, "");
@@ -23,10 +23,7 @@ test(`Home: a new phone signs in, and Home shows this ${word} by its name, onlin
       "the screen live on the card, or why not",
       90000,
     );
-  // What runs on it: its own terminals as they are, or how to start one.
-  const live = await page.see(() => document.querySelector(".home-section")?.innerText, `"Live on your ${word}"`);
-  assert.match(live, new RegExp(`^Live on your ${word}\\n`));
-  assert.match(live, /\b(Start|New)\b/);
+  assert.equal(await page.evaluate(`!!document.querySelector(".home-section, .home-stories, .home-now")`), false, "Home has no chat activity section");
   // The Access card: only you so far, Agents & people one tap away.
   const access = await page.see(() => document.querySelector(".home-access")?.innerText, "the Access card");
   assert.match(access, /Only you/);

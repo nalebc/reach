@@ -1,24 +1,15 @@
 import { useOpenWantedNeed } from "./deep-link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  Asterisk,
   Bell,
   Bot,
-  Check,
   ChevronRight,
-  LoaderCircle,
-  MessageSquare,
   Monitor,
-  Pencil,
   Plus,
   Smartphone,
-  Sparkles,
   Tablet,
-  Terminal,
-  Upload,
 } from "lucide-react";
 import {
-  post,
   request,
   type AgentRequest,
   type Device,
@@ -38,25 +29,13 @@ import { usePermissionRequests } from "./permission-requests";
 import { useWaitingPeople } from "./waiting-people";
 import { useBellNeeds } from "./Notifications";
 import { requestWords } from "./scope-words";
-import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
-import ScreenPopup from "./ScreenPopup";
+import { useAgentLogos } from "./agent-logos";
 import { useRemoteScreen } from "./useRemoteScreen";
-import { useShortcuts } from "./shortcuts";
-import ShortcutIcon from "./ShortcutIcon";
 import { PauseButton } from "./PauseControl";
 import { accessOf, hasAccessNow, listedAccess, statusIn, type AccessSession } from "./access-list";
 import { Mascot } from "./Mascot";
 import { computerWord, pausedIn } from "./pause";
 import "./home-live.css";
-
-const agentName: Record<string, string> = {
-  codex: "Codex",
-  claude: "Claude Code",
-  gemini: "Gemini CLI",
-  openclaw: "OpenClaw",
-};
-// A chat that ended its turn this recently keeps its circle, marked done.
-const DONE_MS = 10 * 60 * 1000;
 
 // Why the live preview shows no fresh picture, as one short pill ("" while
 // it's live or simply starting): tapped, it tries again.
@@ -83,59 +62,6 @@ const DeviceGlyph = ({ device, size = 15 }: { device: ConnectedDevice; size?: nu
   ) : (
     <Monitor size={size} />
   );
-
-// One circle in "Live on your Mac", like a story.
-type Story = {
-  key: string;
-  name: string;
-  kind: "codex" | "claude" | "gemini" | "shell" | "chat";
-  mac?: boolean;
-  state: "attention" | "failed" | "active" | "done" | "running" | "idle";
-  line?: string;
-  at: number;
-  open: () => void;
-};
-const kindOf = (name: string): Story["kind"] =>
-  /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : /gemini/i.test(name) ? "gemini" : "shell";
-// Codex, Claude Code and terminals wear their real app icons (from the Mac),
-// filling the round frame.
-const Glyph = ({
-  kind,
-  logos = {},
-}: {
-  kind: Story["kind"];
-  logos?: AgentLogos;
-}) => {
-  const icon = kind === "shell" ? "terminal" : kind;
-  // Gemini's mark ships with Reach (no app to read it from).
-  if (kind === "gemini") return <AgentLogo agent="gemini" logos={logos} size={30} />;
-  return logos[icon] && icon !== "chat" ? (
-    <AgentLogo
-      agent={icon}
-      logos={logos}
-      name={icon === "terminal" ? "Terminal" : undefined}
-      fill
-    />
-  ) : kind === "codex" ? (
-    <Sparkles size={22} />
-  ) : kind === "claude" ? (
-    <Asterisk size={24} />
-  ) : kind === "chat" ? (
-    <MessageSquare size={21} />
-  ) : (
-    <Terminal size={22} />
-  );
-};
-const ago = (at: number, now: number) => {
-  const s = Math.max(0, Math.round((now - at) / 1000));
-  return s < 5
-    ? "now"
-    : s < 60
-      ? `${s}s ago`
-      : s < 3600
-        ? `${Math.floor(s / 60)}m ago`
-        : `${Math.floor(s / 3600)}h ago`;
-};
 
 function usePageVisible() {
   const [visible, setVisible] = useState(!document.hidden);
@@ -183,12 +109,10 @@ export default function HomeLive({
   decide,
   navigate,
   openChat,
-  openTerminal,
   agentSessions = [],
   macPrompts = [],
   openAgentSession,
   showOnScreen,
-  onShortcuts,
   refreshSessions,
   toast,
 }: {
@@ -206,7 +130,6 @@ export default function HomeLive({
   decide: (request: AgentRequest, decision: "approve" | "deny") => void;
   navigate: (page: string) => void;
   openChat: (id: string) => void;
-  openTerminal: (id: string) => void;
   // Codex and Claude Code sessions anywhere on the Mac (the Chat feed).
   agentSessions?: AgentSession[];
   // What macOS itself is asking right now (answered at the Mac).
@@ -214,7 +137,6 @@ export default function HomeLive({
   openAgentSession?: (session: AgentSession) => void;
   // Opens the live screen on a Mac dialog, to answer it there.
   showOnScreen?: (prompt: MacPrompt) => void;
-  onShortcuts: () => void;
   refreshSessions: () => void;
   toast: (message: string) => void;
 }) {
@@ -246,13 +168,6 @@ export default function HomeLive({
   const heroPill = watching
     ? heroStatus(stream, computerWord(device.platform))
     : "";
-  // Ages and spinning rings follow the clock.
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!visible) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [visible]);
   const waitingChats = features.codex
     ? chats.filter((c) => c.status === "waiting")
     : [];
@@ -332,111 +247,6 @@ export default function HomeLive({
   const needsYou = needItems.length > 0;
   // A notification's request: opened for review the moment it's here.
   useOpenWantedNeed(needItems);
-  const stories: Story[] = [
-    // Agent sessions working anywhere on the Mac: apps, terminals, Reach.
-    // Just finished (or failed): kept a few minutes, so you see it's done.
-    ...(openAgentSession ? agentSessions : [])
-      .filter(
-        (s) =>
-          !s.archived &&
-          (s.live || s.status !== "idle" || now - s.updatedAt < DONE_MS),
-      )
-      .map((s): Story => ({
-        key: `agent:${s.agent}:${s.id}`,
-        name: s.title,
-        kind: s.agent,
-        state:
-          s.status === "waiting"
-            ? "attention"
-            : s.status === "running"
-              ? "active"
-              : now - s.updatedAt < DONE_MS
-                ? s.status === "error"
-                  ? "failed"
-                  : "done"
-                : "running",
-        line: s.preview,
-        at: s.updatedAt,
-        open: () => openAgentSession!(s),
-      })),
-  ];
-  // What needs you first, then what is printing right now, newest first.
-  const rank = { attention: 0, failed: 1, active: 2, done: 3, running: 4, idle: 5 };
-  stories.sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
-  // At most six agent sessions, chosen after ranking so attention is never cut.
-  let agentShown = 0;
-  const ranked = stories.filter((s) => !s.key.startsWith("agent:") || ++agentShown <= 6);
-  stories.splice(0, stories.length, ...ranked);
-  const latest = stories
-    .filter((s) => s.line && s.at)
-    .sort((a, b) => b.at - a.at)[0];
-
-  // ＋: start something, send a file, or open an app on the Mac.
-  const [sheet, setSheet] = useState(false),
-    [agents, setAgents] = useState<string[] | null>(null),
-    [busy, setBusy] = useState("");
-  useEffect(() => {
-    setAgents(null);
-    if (!features.terminal) return;
-    let stopped = false;
-    void request<{ agents: string[] }>(peer, "/api/terminals/agents")
-      .then((r) => { if (!stopped) setAgents(r.agents || []); })
-      .catch(() => { if (!stopped) setAgents([]); });
-    return () => { stopped = true; };
-  }, [features.terminal, peer.url, peer.token]);
-  const start = async (run: string) => {
-    setSheet(false);
-    setBusy("start");
-    try {
-      const created = await post<Session>(peer, "/api/terminals", {
-        root: 0,
-        run,
-      });
-      refreshSessions();
-      openTerminal(created.id);
-    } catch (e) {
-      toast((e as Error).message);
-    } finally {
-      setBusy("");
-    }
-  };
-  const { items: shortcuts } = useShortcuts(peer);
-  // Codex and Claude Code already start above, in a Reach terminal.
-  const apps = features.shortcuts
-    ? shortcuts
-        .filter((a) => (a.custom || a.suggested) && !a.id.startsWith("recipe:"))
-        .slice(0, 8)
-    : [];
-  const fileInput = useRef<HTMLInputElement>(null);
-  const send = async (files: FileList | null) => {
-    const list = [...(files || [])];
-    if (!list.length) return;
-    setBusy("send");
-    try {
-      for (const file of list) {
-        const form = new FormData();
-        form.append("file", file);
-        await request(peer, "/api/files/upload?root=0&path=", {
-          method: "POST",
-          body: form,
-        });
-      }
-      const folder =
-        device.roots[0]?.path.split(/[\\/]/).filter(Boolean).pop() || "Mac";
-      toast(
-        list.length === 1
-          ? `Sent ${list[0].name} to ${folder}`
-          : `Sent ${list.length} files to ${folder}`,
-      );
-    } catch (e) {
-      toast((e as Error).message);
-    } finally {
-      setBusy("");
-      if (fileInput.current) fileInput.current.value = "";
-    }
-  };
-  const canStart = features.terminal && !!agents?.length;
-  const canPlus = canStart || features.writeFiles || apps.length > 0;
   const live = features.screen && stream.ready;
   // Everyone else on this computer now: other phones, guests, agents.
   const here = (connections[active]?.devices || []).filter((d) => !d.self);
@@ -624,175 +434,6 @@ export default function HomeLive({
       {browserApprovals.review}
       {agentAdmissions.review}
 
-      {(canPlus || stories.length > 0) && (
-        <section
-          className="home-section"
-          aria-label={`Live on your ${computerWord(device.platform)}`}
-        >
-          <header>
-            <h2>Live on your {computerWord(device.platform)}</h2>
-          </header>
-          <div className="home-stories">
-            {canPlus && (
-              <button
-                className="story"
-                aria-haspopup="dialog"
-                onClick={() => setSheet(true)}
-              >
-                <span className="story-ring new">
-                  <span>
-                    {busy ? (
-                      <LoaderCircle size={22} className="spin" />
-                    ) : (
-                      <Plus size={24} />
-                    )}
-                  </span>
-                </span>
-                <small>{stories.length ? "New" : "Start"}</small>
-              </button>
-            )}
-            {stories.map((story) => (
-              <button
-                key={story.key}
-                className="story"
-                aria-label={`${story.name}${story.mac ? `, on your ${computerWord(device.platform)}` : ""}${story.state === "attention" ? ", needs you" : story.state === "active" ? ", working" : story.state === "done" ? ", done" : story.state === "failed" ? ", stopped with an error" : ""}`}
-                onClick={story.open}
-              >
-                <span className={`story-ring ${story.state}`}>
-                  <span>
-                    <Glyph kind={story.kind} logos={logos} />
-                  </span>
-                  {story.mac && (
-                    <i className="story-badge">
-                      {device.platform === "win32" ? "PC" : "Mac"}
-                    </i>
-                  )}
-                  {story.state === "done" && (
-                    <i className="story-mark">
-                      <Check size={11} strokeWidth={3} />
-                    </i>
-                  )}
-                  {story.state === "failed" && <i className="story-mark">!</i>}
-                </span>
-                <small>{story.name}</small>
-              </button>
-            ))}
-            {!stories.length && canStart && (
-              <p className="home-stories-hint">
-                Start an agent on {device.name}.
-              </p>
-            )}
-          </div>
-          {latest && (
-            <button className="home-now" onClick={latest.open}>
-              <ChevronRight size={15} />
-              <strong>{latest.name}</strong>
-              <code>{latest.line}</code>
-              <small>{ago(latest.at, now)}</small>
-            </button>
-          )}
-        </section>
-      )}
-
-      {sheet && (
-        <ScreenPopup
-          title="Start or send"
-          className="home-plus"
-          onClose={() => setSheet(false)}
-        >
-          {canStart && (
-            <div className="home-plus-list">
-              {features.terminal &&
-                (agents ?? []).map((agent) => (
-                  <button key={agent} onClick={() => void start(agent)}>
-                    <span className="home-plus-icon">
-                      <Glyph
-                        kind={kindOf(agent)}
-                        logos={logos}
-                      />
-                    </span>
-                    <span>
-                      {agentName[agent] ?? agent}
-                      <small>On {device.name}</small>
-                    </span>
-                  </button>
-                ))}
-            </div>
-          )}
-          {features.writeFiles && (
-            <div className="home-plus-list">
-              <button
-                onClick={() => {
-                  setSheet(false);
-                  fileInput.current?.click();
-                }}
-              >
-                <span className="home-plus-icon send">
-                  <Upload size={20} />
-                </span>
-                <span>
-                  Send a file
-                  <small>
-                    From this phone to{" "}
-                    {device.roots[0]?.path
-                      .split(/[\\/]/)
-                      .filter(Boolean)
-                      .pop() || device.name}
-                  </small>
-                </span>
-              </button>
-            </div>
-          )}
-          {apps.length > 0 && (
-            <>
-              <header className="home-plus-heading">
-                <span>Open on {device.name}</span>
-                <button
-                  className="home-edit"
-                  onClick={() => {
-                    setSheet(false);
-                    onShortcuts();
-                  }}
-                >
-                  <Pencil size={13} /> Edit
-                </button>
-              </header>
-              <div className="home-plus-apps">
-                {apps.map((shortcut) => (
-                  <button
-                    key={shortcut.id}
-                    onClick={async () => {
-                      setSheet(false);
-                      try {
-                        await post(peer, "/api/apps/shortcuts", {
-                          id: shortcut.id,
-                        });
-                        toast(`${shortcut.name} opened on ${device.name}`);
-                      } catch (e) {
-                        toast((e as Error).message);
-                      }
-                    }}
-                  >
-                    <span>
-                      <ShortcutIcon peer={peer} shortcut={shortcut} size={30} />
-                    </span>
-                    <small>{shortcut.name.replace(/^Open /, "")}</small>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </ScreenPopup>
-      )}
-      {features.writeFiles && (
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          hidden
-          onChange={(e) => void send(e.target.files)}
-        />
-      )}
     </div>
   );
 }

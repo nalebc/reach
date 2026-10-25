@@ -40,7 +40,7 @@ export const suites = {
     "screen-control-fixes-ui", "screen-typing-reconnect-ui", "screen-typing-reconnect-chrome", "screen-control-diagnostics",
     // Shared Home / Screen / Tools navigation and permission-aware shortcuts.
     "tools-page-ui", "computer-menu-ui", "chat-tab-home-ui", "chat-back-reload-ui",
-    "waiting-computer-ui", "phone-prompts-ui", "view-memory-ui", "home-logos",
+    "waiting-computer-ui", "phone-prompts-ui", "view-memory-ui", "home-logos", "home-glance-ui",
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",

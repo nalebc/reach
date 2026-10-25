@@ -1069,10 +1069,6 @@ function ReachWorkspace() {
                     decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}
                     openChat={(id) => openChat({ agent: "codex", id })}
-                    openTerminal={(id) => {
-                      setTerminalId(id);
-                      navigate("terminal", { then: () => setTerminalSource("reach") });
-                    }}
                     agentSessions={agentFeed.sessions || []}
                     macPrompts={agentFeed.macPrompts}
                     showOnScreen={showOnScreen}
@@ -1081,7 +1077,6 @@ function ReachWorkspace() {
                         ? (s) => openChat({ agent: s.agent, id: s.id })
                         : undefined
                     }
-                    onShortcuts={() => setQuickLaunch(true)}
                     refreshSessions={refreshSessions}
                     toast={toast}
                   />

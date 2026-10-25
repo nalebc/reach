@@ -328,11 +328,13 @@ for (const platform of ["darwin", "win32"]) {
     } finally { await close(); }
   });
 
-  test(`${platform}: Home's chat returns directly Home; Settings restores the exact chat and draft`, async () => {
-    const { dom, $, on, reach, click, clean, close } = await workspace({ platform });
+  test(`${platform}: Home's review request returns directly Home; Settings restores the exact chat and draft`, async () => {
+    const { dom, $, on, reach, click, clean, close } = await workspace({ platform, extraRoutes: {
+      "/api/sessions": () => ({ sessions: [{ ...session, status: "waiting", prompts: [{ id: "review", kind: "question", title: "Review this change" }] }], errors: {} }),
+    } });
     try {
-      const story = await dom.waitFor(() => [...dom.document.querySelectorAll(".home-stories .story")].find(b => /Fix login/.test(b.textContent)));
-      story.click();
+      const review = await dom.waitFor(() => $(".home-needs .need-actions button"));
+      review.click();
       await dom.waitFor(() => $(".as-page"));
       await settle();
       assert.equal(reach().i, 1, "a direct chat has no unseen list inserted under it");

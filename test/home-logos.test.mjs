@@ -25,7 +25,7 @@ before(async () => {
 });
 after(() => dom?.close());
 
-test("Home shows active chat icons without reading terminals", async () => {
+test("Home retains agent icons on requests that need attention", async () => {
   const view = await dom.render(
     React.createElement(HomeLive, {
       features: { terminal: false, codex: false, screen: false, desktopTerminals: true, shortcuts: false, owner: false, writeFiles: false },
@@ -43,7 +43,7 @@ test("Home shows active chat icons without reading terminals", async () => {
       openTerminal() {},
       openMacTab() {},
       agentSessions: [
-        { agent: "codex", id: "c1", title: "Fix login", status: "running", live: { where: "codex-app" }, updatedAt: Date.now(), preview: "" },
+        { agent: "codex", id: "c1", title: "Fix login", status: "waiting", prompts: [{ id: "review", kind: "question", title: "Review change" }], updatedAt: Date.now(), preview: "" },
       ],
       openAgentSession() {},
       onShortcuts() {},
@@ -51,14 +51,10 @@ test("Home shows active chat icons without reading terminals", async () => {
       toast() {},
     }),
   );
-  const icons = () => [...dom.document.querySelectorAll(".story-ring img.agent-logo")];
+  const icons = () => [...dom.document.querySelectorAll(".home-needs .need-icon img.agent-logo")];
   await dom.waitFor(() => icons().length === 1);
   assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex"]);
-  // Sized by the frame (drawn larger and cropped), not a small fixed icon in the middle.
-  for (const icon of icons()) {
-    assert.ok(icon.classList.contains("fill"), `${icon.alt} fills its circle`);
-    assert.equal(icon.getAttribute("style"), null);
-  }
+  assert.equal(icons()[0].getAttribute("src"), LOGO);
   assert.equal(desktopReads, 0, "Home does not read desktop terminals");
   assert.equal(dom.document.querySelector(".home-terminals"), null);
   assert.deepEqual(dom.errors, []);
