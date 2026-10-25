@@ -14,6 +14,7 @@ import {
   versionOf,
   readRouted,
 } from "../server/openclaw-usage.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 const base = "/api/sessions/openclaw";
 const unlisted = (method) =>
@@ -188,7 +189,7 @@ test("the budget is validated, authorized and kept 0600", async () => {
   assert.equal((await call("POST", "/spend/budget", { body: { monthlyUsd: 50 } })).budget, 50);
   const file = path.join(dir, "openclaw-budget.json");
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { monthlyUsd: 50 });
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  await assertPrivate(file);
 });
 
 const models = {
@@ -323,7 +324,7 @@ test("runs Reach moved to the cheap model are recorded as savings, in tokens", a
   const out = await app(client, { dataDir: data, savings: { record: (e) => recorded.push(e) } })("POST", "/spend/routing/cheap", { body: { model, version: versionOf(routingFrom(config())) } });
   assert.deepEqual(out.jobs, ["j1"]);
   assert.deepEqual(readRouted(data), { model, jobs: ["j1"] });
-  assert.equal((fs.statSync(path.join(data, "openclaw-routed.json")).mode & 0o777).toString(8), "600");
+  await assertPrivate(path.join(data, "openclaw-routed.json"));
   const usage = { input_tokens: 1200, output_tokens: 300, total_tokens: 1700, cache_read_tokens: 150, cache_write_tokens: 50 };
   const finished = (over) => ({ jobId: "j1", action: "finished", status: "ok", runId: `r-${Math.random()}`, provider: "anthropic", model: "claude-haiku-4-5", usage, ...over });
   listener("cron", finished({ runId: "r1" }));

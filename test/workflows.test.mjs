@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { checkTasks, createWorkflows, plannerMessage, readDraft, WORKFLOW_LIMITS } from "../server/agent-sessions/workflows.mjs";
 import { checkSteps, createRelays } from "../server/agent-sessions/relays.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 // Workflows (server/agent-sessions/workflows.mjs, docs/WORKFLOWS.md) against
 // a stand-in for the agents, with the real relay engine saying how each
@@ -388,7 +389,7 @@ test("a task starting when Reach stopped comes back uncertain and is never start
   delete saved[0].tasks[0].chat;
   delete saved[0].tasks[0].relay;
   fs.writeFileSync(file, JSON.stringify(saved));
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  await assertPrivate(file);
   const again = stage({ file });
   await again.workflows.sync();
   const w = again.workflows.get(workflow.id);

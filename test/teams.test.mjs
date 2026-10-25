@@ -7,8 +7,9 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createTeams } from "../server/agent-sessions/teams.mjs";
 import { createRelays } from "../server/agent-sessions/relays.mjs";
-import { createTeamBridge } from "../server/agent-sessions/team-bridge.mjs";
+import { createTeamBridge, teamPipe } from "../server/agent-sessions/team-bridge.mjs";
 import { TEAM_LIMITS } from "../server/agent-sessions/team-tools.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 // Team chats (server/agent-sessions/teams.mjs) against a stand-in for the
 // agents, with the real relay engine carrying helpers' results to the lead.
@@ -71,7 +72,7 @@ test("a team's lead starts with its tools and standing instructions, its key pri
   assert.deepEqual(team.helpers, ["codex"], "each helper once, only Codex and Claude Code");
   assert.equal(threadId, "claude-1");
   const key = path.join(dir, "teams", `${team.id}.json`);
-  assert.equal(fs.statSync(key).mode & 0o777, 0o600);
+  await assertPrivate(key);
   assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(key, "utf8"))), ["socket", "token"]);
   const [{ agent, body }] = started;
   assert.equal(agent, "claude");
@@ -203,7 +204,8 @@ function mcp(env) {
 
 test("the bridge script offers the team's tools and carries each call to Reach with the team's key", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rt-"));
-  const socketPath = path.join(dir, "t.sock");
+  // Reach's own address for it: a socket file, or a named pipe on Windows (as server/index.mjs).
+  const socketPath = process.platform === "win32" ? teamPipe(dir) : path.join(dir, "t.sock");
   const calls = [];
   const bridge = createTeamBridge({
     socketPath,
@@ -215,7 +217,7 @@ test("the bridge script offers the team's tools and carries each call to Reach w
   });
   await bridge.listen();
   t.after(() => bridge.close());
-  assert.equal(fs.statSync(socketPath).mode & 0o777, 0o600);
+  await assertPrivate(socketPath);
   const file = path.join(dir, "key.json");
   fs.writeFileSync(file, JSON.stringify({ socket: socketPath, token: "k".repeat(43) }), { mode: 0o600 });
   const client = mcp({ REACH_TEAM_FILE: file });
