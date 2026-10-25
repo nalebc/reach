@@ -102,6 +102,12 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
 - On Windows, quitting Reach now stops and waits for its process-list helper
   (the Claude app checks), so no helper outlives Reach or keeps its program
   file open for an update.
+- On Windows, a failed write to agents' browser command log (a full disk) no
+  longer blocks their browser commands until Reach restarts, and a log left
+  mid-line no longer turns those commands off at every start.
+- On phones, typing that waits after a reconnect keeps its "Typing paused"
+  line with Send and Discard on screen while the keyboard's key row is up,
+  just above the keys instead of hidden or covering them.
 
 ### Validation
 
@@ -109,8 +115,9 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
   without waiting on idle connections; dropouts are counted against the sound
   player only when its source kept time; fixed sleeps became waits for the
   awaited state; macOS CI runners no longer index with Spotlight, which starved
-  the iOS simulator. Tests that never ran on Windows now run there by default
-  (CI's windows-rest job), with known failures being fixed listed explicitly.
+  the iOS simulator. Every test file now runs on Windows (CI's windows-rest
+  job) unless its own platform lane runs it; about 140 first-run failures,
+  nearly all tests that assumed a Mac, were fixed at their cause.
 - Restore the source branch's regression tests and include shared identity,
   typing and terminal layout checks in Windows CI. Run the native Windows
   input checks and screen-control journeys with iPhone, iPad and Android
