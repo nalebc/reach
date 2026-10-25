@@ -21,15 +21,58 @@ export function desktopRequiredForSelection(value = "") {
   return !names.length || names.some((name) => !independent.has(name));
 }
 
+const desktopStages = new Set(["powershell-start", "compile-start", "compiled", "native-run", "known-setup", "probe-show", "probe-shown",
+  "probe-activate", "probe-activated", "probe-loop", "probe-click", "probe-type", "probe-pixel", "probe-pixel-geometry",
+  "probe-pixel-ready", "probe-pixel-copied", "probe-pixel-read", "probe-pixel-disposed", "probe-finally", "probe-close",
+  "probe-closed", "probe-restored", "verify-privacy", "verify-snapshot", "verify-complete", "catch-snapshot",
+  "catch-snapshot-done", "serialize-start", "serialize-complete", "powershell-return"]);
+
 export function lastDesktopCheckpoint(stderr) {
-  const names = new Set(["powershell-start", "compiled", "native-run", "known-setup", "probe-show", "probe-shown",
-    "probe-activate", "probe-activated", "probe-loop", "probe-click", "probe-type", "probe-pixel"]);
   let last = null;
   for (const line of String(stderr ?? "").slice(-128 * 1024).split(/\r?\n/)) {
     const prefix = "REACH_CI_DESKTOP_STAGE:";
-    if (line.startsWith(prefix) && names.has(line.slice(prefix.length))) last = line.slice(prefix.length);
+    if (line.startsWith(prefix) && desktopStages.has(line.slice(prefix.length))) last = line.slice(prefix.length);
   }
   return last;
+}
+
+export function desktopTimingEvidence(stderr) {
+  const samples = [];
+  let rejected = 0, truncated = false;
+  for (const line of String(stderr ?? "").slice(-128 * 1024).split(/\r?\n/)) {
+    if (!line.startsWith("REACH_CI_DESKTOP_TIME:")) continue;
+    const match = /^REACH_CI_DESKTOP_TIME:([a-z-]+):(0|[1-9][0-9]{0,5}):([1-9][0-9]{0,9})$/.exec(line);
+    const elapsedMs = match ? Number(match[2]) : -1, pid = match ? Number(match[3]) : 0;
+    const previous = samples.at(-1);
+    if (!match || !desktopStages.has(match[1]) || elapsedMs > 120000 || pid <= 1 || pid > 2147483647 ||
+        (previous && (previous.pid !== pid || previous.elapsedMs > elapsedMs))) {
+      rejected = Math.min(48, rejected + 1);
+      continue;
+    }
+    if (samples.length === 48) { truncated = true; continue; }
+    samples.push({ stage: match[1], elapsedMs, pid });
+  }
+  return { samples, rejected, truncated };
+}
+
+export function desktopFailureEvidence(error = {}) {
+  const codes = new Set(["ETIMEDOUT", "ENOBUFS", "ENOENT", "EACCES", "EPERM", "UNKNOWN"]);
+  const signals = new Set(["SIGTERM", "SIGKILL", "SIGABRT", "SIGINT", "SIGBREAK"]);
+  const stdout = Buffer.isBuffer(error.stdout) ? error.stdout : typeof error.stdout === "string" ? Buffer.from(error.stdout) : Buffer.alloc(0);
+  let nativeReportComplete = false, nativeReady = null;
+  if (stdout.length <= 128 * 1024) {
+    try {
+      const value = JSON.parse(stdout.toString("utf8").trim());
+      nativeReportComplete = value?.schema === 1 && typeof value.ready === "boolean";
+      if (nativeReportComplete) nativeReady = value.ready;
+    } catch {}
+  }
+  return {
+    code: error.code == null ? null : codes.has(error.code) ? error.code : "other",
+    status: Number.isInteger(error.status) && error.status >= -2147483648 && error.status <= 4294967295 ? error.status : null,
+    signal: signals.has(error.signal) ? error.signal : null,
+    stdoutBytes: Math.min(128 * 1024 + 1, stdout.length), nativeReportComplete, nativeReady,
+  };
 }
 
 export function desktopSourcePayload(source) {
@@ -57,10 +100,11 @@ export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
   const executable = path.win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   // Fixed command. Checked-in C# is passed as data, never interpolated with
   // runner paths, titles or process command lines. No execution-policy change.
-  const command = "$ErrorActionPreference='Stop'; try { [Console]::Error.WriteLine('REACH_CI_DESKTOP_STAGE:powershell-start') } catch {}; Add-Type -TypeDefinition $env:REACH_CI_DESKTOP_SOURCE -ReferencedAssemblies System.Windows.Forms,System.Drawing,System.Web.Extensions; try { [Console]::Error.WriteLine('REACH_CI_DESKTOP_STAGE:compiled') } catch {}; [ReachCiDesktop]::Run()";
-  let report;
+  const command = "$ErrorActionPreference='Stop'; $reachCiClock=[Diagnostics.Stopwatch]::StartNew(); $reachCiMark={param($stage) try { [Console]::Error.WriteLine('REACH_CI_DESKTOP_STAGE:'+$stage); [Console]::Error.WriteLine('REACH_CI_DESKTOP_TIME:'+$stage+':'+$reachCiClock.ElapsedMilliseconds+':'+$PID) } catch {}}; & $reachCiMark 'powershell-start'; $reachCiCompileStart=$reachCiClock.ElapsedMilliseconds; & $reachCiMark 'compile-start'; Add-Type -TypeDefinition $env:REACH_CI_DESKTOP_SOURCE -ReferencedAssemblies System.Windows.Forms,System.Drawing,System.Web.Extensions; & $reachCiMark 'compiled'; [ReachCiDesktop]::DiagnosticClock=$reachCiClock; [ReachCiDesktop]::CompileElapsedMs=$reachCiClock.ElapsedMilliseconds-$reachCiCompileStart; $reachCiReport=[ReachCiDesktop]::Run(); & $reachCiMark 'powershell-return'; $reachCiReport";
+  let report, output = "";
+  const started = performance.now();
   try {
-    const output = execFileSync(executable, ["-NoProfile", "-NonInteractive", "-STA", "-Command", command], {
+    output = execFileSync(executable, ["-NoProfile", "-NonInteractive", "-STA", "-Command", command], {
       env: { ...process.env, REACH_CI_DESKTOP_SOURCE: source }, encoding: "utf8", windowsHide: true,
       stdio: "pipe", timeout: 60000, maxBuffer: 128 * 1024,
     });
@@ -69,8 +113,11 @@ export function prepareWindowsDesktop({ ifNeeded = false } = {}) {
   } catch (error) {
     report = { schema: 1, ready: false, stage: "bootstrap", reason: error?.code === "ETIMEDOUT" ? "deadline" : "helper-failed",
       checkpoint: lastDesktopCheckpoint(error?.stderr),
+      timings: desktopTimingEvidence(error?.stderr),
+      failure: desktopFailureEvidence({ code: error?.code, status: error?.status, signal: error?.signal, stdout: error?.stdout ?? output }),
       compilerCodes: [...new Set(String(error?.stderr || "").match(/\bCS\d{4}\b/g) || [])].slice(0, 8) };
   }
+  report.parentElapsedMs = Math.round(performance.now() - started);
   retain({ ...report, required: true });
   if (!report.ready) throw Error(`Windows desktop preflight refused: ${report.stage}/${report.reason}.`);
   return report;
