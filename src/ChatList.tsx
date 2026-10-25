@@ -17,6 +17,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { createPortal } from "react-dom";
+import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, archiveSession, projectName, projectOfChat, type AgentHealth, type AgentProject, type AgentSession } from "./agent-sessions";
@@ -656,6 +657,7 @@ export default function ChatList({
   onReview,
   pending = 0,
   compact = false,
+  active = true,
   apps = supportedApps,
   agent,
   onAgentChange,
@@ -683,6 +685,7 @@ export default function ChatList({
   answered?: () => void;
   pending?: number;
   compact?: boolean;
+  active?: boolean;
   apps?: ChatAppChoice[];
   onAgentChange?: (agent: string) => void;
   appPending?: Record<string, number>;
@@ -705,11 +708,12 @@ export default function ChatList({
     agent || apps[0]?.agent || "codex",
   );
   const filter = agent || localAgent;
-  const [query, setQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchField = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (searchOpen) searchField.current?.focus(); }, [searchOpen]);
-  const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
+  const scope = viewScope(peer, `chats:${filter}`);
+  const [query, setQuery] = useViewState(scope, "query", "");
+  const [searchOpen, setSearchOpen] = useViewState(scope, "search", false);
+  const { field: searchField, requestFocus } = useSearchFocus<HTMLInputElement>(searchOpen);
+  const [expandedFolders, setExpandedFolders] = useViewState<string[]>(scope, "folders", []);
+  const scroll = useViewScroll<HTMLDivElement>(scope, active && !compact, sessions !== null);
   const [gone, setGone] = useState<Set<string>>(() => new Set());
   // Forget an optimistic archive once the Mac's list agrees: the chat is
   // no longer listed, or is listed as archived.
@@ -887,7 +891,7 @@ export default function ChatList({
     </div>
   );
   return (
-    <div className={`chat-library ${compact ? "compact" : ""} ${searchOpen ? "search-open" : ""}`}>
+    <div ref={scroll} className={`chat-library ${compact ? "compact" : ""} ${searchOpen ? "search-open" : ""}`}>
       {!compact && (
         <ChatLibraryHeader
           peer={peer}
@@ -897,7 +901,6 @@ export default function ChatList({
           pending={appPending}
           onChange={(value) => {
             (onAgentChange || setLocalAgent)(value);
-            setExpandedFolders([]);
           }}
           onNew={!upcoming && canStart ? () => onNew() : undefined}
           onRefresh={onRefresh}
@@ -906,6 +909,7 @@ export default function ChatList({
           searchOpen={searchOpen}
           onSearch={() => {
             if (searchOpen) setQuery("");
+            if (!searchOpen) requestFocus();
             setSearchOpen(!searchOpen);
           }}
         />
@@ -919,7 +923,6 @@ export default function ChatList({
           health={health}
           onChange={(value) => {
             (onAgentChange || setLocalAgent)(value);
-            setExpandedFolders([]);
           }}
         />
         {!upcoming && (

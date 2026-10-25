@@ -1,4 +1,4 @@
-import test, { before, after, afterEach } from "node:test";
+import test, { before, beforeEach, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle, typeInto } from "./dom/harness.mjs";
 const peer = {
@@ -261,6 +261,12 @@ before(async () => {
   Component = (await dom.load("/src/EverythingChat.tsx")).default;
 });
 after(() => dom?.close());
+let grant = 0;
+beforeEach(() => {
+  // Each case starts a fresh visit; view memory deliberately survives remounts.
+  peer.token = `token-${++grant}`;
+  dom.window.history.replaceState(null, "");
+});
 afterEach(async () => {
   await view?.unmount();
   assert.deepEqual(dom.errors, []);
@@ -476,7 +482,7 @@ test("a chat Reach made is deleted, in OpenClaw too, only after a second tap; ot
   await click("Weekend plans");
   await dom.waitFor(() => dom.document.body.textContent.includes("Ready to continue."));
   assert.equal(button("Delete chat"), undefined);
-  await click("Back to OpenClaw sessions");
+  await click("Back to previous view");
   await click("Login page");
   await dom.waitFor(() => !!button("Delete chat"));
   await click("Delete chat");

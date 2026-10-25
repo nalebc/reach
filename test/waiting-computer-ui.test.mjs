@@ -20,7 +20,7 @@ const ubuntu = {
   short: "ubuntu-box",
   linked: false,
 };
-let dom, React, WaitingComputerSheet, MoreSheet;
+let dom, React, WaitingComputerSheet, ComputerMenu;
 before(async () => {
   dom = await startDom({
     mobile: true,
@@ -31,7 +31,7 @@ before(async () => {
   });
   React = dom.React;
   ({ default: WaitingComputerSheet } = await dom.load("/src/WaitingComputer.tsx"));
-  ({ default: MoreSheet } = await dom.load("/src/MoreSheet.tsx"));
+  ({ default: ComputerMenu } = await dom.load("/src/ComputerMenu.tsx"));
   dom.window.HTMLDialogElement.prototype.showModal ??= function () {
     this.open = true;
   };
@@ -90,33 +90,26 @@ test("a linked computer still joining: open it, no link steps", async () => {
   await view.unmount();
 });
 
-test("More lists an unlinked computer among yours, and tapping it opens its sheet", async () => {
+test("The computer picker lists an unlinked computer among yours, and tapping it opens its sheet", async () => {
   const calls = [];
   const view = await dom.render(
-    React.createElement(MoreSheet, {
-      peer,
-      device: { id: "mac", name: "Studio", platform: "darwin", capabilities: {} },
-      places: ["files"],
-      current: "files",
-      settings: true,
+    React.createElement(ComputerMenu, {
       peers: [peer],
       active: "mac",
       connections: { mac: { state: "connected" } },
       waiting: [ubuntu],
       onWaiting: (c) => calls.push(["waiting", c.name]),
-      onNavigate: () => {},
       onChoose: (id) => calls.push(["choose", id]),
       onAdd: () => calls.push(["add"]),
       onClose: () => {},
     }),
   );
   const root = view.container;
-  root.querySelector(".more-computer").click();
   await settle();
-  const labels = [...root.querySelectorAll(".more-computers .more-row-label")].map((e) => e.textContent);
-  assert.deepEqual(labels, ["Studio", "ubuntu-box", "Add a computer"]);
-  const row = root.querySelector(".more-computers .more-row-waiting");
-  assert.equal(row.querySelector(".more-row-note").textContent, "Not linked");
+  const labels = [...root.querySelectorAll(".computer-menu-list .computer-menu-row strong")].map((e) => e.textContent);
+  assert.deepEqual(labels, ["Studio", "ubuntu-box"]);
+  const row = root.querySelector(".computer-menu-waiting");
+  assert.equal(row.querySelector("small").textContent, "Not linked");
   row.click();
   await settle();
   assert.deepEqual(calls, [["waiting", "ubuntu-box"]]);

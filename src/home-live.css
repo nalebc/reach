@@ -546,3 +546,24 @@
 .home-access-add:active {
   background: #fff;
 }
+
+.home-screen-open {
+  position: absolute;
+  z-index: 2;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: #b9efd412;
+  color: var(--lime);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.home-hero-scene:active .home-screen-open {
+  background: #b9efd428;
+}

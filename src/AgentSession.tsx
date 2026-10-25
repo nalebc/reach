@@ -2853,7 +2853,7 @@ export default function AgentSessionView({
             where it runs, a new chat and more on the right. */}
         <button
           className="as-icon"
-          aria-label="Back to all sessions"
+          aria-label="Back to previous view"
           onClick={onBack}
         >
           <ChevronLeft size={22} />

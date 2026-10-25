@@ -38,6 +38,9 @@ export const suites = {
     "tap-clicks", "screen-double-click-ui",
     // Oct 18 screen control fixes: iOS's late taps, drags, typing bursts and reconnects.
     "screen-control-fixes-ui", "screen-typing-reconnect-ui", "screen-typing-reconnect-chrome", "screen-control-diagnostics",
+    // Shared Home / Screen / Tools navigation and permission-aware shortcuts.
+    "tools-page-ui", "computer-menu-ui", "chat-tab-home-ui", "chat-back-reload-ui",
+    "waiting-computer-ui", "phone-prompts-ui", "view-memory-ui",
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",

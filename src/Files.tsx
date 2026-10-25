@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { isNative, saveBlob } from "./native";
+import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import {
   Archive,
   Check,
@@ -258,13 +259,10 @@ export default function Files({
 }) {
   const [root, setRoot] = useState(initialLocation?.root || 0),
     [dir, setDir] = useState(initialLocation?.dir || ""),
-    [hidden, setHidden] = useState(false),
     [revision, setRevision] = useState(0),
     [entries, setEntries] = useState<FileEntry[]>([]),
     [busyLoading, setLoading] = useState(true),
     [error, setError] = useState(""),
-    [query, setQuery] = useState(""),
-    [searching, setSearching] = useState(false),
     [sort, setSort] = useState<Sort>(savedSort),
     [view, setView] = useState<View>(savedView),
     [panel, setPanel] = useState<"" | "options" | "add" | "locations">(""),
@@ -282,6 +280,12 @@ export default function Files({
     [missing, setMissing] = useState<{ name: string; shared?: boolean } | null>(
       null,
     );
+  const scope = viewScope(peer, "files");
+  const folderScope = JSON.stringify([scope, root, dir]);
+  const [hidden, setHidden] = useViewState(scope, "hidden", false);
+  const [query, setQuery] = useViewState(folderScope, "query", "");
+  const [searching, setSearching] = useViewState(folderScope, "search", false);
+  const { field: searchField, requestFocus } = useSearchFocus<HTMLInputElement>(searching);
   const features = suppliedFeatures || workspaceCapabilities(device);
   const sharer = useFileShare(peer, root, toast, (file) => gone(file));
   const canWrite = features.writeFiles;
@@ -290,14 +294,11 @@ export default function Files({
   const guest = device.access?.kind === "guest" && !features.mac;
   const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
-  const searchField = useRef<HTMLInputElement>(null);
   useEffect(() => {
     onLocationChange?.({ root, dir });
   }, [root, dir]);
-  // A new folder starts clean: no search, no open menus.
+  // A new folder closes transient menus and selections.
   useEffect(() => {
-    setQuery("");
-    setSearching(false);
     setExpanded("");
     setCreating(false);
     setPicked([]);
@@ -432,7 +433,8 @@ export default function Files({
   };
 
   // Typing stays instant; the list catches up a moment later.
-  const needle = useDeferredValue(query.trim().toLowerCase());
+  const filter = query.trim().toLowerCase();
+  const needle = useDeferredValue(filter);
   const shown = useMemo(
     () =>
       entries
@@ -449,8 +451,9 @@ export default function Files({
         }),
     [entries, needle, sort],
   );
-  const [limit, setLimit] = useState(PAGE);
-  useEffect(() => setLimit(PAGE), [root, dir, needle, sort, view]);
+  const listScope = JSON.stringify([folderScope, filter, sort, view, hidden]);
+  const [limit, setLimit] = useViewState(listScope, "limit", PAGE);
+  const scroll = useViewScroll<HTMLDivElement>(listScope, true, !busyLoading && needle === filter);
   const drawn = shown.length > limit ? shown.slice(0, limit) : shown;
   const more = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -656,6 +659,7 @@ export default function Files({
   return (
     <div
       className={`files-view ${dragging ? "is-dropping" : ""}`}
+      ref={scroll}
       onDragOver={(e) => {
         if (!canWrite || !e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
@@ -748,6 +752,7 @@ export default function Files({
                   aria-label="Search this folder"
                   aria-pressed={searching}
                   onClick={() => {
+                    if (!searching) requestFocus();
                     setSearching((s) => !s);
                     setQuery("");
                   }}
@@ -782,7 +787,6 @@ export default function Files({
             <Search size={17} />
             <input
               ref={searchField}
-              autoFocus
               type="search"
               aria-label={`Search ${title}`}
               placeholder={`Search ${title}`}

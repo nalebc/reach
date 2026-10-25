@@ -1,5 +1,5 @@
 import { useOpenWantedNeed } from "./deep-link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { macTerminalsFingerprint } from "./mac-terminal-live";
 import {
   Asterisk,
@@ -298,6 +298,7 @@ function useMacTabs(
 
 export default function HomeLive({
   features,
+  pinnedTools,
   device,
   peer,
   active,
@@ -321,6 +322,7 @@ export default function HomeLive({
   toast,
 }: {
   features: WorkspaceCapabilities;
+  pinnedTools?: ReactNode;
   device: Device;
   peer: Peer;
   active: string;
@@ -700,6 +702,7 @@ export default function HomeLive({
             liveScreen={live}
             className="home-scene"
           />
+          {features.screen && <span className="home-screen-open">Open screen <ChevronRight size={15} /></span>}
         </button>
         {heroPill && (
           // The last picture stays, dimmed; this says why. Tap: try again.
@@ -780,6 +783,8 @@ export default function HomeLive({
           <NeedsYouStrip items={needItems} />
         </div>
       )}
+
+      {pinnedTools}
 
       {browserApprovals.review}
       {agentAdmissions.review}

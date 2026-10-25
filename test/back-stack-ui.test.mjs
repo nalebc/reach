@@ -43,16 +43,17 @@ const routes = {
   "/api/agents/services": () => ({ access: [] }),
 };
 
-async function workspace({ url, place, state, deferDevice = false } = {}) {
+async function workspace({ url, place, state, deferDevice = false, platform = "darwin", extraRoutes = {} } = {}) {
   let releaseDevice;
   const deviceReady = new Promise((resolve) => { releaseDevice = resolve; });
+  const hostRoutes = { ...routes, "/api/device": () => ({ ...routes["/api/device"](), platform }), ...extraRoutes };
   const fixtureRoutes = deferDevice ? {
-    ...routes,
+    ...hostRoutes,
     "/api/device": async (...args) => {
       await deviceReady;
-      return routes["/api/device"](...args);
+      return hostRoutes["/api/device"](...args);
     },
-  } : routes;
+  } : hostRoutes;
   const dom = await startDom({ mobile: true, routes: fixtureRoutes, url });
   const socket = globalThis.WebSocket;
   globalThis.WebSocket = class {
@@ -80,11 +81,17 @@ async function workspace({ url, place, state, deferDevice = false } = {}) {
   const reach = () => dom.window.history.state?.reach;
   const button = (label) =>
     [...dom.document.querySelectorAll("button")].find(
-      (b) => b.getAttribute("aria-label") === label || (b.querySelector(".more-row-label, .gs-label")?.textContent || b.textContent).trim() === label,
+      (b) => !b.closest(".sidebar") && (b.getAttribute("aria-label") === label || (b.querySelector(".gs-label")?.textContent || b.textContent).trim() === label),
     );
   // The page shell can precede its navigation controls on a busy runner.
   // Wait for the actual target using the existing DOM readiness budget.
-  const click = async (label) => (await dom.waitFor(() => button(label))).click();
+  const click = async (label) => {
+    if (label === "Chat" && !button(label)) {
+      (await dom.waitFor(() => $('.mobile-nav [aria-label="Tools"]'))).click();
+      await on("tools");
+    }
+    (await dom.waitFor(() => button(label))).click();
+  };
   // Nothing went wrong, and Back never left this page.
   const clean = () => {
     assert.deepEqual(dom.errors, []);
@@ -106,7 +113,7 @@ async function workspace({ url, place, state, deferDevice = false } = {}) {
     }
     // Access-dependent tabs arrive after /api/device, later than the initial
     // Home shell. Wait for the actual control these tests use.
-    await dom.waitFor(() => $('.mobile-nav [aria-label="Chat"]'));
+    await dom.waitFor(() => $('.workspace-settings'));
     return { dom, $, on, reach, button, click, clean, close };
   } catch (error) {
     await close();
@@ -115,23 +122,26 @@ async function workspace({ url, place, state, deferDevice = false } = {}) {
 }
 const card = (dom) => dom.waitFor(() => [...dom.document.querySelectorAll(".chat-card")].find((c) => /Fix login/.test(c.textContent)));
 
-test("a chat, then back: its list, then Home; never a reload", async () => {
+test("a chat opened from Tools returns through its list and Tools to Home", async () => {
   const { dom, $, on, reach, click, clean, close } = await workspace();
   try {
     await on("overview");
     assert.deepEqual(reach(), { page: "overview", i: 0 }, "Home is the first entry");
     await click("Chat");
     await on("sessions");
-    assert.deepEqual(reach(), { page: "sessions", i: 1 });
+    assert.deepEqual(reach(), { page: "sessions", i: 2 });
     (await card(dom)).click();
     await dom.waitFor(() => $(".as-page"));
     await settle();
-    assert.equal(reach().i, 2, "the open chat is an entry above its list");
+    assert.equal(reach().i, 3, "the open chat is an entry above its list");
     dom.window.history.back();
     await dom.waitFor(() => !$(".as-page"));
     await settle();
     assert.ok($(".main-content.page-sessions"), "back on the chat list");
-    assert.deepEqual(reach(), { page: "sessions", i: 1 });
+    assert.deepEqual(reach(), { page: "sessions", i: 2 });
+    dom.window.history.back();
+    await on("tools");
+    assert.deepEqual(reach(), { page: "tools", i: 1 });
     dom.window.history.back();
     await on("overview");
     assert.deepEqual(reach(), { page: "overview", i: 0 });
@@ -141,11 +151,10 @@ test("a chat, then back: its list, then Home; never a reload", async () => {
   }
 });
 
-test("More, Settings, Agents & people: back twice comes back the same way", async () => {
+test("Settings from the header, then Agents & people: back twice returns Home", async () => {
   const { dom, on, reach, button, click, clean, close } = await workspace();
   try {
     await on("overview");
-    await click("More workspace options");
     await dom.waitFor(() => button("Settings"));
     await click("Settings");
     await on("settings");
@@ -167,35 +176,29 @@ test("More, Settings, Agents & people: back twice comes back the same way", asyn
 
 // Not quite "tabs only replace": Home stays under the tabs, so the first tab
 // opened from Home adds the one entry back to it; after that, tabs replace.
-test("Home is under every tab; switching between tabs adds no entry", async () => {
-  const { dom, on, reach, button, click, clean, close } = await workspace();
+test("Tools and Screen switch directly, and a tool returns to Tools before Home", async () => {
+  const { dom, $, on, reach, click, clean, close } = await workspace();
   try {
-    await on("overview");
     const start = dom.window.history.length;
-    await click("Chat");
-    await on("sessions");
-    const above = dom.window.history.length;
-    assert.equal(above, start + 1, "Home stays under the tab");
-    for (const [tab, page] of [["Files", "files"], ["Chat", "sessions"]]) {
-      if (tab === "Files") {
-        // A page from More, then a tab: the tab takes the place above Home.
-        await click("More workspace options");
-        await dom.waitFor(() => button("Files"));
-        await click("Files");
-      } else await click(tab);
-      await on(page);
-    }
-    assert.deepEqual(reach(), { page: "sessions", i: 1 });
-    await click("Chat");
-    await settle(50);
-    assert.deepEqual(reach(), { page: "sessions", i: 1 }, "re-selecting the tab adds nothing");
+    await click("Tools");
+    await on("tools");
+    assert.equal(dom.window.history.length, start + 1);
+    await click("Files");
+    await on("files");
+    assert.deepEqual(reach(), { page: "files", i: 2 });
+    $('.mobile-nav [aria-label="Screen"]').click();
+    await on("screen");
+    assert.deepEqual(reach(), { page: "screen", i: 1 });
+    $('.mobile-nav [aria-label="Tools"]').click();
+    await on("tools");
+    assert.deepEqual(reach(), { page: "tools", i: 1 });
+    $('.mobile-nav [aria-label="Tools"]').click();
+    await settle();
+    assert.deepEqual(reach(), { page: "tools", i: 1 });
     dom.window.history.back();
     await on("overview");
-    assert.equal(reach().i, 0);
     clean();
-  } finally {
-    await close();
-  }
+  } finally { await close(); }
 });
 
 test("with a chat open, the Home tab stays on Home: the chat's entry goes first", async () => {
@@ -228,7 +231,7 @@ test("a double tap on Home with a chat open steps back once, never past Home", a
     (await card(dom)).click();
     await dom.waitFor(() => $(".as-page"));
     await settle();
-    assert.equal(reach().i, 2);
+    assert.equal(reach().i, 3);
     const home = await dom.waitFor(() => button("Home"));
     home.click();
     home.click();
@@ -241,17 +244,15 @@ test("a double tap on Home with a chat open steps back once, never past Home", a
   }
 });
 
-test("a notification's link straight into a chat: back is its list, then Home", async () => {
+test("a notification's link straight into a chat returns to Home without an invented list", async () => {
   const { dom, $, on, reach, clean, close } = await workspace({ url: `https://reach.test/?page=sessions&agent=codex&id=${CODEX}` });
   try {
     await dom.waitFor(() => $(".as-page"));
     await settle();
     assert.equal(dom.window.location.search, "", "the link is gone from the address");
-    assert.equal(reach().i, 2, "Home, then the list, under the chat");
+    assert.equal(reach().i, 1, "Home is directly under the linked chat");
     dom.window.history.back();
     await dom.waitFor(() => !$(".as-page"));
-    assert.ok($(".main-content.page-sessions"));
-    dom.window.history.back();
     await on("overview");
     clean();
   } finally {
@@ -268,12 +269,12 @@ test("after a reload in a chat (an interface rebuild), the chat has its parent i
   try {
     await dom.waitFor(() => $(".as-page"));
     await settle();
-    assert.equal(reach().i, 2);
+    assert.equal(reach().i, 1);
     assert.equal(dom.window.history.state.reachChat, true);
     dom.window.history.back();
     await dom.waitFor(() => !$(".as-page"));
-    assert.ok($(".main-content.page-sessions"), "the list, in this page: no reload");
-    assert.deepEqual(reach(), { page: "sessions", i: 1 });
+    assert.ok($(".main-content.page-overview"), "Home in this document: no old page or invented list");
+    assert.deepEqual(reach(), { page: "overview", i: 0 });
     clean();
   } finally {
     await close();
@@ -301,3 +302,177 @@ test("an interface rebuild reload steps back to the first entry before it replac
     await dom.close();
   }
 });
+
+
+// Shared touch-client navigation against both supported host contracts.
+for (const platform of ["darwin", "win32"]) {
+  test(`${platform}: Settings Back follows Home, Tools, Files and Screen, by button or gesture`, async () => {
+    const { dom, $, on, reach, click, clean, close } = await workspace({ platform });
+    try {
+      for (const from of ["overview", "tools", "files", "screen"]) {
+        if (from === "files") {
+          await click("Tools"); await on("tools"); await click("Files");
+        } else await click(from === "overview" ? "Home" : from === "tools" ? "Tools" : "Screen");
+        await on(from);
+        const before = { ...reach() };
+        for (const gesture of [false, true]) {
+          $('.workspace-settings').click();
+          await on("settings");
+          if (gesture) dom.window.history.back();
+          else $('.workspace-back').click();
+          await on(from);
+          assert.deepEqual(reach(), before, "returns to its caller without adding Tools");
+        }
+      }
+      clean();
+    } finally { await close(); }
+  });
+
+  test(`${platform}: Home's chat returns directly Home; Settings restores the exact chat and draft`, async () => {
+    const { dom, $, on, reach, click, clean, close } = await workspace({ platform });
+    try {
+      const story = await dom.waitFor(() => [...dom.document.querySelectorAll(".home-stories .story")].find(b => /Fix login/.test(b.textContent)));
+      story.click();
+      await dom.waitFor(() => $(".as-page"));
+      await settle();
+      assert.equal(reach().i, 1, "a direct chat has no unseen list inserted under it");
+      const input = await dom.waitFor(() => $('textarea[aria-label="Message"]'));
+      dom.update(() => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(input, "Keep this draft");
+        input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      });
+      await settle();
+      $('.workspace-settings').click(); await on("settings");
+      $('.workspace-back').click();
+      await dom.waitFor(() => $(".as-page")); await settle();
+      assert.match($(".as-title").textContent, /Fix login/);
+      assert.equal($('textarea[aria-label="Message"]').value, "Keep this draft");
+      assert.equal(reach().i, 1, "returning does not duplicate the chat entry");
+      $('.as-page [aria-label="Back to previous view"]').click();
+      await on("overview");
+      assert.equal(reach().i, 0);
+      // Re-enter by the list instead: both Back controls keep that origin.
+      await click("Chat"); (await card(dom)).click();
+      await dom.waitFor(() => $(".as-page")); await settle();
+      $('.workspace-settings').click(); await on("settings");
+      dom.window.history.back(); await dom.waitFor(() => $(".as-page")); await settle();
+      assert.equal(reach().i, 3);
+      $('.as-page [aria-label="Back to previous view"]').click();
+      await dom.waitFor(() => !$(".as-page"));
+      assert.deepEqual(reach(), { page: "sessions", i: 2 });
+      $('.workspace-back').click(); await on("tools");
+      clean();
+    } finally { await close(); }
+  });
+}
+
+test("Back double taps take one step; browser Forward restores the chat", async () => {
+  const { dom, $, on, reach, click, clean, close } = await workspace();
+  try {
+    await click("Chat"); (await card(dom)).click();
+    await dom.waitFor(() => $(".as-page")); await settle();
+    $('.workspace-settings').click(); await on("settings");
+    const back = $('.workspace-back'); back.click(); back.click();
+    await dom.waitFor(() => $(".as-page")); await settle();
+    assert.equal(reach().i, 3, "one back step from Settings");
+    $('.as-page [aria-label="Back to previous view"]').click();
+    await dom.waitFor(() => !$(".as-page"));
+    dom.window.history.forward();
+    await dom.waitFor(() => $(".as-page")); await settle();
+    assert.equal(reach().i, 3);
+    assert.match($(".as-title").textContent, /Fix login/);
+    clean();
+  } finally { await close(); }
+});
+
+
+test("Settings preserves the Agents & people sub-page and its parent steps", async () => {
+  const { dom, $, on, reach, click, clean, close } = await workspace({ extraRoutes: {
+    "/api/agents/shortcuts": () => ({ shortcuts: [{ id: "one", name: "Example", enabled: true, steps: [] }] }),
+  } });
+  try {
+    await click("Settings"); await on("settings");
+    await click("Agents & people"); await on("invite");
+    (await dom.waitFor(() => [...dom.document.querySelectorAll(".ppl button")].find(b => b.querySelector(".gs-label")?.textContent === "Shortcuts"))).click();
+    await dom.waitFor(() => $('[aria-label="Shortcuts"].sub-page'));
+    const at = reach().i;
+    $('.workspace-settings').click(); await on("settings");
+    $('.workspace-back').click();
+    await dom.waitFor(() => $('[aria-label="Shortcuts"].sub-page'));
+    assert.equal(reach().i, at, "the nested entry survives Settings");
+    await click("Back to Agents & people");
+    await dom.waitFor(() => !$('.sub-page'));
+    assert.equal(reach().i, at - 1);
+    $('.workspace-back').click(); await on("settings");
+    $('.workspace-back').click(); await on("overview");
+    clean();
+  } finally { await close(); }
+});
+
+test("Screen opened inside a chat returns to that same conversation", async () => {
+  const { dom, $, on, reach, click, clean, close } = await workspace({
+    url: `https://reach.test/?page=sessions&agent=gemini&id=${CODEX}`,
+    extraRoutes: {
+      [`/api/sessions/gemini/${CODEX}`]: () => ({ session: { ...session, agent: "gemini" }, items: [] }),
+      [`/api/sessions/gemini/${CODEX}/live`]: async () => (await settle(60), { version: 1, status: "idle", prompts: [], items: 0 }),
+    },
+  });
+  try {
+    await dom.waitFor(() => $(".as-page"));
+    assert.equal(reach().i, 1, "direct linked chat starts above Home");
+    await click("Open live screen"); await on("screen");
+    assert.equal(reach().i, 2, "the screen is above the chat, not a replacement tab");
+    (await dom.waitFor(() => $('.workspace-back'))).click();
+    await dom.waitFor(() => $(".as-page"));
+    assert.equal(reach().i, 1);
+    await dom.waitFor(() => $(".as-title")?.textContent.includes("Fix login"));
+    assert.match($(".as-title").textContent, /Fix login/);
+    $('.as-page [aria-label="Back to previous view"]').click(); await on("overview");
+    clean();
+  } finally { await close(); }
+});
+
+for (const platform of ["darwin", "win32"]) {
+  test(`${platform}: chat and Settings Back preserve the list search and scroll without refocusing`, async () => {
+    const { dom, $, click, on, clean, close } = await workspace({ platform });
+    try {
+      const scroller = dom.document.documentElement;
+      Object.defineProperties(scroller, {
+        scrollHeight: { configurable: true, value: 2400 },
+        clientHeight: { configurable: true, value: 700 },
+      });
+      await click("Chat");
+      await on("sessions");
+      await card(dom);
+      dom.update(() => $('.chat-list-top button[aria-label="Search chats"]').click());
+      const field = $('input[aria-label="Search chats"]');
+      dom.update(() => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(field, "login");
+        field.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      });
+      assert.equal(dom.document.activeElement === field, true, "an explicit search tap opens the keyboard");
+      scroller.scrollTop = 380;
+      scroller.dispatchEvent(new dom.window.Event("scroll"));
+      (await card(dom)).click();
+      await dom.waitFor(() => $(".as-page"));
+      scroller.scrollTop = 0;
+      dom.window.history.back();
+      await dom.waitFor(() => !$(".as-page") && $('input[aria-label="Search chats"]'));
+      await settle();
+      assert.equal($('input[aria-label="Search chats"]').value, "login");
+      assert.equal(scroller.scrollTop, 380);
+      assert.equal(dom.document.activeElement === $('input[aria-label="Search chats"]'), false);
+      await click("Settings");
+      await on("settings");
+      dom.window.history.back();
+      await on("sessions");
+      await card(dom);
+      assert.equal($('input[aria-label="Search chats"]').value, "login");
+      assert.equal(scroller.scrollTop, 380);
+      assert.equal(dom.document.activeElement === $('input[aria-label="Search chats"]'), false);
+      clean();
+    } finally {
+      await close();
+    }
+  });
+}

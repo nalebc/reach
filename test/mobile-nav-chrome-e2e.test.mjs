@@ -14,7 +14,7 @@ import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const binary = findChrome();
 
-test("MobileNav: a native Chrome tap keeps More when startup items move Terminal under the finger", { skip: binary ? false : "no Chrome or Chromium installed" }, async (t) => {
+test("MobileNav: a native Chrome tap keeps Tools when startup items move Screen under the finger", { skip: binary ? false : "no Chrome or Chromium installed" }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-mobile-nav-"));
   const page = path.join(dir, "page");
   const report = process.env.REACH_TEST_MOBILE_NAV_EVIDENCE || path.join(repo, "reports", "mobile-nav");
@@ -34,23 +34,20 @@ import ${abs("src/workspace.css")};
 import MobileNav from ${abs("src/MobileNav.tsx")};
 const items = [
   { id: "overview", label: "Home", icon: "H" },
-  { id: "sessions", label: "Chat", icon: "C" },
   { id: "screen", label: "Screen", icon: "S" },
-  { id: "terminal", label: "Terminal", icon: "T" },
+  { id: "tools", label: "Tools", icon: "T" },
 ];
 window.__nav = { calls: [], trace: [], changeOnEnd: false };
 function Fixture() {
-  const [visible, setVisible] = useState(items.slice(0, 1));
+  const [visible, setVisible] = useState(items.filter(item => item.id !== "screen"));
   const [current, setCurrent] = useState("overview");
-  const [more, setMore] = useState(false);
   window.__nav.full = () => flushSync(() => setVisible(items));
   window.__nav.reset = () => {
     window.__nav.calls = []; window.__nav.trace = []; window.__nav.changeOnEnd = false;
-    flushSync(() => { setVisible(items.slice(0, 1)); setCurrent("overview"); setMore(false); });
+    flushSync(() => { setVisible(items.filter(item => item.id !== "screen")); setCurrent("overview"); });
   };
-  return <div className="app-shell"><MobileNav items={visible} current={current} moreOpen={more}
-    onNavigate={id => { window.__nav.calls.push(["go", id]); setCurrent(id); }}
-    onMore={() => { window.__nav.calls.push(["more"]); setMore(true); }} /></div>;
+  return <div className="app-shell"><MobileNav items={visible} current={current}
+    onNavigate={id => { window.__nav.calls.push(["go", id]); setCurrent(id); }} /></div>;
 }
 for (const type of ["pointerdown", "pointerup", "pointercancel", "touchstart", "touchend", "click"]) {
   document.addEventListener(type, event => {
@@ -104,9 +101,9 @@ window.__nav.ready = true;
     await tab.evaluate("window.__nav.reset()");
     await frame();
     const at = await tab.evaluate(`(() => {
-      const button = document.querySelector('[aria-label="More workspace options"]');
+      const button = document.querySelector('[aria-label="Tools"]');
       const r = button.getBoundingClientRect();
-      return { x: r.x + r.width / 2, y: r.y + r.height / 2, initial: [...document.querySelectorAll("nav button")].map(b => b.getAttribute("aria-label")) };
+      return { x: r.x + 12, y: r.y + r.height / 2, initial: [...document.querySelectorAll("nav button")].map(b => b.getAttribute("aria-label")) };
     })()`);
     if (update === "after-pointer-up") await tab.evaluate("window.__nav.changeOnEnd = true");
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
@@ -127,8 +124,8 @@ window.__nav.ready = true;
   fs.writeFileSync(path.join(report, "native-touch.json"), JSON.stringify(evidence, null, 2) + "\n");
   t.diagnostic(JSON.stringify(outcomes));
   for (const outcome of outcomes) {
-    assert.equal(outcome.coordinateTarget, "Terminal", "the newly inserted Terminal really occupies the original More coordinate");
-    assert.deepEqual(outcome.calls, [["more"]], `${outcome.update}: the original More action runs exactly once; Terminal never runs`);
+    assert.equal(outcome.coordinateTarget, "Screen", "the newly inserted Screen really occupies the original Tools coordinate");
+    assert.deepEqual(outcome.calls, [["go", "tools"]], `${outcome.update}: the original Tools action runs exactly once; Screen never runs`);
     assert.equal(outcome.trace.filter(event => event.type === "click").length, 1, "one native compatibility click");
     assert.equal(outcome.trace.find(event => event.type === "click").trusted, true);
   }

@@ -23,7 +23,8 @@ async function claudeOffered(t) {
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="Chat"]`, "Chat in the bottom bar");
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap(`.tools-page button[aria-label="Chat"]`, "Chat in Tools");
   // Health, as the computer has it: nothing yet (Add an agent), or the
   // apps it has, one chosen; then Claude Code, chosen in the app menu.
   const first = await page.see(

@@ -1,5 +1,6 @@
 // Before anything reads storage: a browser that refuses it still opens Reach.
 import "./storage-fallback";
+import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
@@ -10,7 +11,6 @@ import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
 import {
   workspaceCapabilities,
   pageAccessible,
-  morePlaces,
   type WorkspaceCapabilities,
 } from "./capabilities";
 import { useCodexAvailability } from "./useCodexAvailability";
@@ -29,6 +29,9 @@ import {
 } from "react";
 import {
   House,
+  LayoutGrid,
+  ChevronDown,
+  ChevronLeft,
   UsersRound,
   Command,
   Settings,
@@ -95,7 +98,9 @@ import HomeLive from "./HomeLive";
 import { WorkspaceAtmosphere, MotionToggle } from "./WorkspaceAtmosphere";
 import { BrandCourier, ReachScene } from "./ReachIdentity";
 import MascotIntro from "./MascotIntro";
-import MoreSheet from "./MoreSheet";
+import ComputerMenu from "./ComputerMenu";
+import ToolsPage, { PinnedTools, usePinnedTools } from "./ToolsPage";
+import "./workspace-navigation.css";
 import WaitingComputerSheet, { type WaitingComputer } from "./WaitingComputer";
 import MobileNav from "./MobileNav";
 import NewSessionSheet from "./NewSessionSheet";
@@ -113,7 +118,7 @@ import "./settings-list.css";
 import { NotificationBell, NotificationCenter } from "./Notifications";
 import { wantPrompt } from "./notification-focus";
 import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type OpenTarget } from "./deep-link";
-import { currentView, leavingForReload, pushPage, replacePage, seedBase, stackDepth } from "./nav-history";
+import { backOne, currentEntry, currentView, leavingForReload, pageDepth, pushPage, replacePage, seedBase, stackDepth } from "./nav-history";
 import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
@@ -126,6 +131,7 @@ const TerminalView = lazy(() =>
 );
 const pages = [
   { id: "overview", name: "Home", icon: House },
+  { id: "tools", name: "Tools", icon: LayoutGrid },
   // Every Codex and Claude Code session on the computer.
   { id: "sessions", name: "Chat", icon: MessageCircle },
   { id: "files", name: "Files", icon: Folder },
@@ -134,8 +140,8 @@ const pages = [
   { id: "screen", name: "Screen", icon: ScreenShare },
   { id: "invite", name: "Agents & people", icon: UsersRound },
 ];
-// Bottom bar on phones; everything else is under More.
-const mobileOrder = ["overview", "sessions", "screen", "terminal"];
+// Stable destinations on phones and tablets; the tool pages sit under Tools.
+const mobileOrder = ["overview", "screen", "tools"];
 // Off the menus for now (Oct 11): Apps opens only for an app an agent handed
 // you (Home, notifications).
 const offMenus = new Set(["apps"]);
@@ -193,7 +199,7 @@ function ReachWorkspace() {
       path: string;
       root: number;
     } | null>(null),
-    [mobileMenu, setMobileMenu] = useState(false),
+    [computerMenu, setComputerMenu] = useState(false),
     [waitingSheet, setWaitingSheet] = useState<WaitingComputer | null>(null),
     [pairLink, setPairLink] = useState<PairLink | null>(null),
     [requests, setRequests] = useState<AgentRequest[]>([]),
@@ -285,6 +291,7 @@ function ReachWorkspace() {
     agent: AgentName | "openclaw";
     id: string;
   } | null>(null);
+  const { pinned, toggle: togglePin } = usePinnedTools();
   const visiblePages = menuPages.filter((p) => pageAccessible(p.id, features));
   const mobilePages = visiblePages
     .filter((p) => mobileOrder.includes(p.id))
@@ -308,9 +315,12 @@ function ReachWorkspace() {
     features.terminal,
     newSession,
   ]);
+  const mainScroll = useViewScroll<HTMLElement>(viewScope(peer, page), page !== "sessions" && page !== "files", !!device);
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: "instant" });
-  }, [page, peer?.id]);
+    const previous = history.scrollRestoration;
+    history.scrollRestoration = "manual";
+    return () => { history.scrollRestoration = previous; };
+  }, []);
   useEffect(() => setQuickLaunch(false), [peer?.id]);
   useEffect(() => {
     const original = localStorage.getItem(peersKey());
@@ -554,16 +564,17 @@ function ReachWorkspace() {
   const [inviteStart, setInviteStart] = useState<{ kind: "person" | "browser" | "choose"; at: number } | null>(null);
   // The back stack (src/nav-history.ts). Home is this document's first
   // entry; a tab sits one above it (switching tabs replaces it, so back from
-  // any tab is Home, then out of Reach); a page opened from More, Settings or
+  // any tab is Home, then out of Reach); a page opened from Tools, Settings or
   // a card pushes one more; a chat or a sub-page pushes its own on top.
   // `pageAt` is the entry of the page shown.
   const pageAt = useRef(0);
   const pageNow = useRef(page);
   pageNow.current = page;
   const afterStep = useRef<(() => void) | null>(null);
-  // Leaving a page first steps back to entry `i`, past the chat or sub-page
-  // open above it, then goes on. Otherwise that view, closing as it unmounts,
-  // popped its entry after the new page's and brought the old page back.
+  // A root-tab switch discards that section's deeper entries before moving
+  // on. Ordinary page navigation keeps them, so Back restores the exact
+  // view underneath. The nested view must finish its own pop before a tab
+  // replaces that entry.
   const leaveTo = (i: number, then: () => void) => {
     // Already on the way (a double tap): the entry isn't reached yet, and a
     // second step from it would run past Home, out of this page.
@@ -591,17 +602,30 @@ function ReachWorkspace() {
       // Back (or forward): the page that entry belongs to, as it was.
       const view = currentView();
       const next = view?.page || "overview";
+      const saved = currentEntry();
+      const chat = saved.reachChatTarget as { agent: AgentName | "openclaw"; id: string } | undefined;
+      const claw = saved.reachClawTarget;
+      if (next === "sessions") {
+        if (saved.reachChat && chat) setChatTarget(chat);
+        else if (saved.reachClaw === "reachClawChat" && typeof claw === "string")
+          setChatTarget({ agent: "openclaw", id: claw });
+      }
       if (next === pageNow.current) return;
-      pageAt.current = view?.i ?? 0;
+      pageAt.current = pageDepth();
       setPage(next);
-      setMobileMenu(false);
+      setComputerMenu(false);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   const navigate = (
     to: string,
-    { opening = false, then }: { opening?: boolean; then?: () => void } = {},
+    { opening = false, detail = false, chat, then }: {
+      opening?: boolean;
+      detail?: boolean;
+      chat?: { agent: AgentName | "openclaw"; id: string };
+      then?: () => void;
+    } = {},
   ) => {
     const id = to.startsWith("invite") ? "invite" : to;
     if (id === "invite")
@@ -618,21 +642,32 @@ function ReachWorkspace() {
         setLinkTarget(null);
         setChatHomeRevision((n) => n + 1);
       }
-      if (id === "terminal")
-        setTerminalSource(features.desktopTerminals ? "mac" : "reach");
       setPage(id);
-      setMobileMenu(false);
+      setComputerMenu(false);
       then?.();
     };
     // Already there (a notification's chat on Chat): the chat pushes its own.
     if (id === page && !chatRoot) return show();
-    if (id === "overview" || mobileOrder.includes(id)) return toTab(id, show);
-    const at = pageAt.current;
-    leaveTo(at, () => {
-      pushPage(id, at);
-      pageAt.current = at + 1;
-      show();
-    });
+    if (id === "overview" || (mobileOrder.includes(id) && !detail)) return toTab(id, show);
+    if (chatRoot) return leaveTo(pageAt.current, show);
+    // Keep the exact view underneath: Settings opened from a conversation
+    // returns to that conversation, not its list or the Tools page.
+    const at = stackDepth();
+    const marks = chat
+      ? chat.agent === "openclaw"
+        ? { reachClaw: "reachClawChat", reachClawTarget: chat.id }
+        : { reachChat: true, reachChatTarget: chat }
+      : {};
+    pushPage(id, at, marks);
+    pageAt.current = at + 1;
+    show();
+  };
+  const goBack = () => {
+    if (!backOne()) navigate("overview");
+  };
+  const openChat = (chat: { agent: AgentName | "openclaw"; id: string }) => {
+    setChatTarget(chat);
+    navigate("sessions", { opening: true, chat });
   };
   // Home is the first entry; any other tab the one above it.
   const toTab = (id: string, then: () => void) => {
@@ -705,7 +740,7 @@ function ReachWorkspace() {
   const showOnScreen = features.screen
     ? (prompt: MacPrompt) => {
         setScreenAsk({ prompt, from: page });
-        navigate("screen");
+        navigate("screen", { detail: true });
       }
     : undefined;
   const paired = (p: Peer) => {
@@ -755,7 +790,7 @@ function ReachWorkspace() {
     setTerminalSource(saved?.terminalSource || "reach");
     setChatId(saved?.chatId || "");
     setNewSession(null);
-    setMobileMenu(false);
+    setComputerMenu(false);
     setQuickLaunch(false);
     // The computer you pick wins over a link still waiting for another one
     // (a chat opened on a computer that never answered): it doesn't pull you
@@ -789,7 +824,9 @@ function ReachWorkspace() {
     if (target.page === "sessions" && target.agent === "openclaw") setChatAgent("openclaw");
     if (target.page === "apps" && target.threadId) requestOpenThread(peer.id, target.threadId);
     if (target.needs) wantNeed(target.needs);
-    navigate(target.page, { opening: true });
+    const chat = target.page === "sessions" && target.id && ["codex", "claude", "gemini", "openclaw"].includes(target.agent || "")
+      ? { agent: target.agent as AgentName | "openclaw", id: target.id } : undefined;
+    navigate(target.page, { opening: true, chat });
   }
   return (
     <NotificationCenter peer={peer} enabled={!!device && !!features.settings} changes={live} onOpen={({ target }) => openTargetNow(target)}>
@@ -869,6 +906,20 @@ function ReachWorkspace() {
       </aside>
       <div className="main-shell">
         <header className="topbar">
+          <button
+            className="workspace-computer"
+            aria-label={`${device?.name || peer.name}, switch computer`}
+            aria-haspopup="dialog"
+            aria-expanded={computerMenu}
+            onClick={() => setComputerMenu(true)}
+          >
+            <i
+              className={`status-dot ${device && !error ? "" : "off"}`}
+              aria-hidden="true"
+            />
+            <span>{device?.name || peer.name}</span>
+            <ChevronDown size={16} aria-hidden="true" />
+          </button>
           <div className="mobile-brand">
             <Logo companion={page !== "overview" && page !== "screen"} />
           </div>
@@ -880,7 +931,17 @@ function ReachWorkspace() {
             </strong>
           </div>
           <div className="topbar-right">
-            {page === "overview" && <NotificationBell compact />}
+            <NotificationBell compact />
+            {features.settings && (
+              <button
+                className="icon-button workspace-settings"
+                aria-label="Settings"
+                title="Settings"
+                onClick={() => navigate("settings")}
+              >
+                <Settings size={20} />
+              </button>
+            )}
             {page !== "screen" && features.shortcuts && (
               <button
                 className="icon-button"
@@ -917,7 +978,7 @@ function ReachWorkspace() {
           waiting={waitingComputers}
           onWaiting={setWaitingSheet}
         />
-        <main key={peer?.id} className={`main-content page-${page}`}>
+        <main ref={mainScroll} key={peer?.id} className={`main-content page-${page}`}>
           <ScreenBoundary
             key={`${peer?.id}:${page}`}
             onHome={() => navigate("overview")}
@@ -970,11 +1031,28 @@ function ReachWorkspace() {
             ) : device && peer && pageAccessible(page, features) ? (
               <>
                 {error && <FallbackNotice peer={peer} device={device} />}
+                {(!mobileOrder.includes(page) || (page === "screen" && pageAt.current > 1)) && (
+                  <button className="workspace-back" aria-label="Back to previous view" onClick={goBack}>
+                    <ChevronLeft size={18} />Back
+                  </button>
+                )}
+                {page === "tools" && (
+                  <ToolsPage
+                    features={features}
+                    pinned={pinned}
+                    onTogglePin={togglePin}
+                    onNavigate={navigate}
+                    waiting={agentsWaiting}
+                  />
+                )}
                 {page === "overview" && (
                   <PhonePrompts owner={features.owner} url={peer.url} peer={peer} device={device} />
                 )}
                 {page === "overview" && (
                   <HomeLive
+                    pinnedTools={
+                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} />
+                    }
                     features={features}
                     device={device}
                     peer={peer}
@@ -991,10 +1069,7 @@ function ReachWorkspace() {
                     pending={requests.filter((r) => deferred.includes(r.id))}
                     decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}
-                    openChat={(id) => {
-                      setChatTarget({ agent: "codex", id });
-                      navigate("sessions");
-                    }}
+                    openChat={(id) => openChat({ agent: "codex", id })}
                     openTerminal={(id) => {
                       setTerminalId(id);
                       navigate("terminal", { then: () => setTerminalSource("reach") });
@@ -1007,10 +1082,7 @@ function ReachWorkspace() {
                     showOnScreen={showOnScreen}
                     openAgentSession={
                       pageAccessible("sessions", features)
-                        ? (s) => {
-                            setChatTarget({ agent: s.agent, id: s.id });
-                            navigate("sessions");
-                          }
+                        ? (s) => openChat({ agent: s.agent, id: s.id })
                         : undefined
                     }
                     onShortcuts={() => setQuickLaunch(true)}
@@ -1046,10 +1118,7 @@ function ReachWorkspace() {
                     agentLogos={agentLogos}
                     openAgentSession={
                       pageAccessible("sessions", features)
-                        ? (s) => {
-                            setChatTarget({ agent: s.agent, id: s.id });
-                            navigate("sessions");
-                          }
+                        ? (s) => openChat({ agent: s.agent, id: s.id })
                         : undefined
                     }
                     toast={toast}
@@ -1067,9 +1136,9 @@ function ReachWorkspace() {
                     onNew={() => session("terminal")}
                     onRefresh={refreshSessions}
                     toast={toast}
-                    onExit={() => navigate("overview")}
+                    onExit={goBack}
                     onOpenScreen={
-                      features.screen ? () => navigate("screen") : undefined
+                      features.screen ? () => navigate("screen", { detail: true }) : undefined
                     }
                     changes={live}
                     owner={pageAccessible("sessions", features)}
@@ -1083,7 +1152,7 @@ function ReachWorkspace() {
                     target={chatTarget}
                     onTargetOpened={() => setChatTarget(null)}
                     showOnScreen={showOnScreen}
-                    onScreen={features.screen ? () => navigate("screen") : undefined}
+                    onScreen={features.screen ? () => navigate("screen", { detail: true }) : undefined}
                     // The All page covers every paired computer; a chat on
                     // another opens the way a notification from it does:
                     // that computer first, then the chat once it's connected.
@@ -1115,14 +1184,14 @@ function ReachWorkspace() {
                     device={device}
                     toast={toast}
                     screen={
-                      features.screen ? () => navigate("screen") : undefined
+                      features.screen ? () => navigate("screen", { detail: true }) : undefined
                     }
                     changes={live}
                   />
                 )}
                 {page === "screen" && (
                   <Screen
-                    onClose={() => navigate("sessions")}
+                    onClose={goBack}
                     peer={peer}
                     device={device}
                     toast={toast}
@@ -1143,7 +1212,7 @@ function ReachWorkspace() {
                     onAskDone={() => {
                       const from = screenAsk?.from;
                       setScreenAsk(null);
-                      if (from && from !== "screen") navigate(from);
+                      if (from && from !== "screen") goBack();
                     }}
                     onAskPassword={(password) => sendMacPassword(peer, screenAsk!.prompt.id, password)}
                     onAskSetting={async () => {
@@ -1182,48 +1251,30 @@ function ReachWorkspace() {
         <MobileNav
           items={mobilePages.map((p) => ({
             id: p.id,
-            label:
-              p.id === "overview"
-                ? "Home"
-                : p.id === "terminal"
-                  ? "Terminal"
-                  : p.name,
+            label: p.name,
             icon: pageIcon(p, 20),
-            badge: p.id === "sessions" ? agentsWaiting : 0,
+            badge: p.id === "tools" ? agentsWaiting : 0,
           }))}
           current={page}
-          moreOpen={mobileMenu}
           onNavigate={navigate}
-          onMore={() => setMobileMenu(true)}
         />
       </div>
-      {mobileMenu && peer && (
-        <MoreSheet
-          peer={peer}
-          device={device}
-          {...morePlaces(
-            menuPages.map((p) => p.id),
-            mobileOrder,
-            features,
-            codexStatus,
-          )}
-          current={page}
-          settings={!!features.settings}
+      {computerMenu && peer && (
+        <ComputerMenu
           peers={peers}
           active={active}
           connections={connections}
-          onNavigate={navigate}
           onChoose={choose}
           onAdd={() => {
-            setMobileMenu(false);
+            setComputerMenu(false);
             setPairing(true);
           }}
           waiting={waitingComputers}
-          onWaiting={(c) => {
-            setMobileMenu(false);
-            setWaitingSheet(c);
+          onWaiting={(computer) => {
+            setComputerMenu(false);
+            setWaitingSheet(computer);
           }}
-          onClose={() => setMobileMenu(false)}
+          onClose={() => setComputerMenu(false)}
         />
       )}
       {waitingSheet && peer && (
@@ -1306,8 +1357,8 @@ function ReachWorkspace() {
               if (newSession.kind === "terminal") {
                 setTerminalId(s.id);
                 setTerminalSource("reach");
-                setPage("terminal");
-              } else setPage("sessions");
+                navigate("terminal");
+              } else navigate("sessions");
               setNewSession(null);
               refreshSessions();
             }}

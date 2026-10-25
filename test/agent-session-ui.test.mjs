@@ -644,7 +644,7 @@ test("a Codex chat reads like the Codex app", async () => {
   assert.equal($(".as-title small").textContent, "app · Codex app");
   assert.deepEqual(
     $$(".as-bar button").map((b) => b.getAttribute("aria-label")),
-    ["Back to all sessions", null, "More"],
+    ["Back to previous view", null, "More"],
   );
   // No agent switcher up there (the user found it useless). The menu with
   // "Continue in…" is a still ⋯: no flipping coin of app logos.
@@ -3340,7 +3340,7 @@ test("a Claude chat wears the Claude app's floating buttons; New chat and More w
   // The list of chats on the left; where it runs, a new chat and more on the right.
   assert.deepEqual(
     $$(".as-bar button").map((b) => b.getAttribute("aria-label")),
-    ["Back to all sessions", null, "New chat", "More"],
+    ["Back to previous view", null, "New chat", "More"],
   );
   assert.ok($(".as-bar .as-bar-pill [aria-label='New chat']"));
   // No logos up there, not even on More (a still ⋯, no flipping coin).
@@ -3351,7 +3351,7 @@ test("a Claude chat wears the Claude app's floating buttons; New chat and More w
   await click(button("More"));
   assert.equal($(".as-details-title").textContent, "Refactor auth");
   await click(button("New chat"));
-  await click(button("Back to all sessions"));
+  await click(button("Back to previous view"));
   assert.deepEqual(calls, ["new", "back"]);
   assert.deepEqual(dom.errors, []);
 });
@@ -4144,12 +4144,12 @@ test("a reload comes back to the chat that was open, in this tab, on this comput
   link.rememberPlace(peer.id, { page: "sessions" });
   const feed = { sessions: [claudeSession()], errors: {}, health: signedIn, failure: "", reload: async () => {}, recheck: () => {} };
   await mount(React.createElement(EverythingChat, { peer, feed, target: { agent: "claude", id: CLAUDE } }));
-  await dom.waitFor(() => button("Back to all sessions"));
+  await dom.waitFor(() => button("Back to previous view"));
   await dom.waitFor(() => link.lastPlace(peer.id)?.id === CLAUDE);
   assert.deepEqual(link.lastPlace(peer.id), { page: "sessions", agent: "claude", id: CLAUDE });
   assert.equal(link.lastPlace("another-mac"), null, "another computer's place isn't this one's");
   // Back to the list: a reload shows the list.
-  await click(button("Back to all sessions"));
+  await click(button("Back to previous view"));
   await dom.waitFor(() => !link.lastPlace(peer.id)?.id);
   assert.deepEqual(link.lastPlace(peer.id), { page: "sessions" });
   link.rememberPlace(peer.id, { page: "files" });

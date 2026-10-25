@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { post, type Peer } from "./api";
+import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import {
   ChatAppPicker,
   ChatLibraryHeader,
@@ -41,6 +42,7 @@ import { ClawRelayAction } from "./OpenClawRelay";
 import { channelName, usePolling } from "./openclaw-polling";
 import { ClawCustomize, ClawScheduled } from "./OpenClawPages";
 import { ClawPageTop, useClawBack } from "./OpenClawRow";
+import { backOne, currentEntry, updateEntry } from "./nav-history";
 import { ClawTooOld } from "./OpenClawHealth";
 import "./openclaw.css";
 import { ChatCompanion } from "./ChatCompanion";
@@ -288,7 +290,7 @@ function Conversation({
   return (
     <section ref={surface} className="claw-conversation claw-app" aria-label="OpenClaw conversation">
       <header className="claw-thread-head">
-        <button className="claw-round" aria-label="Back to OpenClaw sessions" onClick={onBack}>
+        <button className="claw-round" aria-label="Back to previous view" onClick={onBack}>
           <ChevronLeft size={22} />
         </button>
         <button
@@ -567,6 +569,7 @@ function Conversation({
 }
 
 export default function OpenClawSpace({
+  active = true,
   peer,
   apps,
   logos,
@@ -590,6 +593,7 @@ export default function OpenClawSpace({
   deviceRequests?: number;
   onReviewDevice: () => void;
   onDiscover?: () => void;
+  active?: boolean;
   // A chat moved here from another app: opened as soon as it's listed.
   openKey?: string | null;
   onOpened?: () => void;
@@ -605,14 +609,17 @@ export default function OpenClawSpace({
   const [opened, setOpened] = useState<Session | null>(null);
   const [starting, setStarting] = useState(false);
   const [startProblem, setStartProblem] = useState("");
-  const [query, setQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchField = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (searchOpen) searchField.current?.focus();
-  }, [searchOpen]);
+  const scope = viewScope(peer, "chats:openclaw");
+  const [query, setQuery] = useViewState(scope, "query", "");
+  const [searchOpen, setSearchOpen] = useViewState(scope, "search", false);
+  const { field: searchField, requestFocus } = useSearchFocus<HTMLInputElement>(searchOpen);
   // The chats, or one of the pages the ChatGPT app keeps in its side menu.
-  const [page, setPage] = useState<"home" | "scheduled" | "customize" | "agents" | "skills">("home");
+  type Page = "home" | "scheduled" | "customize" | "agents" | "skills";
+  const [page, setPage] = useState<Page>(() => {
+    const saved = currentEntry().reachClawPageName;
+    return typeof saved === "string" && ["scheduled", "customize", "agents", "skills"].includes(saved)
+      ? saved as Page : "home";
+  });
   // Another computer shows its own OpenClaw, never the last one's chat or page.
   const peerKey = `${peer.id}|${peer.url}|${peer.token}`;
   const [seenPeer, setSeenPeer] = useState(peerKey);
@@ -620,8 +627,6 @@ export default function OpenClawSpace({
     setSeenPeer(peerKey);
     setOpened(null);
     setPage("home");
-    setQuery("");
-    setSearchOpen(false);
     setStartProblem("");
     setStarting(false);
   }
@@ -650,6 +655,11 @@ export default function OpenClawSpace({
   }, "reachClawChat");
   useClawBack(page !== "home", () => setPage("home"), "reachClawPage");
   useClawBack(page === "agents" || page === "skills", () => setPage("customize"), "reachClawSub");
+  useLayoutEffect(() => {
+    if (opened || page !== "home")
+      updateEntry({ reachClawPageName: page, reachClawTarget: opened?.key });
+  }, [page, opened?.key]);
+  const scroll = useViewScroll<HTMLDivElement>(`${scope}:${page}`, active && !opened, !!data || !!error);
   if (opened)
     return (
       <Conversation
@@ -657,8 +667,10 @@ export default function OpenClawSpace({
         peer={peer}
         session={opened}
         onBack={() => {
-          setOpened(null);
-          reload();
+          if (!backOne()) {
+            setOpened(null);
+            reload();
+          }
         }}
         deviceRequests={deviceRequests}
         onReviewDevice={onReviewDevice}
@@ -672,7 +684,7 @@ export default function OpenClawSpace({
     );
   const home = () => setPage("home");
   return (
-    <div className="chat-workspace">
+    <div ref={scroll} className="chat-workspace">
       <div className={`chat-library claw-library claw-app ${searchOpen && page === "home" ? "search-open" : ""}`}>
         {page === "scheduled" ? (
           <ClawScheduled peer={peer} refresh={refresh} onBack={home} />
@@ -717,6 +729,7 @@ export default function OpenClawSpace({
               searchOpen={searchOpen}
               onSearch={() => {
                 if (searchOpen) setQuery("");
+                if (!searchOpen) requestFocus();
                 setSearchOpen(!searchOpen);
               }}
             />
