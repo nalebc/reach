@@ -15,6 +15,7 @@ import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 import { createClaudeImports } from "../server/agent-sessions/claude-import.mjs";
 import { createOutbox } from "../server/agent-sessions/outbox.mjs";
 import { tooOld } from "../server/agent-sessions/compatibility.mjs";
+import { eventually } from "./helpers/eventually.mjs";
 
 const ID = "11111111-2222-4333-8444-555555555555";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -2150,9 +2151,12 @@ test("the next Reach continues a chat the last one cut off, the way any message 
   });
   t.after(() => { sessions.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   sessions.warm();
-  await settle(50);
-  const proc = claude.last();
-  assert.ok(proc, "Claude Code was resumed");
+  // Resuming is asynchronous (read the chat, then start Claude Code): wait
+  // for it, rather than a fixed 50 ms that a slow runner overran.
+  const proc = await eventually(() => {
+    const p = claude.last();
+    return p?.lines.some((m) => m.type === "user") && p;
+  }, { label: "Claude Code resumed with Reach's restart note" });
   assert.deepEqual(proc.args.slice(proc.args.indexOf("--resume"), proc.args.indexOf("--resume") + 2), ["--resume", ID]);
   assert.equal(proc.options.cwd, "/work/site");
   for (const [flag, value] of [["--model", "claude-test-model"], ["--effort", "max"], ["--permission-mode", "acceptEdits"]])

@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { startComputer, macInUse, markInput, desktopTurn } from "../helpers/journey.mjs";
 import { HOST } from "../helpers/fake-tailscale.mjs";
 import { recorder, rawTerminal } from "../helpers/input-recorder.mjs";
+import { closeServer } from "../helpers/close-server.mjs";
 
 // Screen control from real iOS WebKit: Mobile Safari in an iOS simulator,
 // driven by XCUITest (real UIKit touches, the real software keyboard), into
@@ -265,7 +266,8 @@ test(
       }
     });
     await new Promise((r) => oracle.listen(0, "127.0.0.1", r));
-    t.after(() => new Promise((r) => oracle.close(r)));
+    // Safari in the simulator posts its page trace here and keeps connections.
+    t.after(() => closeServer(oracle, { label: "page trace server" }));
     door = loopbackDoor(computer.reach.fake, computer.origin, pageTrace(`http://127.0.0.1:${oracle.address().port}`));
     await new Promise((r) => door.server.listen(0, "127.0.0.1", r));
     t.after(() => door.close());

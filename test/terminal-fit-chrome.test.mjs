@@ -4,6 +4,7 @@ import http from "node:http";
 import fs from "node:fs";
 import { transform } from "esbuild";
 import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
+import { closeServer } from "./helpers/close-server.mjs";
 
 // The terminal's last line in sight above the keys, in a real browser with
 // Reach's own terminal CSS (src/terminals.css), xterm and its fit addon, at
@@ -80,7 +81,9 @@ test("a terminal's last line stays above the keys, its last column inside the sc
     res.end(page);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  // Runs before the browser's own cleanup, while Chrome still holds its
+  // connections: closeServer cuts them instead of waiting on them.
+  t.after(() => closeServer(server, { label: "terminal page server" }));
   const browser = await launchChrome(t, {});
   const tab = await openTab(browser);
   await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
