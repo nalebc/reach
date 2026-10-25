@@ -200,9 +200,14 @@ async function stressRun(t, kind) {
       caption: document.querySelector(".simple-screen-caption")?.innerText || "",
       shown: [...document.querySelectorAll(".screen-feedback, .screen-gesture-feedback, .screen-error, [role=alert], .toast")].map((e) => e.innerText).filter(Boolean).join(" | ").slice(0, 300),
     }))()`);
-    // A phone button, pressed as a person does (a touch at its middle).
+    // A phone button, pressed as a person does (a touch at its middle). Only
+    // these fixed lookups run in the page: no code is built from a value.
+    const BUTTONS = {
+      "Discard waiting typing": `(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Discard waiting typing" && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+      "Send waiting typing to current field": `(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Send waiting typing to current field" && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+    };
     const pressButton = async (label) => {
-      const b = await page.evaluate(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      const b = Object.hasOwn(BUTTONS, label) ? await page.evaluate(BUTTONS[label]) : null;
       if (!b) return false;
       await touchDown(b.x, b.y);
       await sleep(80);
