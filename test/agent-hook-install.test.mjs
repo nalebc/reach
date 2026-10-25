@@ -13,6 +13,7 @@ import {
   uninstallCodexHook,
 } from "../server/agent-sessions/agent-hook-install.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
 
 // The person's own settings, as Claude Code keeps them (two-space JSON).
 const theirs = {
@@ -110,12 +111,14 @@ test("Codex's config gets one marked block at the end, trusted only by the perso
   assert.throws(() => installCodexHook({ configPath, command }), /inline/);
 });
 
+// Reach's own private folder (on Windows its private stage): settings live
+// in the user's private profile, whose access list a new file takes there.
+const privateParent = toolPrivateStateParent(test);
 test("settings are replaced whole: same permissions, through a symlink, nothing left beside them", async () => {
   const { writeWhole } = await import("../server/agent-sessions/agent-hook-install.mjs");
   const fsm = await import("node:fs");
-  const osm = await import("node:os");
   const pathm = await import("node:path");
-  const dir = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "reach-whole-"));
+  const dir = fsm.mkdtempSync(pathm.join(privateParent(), "reach-whole-"));
   const real = pathm.join(dir, "dotfiles-settings.json");
   fsm.writeFileSync(real, "{}\n", { mode: 0o640 });
   fsm.chmodSync(real, 0o640);
