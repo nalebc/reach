@@ -30,7 +30,8 @@ async function fixture(t, overrides = {}) {
       ],
     },
     claudeOpen: async () => true,
-    typeIntoApp: true, claudeCompose: {
+    // The Claude app's window helper is the Mac's (no Windows twin yet): modeled on every host.
+    platform: "darwin", typeIntoApp: true, claudeCompose: {
       model: async (id, value) => (calls.push({ id, ...value }), { model: value.model }),
       effort: async (id, value) => (calls.push({ id, ...value }), { effort: value.effort }),
       ...overrides,

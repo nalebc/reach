@@ -345,7 +345,9 @@ test("stay-awake assertion follows AC power and releases on battery, read error 
     cancelled = 0,
     fail = false;
   const children = [];
+  // The Mac's: pmset and caffeinate. Windows' helper is windows-stay-awake's.
   const awake = stayAwakeOnAC({
+    platform: "darwin",
     readPower: async () => {
       if (fail) throw Error("no power state");
       return power;
@@ -646,7 +648,9 @@ test("always-awake mode works on battery without power polling, recovers crashed
     tick;
   const children = [],
     states = [];
+  // The Mac's: pmset and caffeinate. Windows' helper is windows-stay-awake's.
   const awake = keepAwake({
+    platform: "darwin",
     readPower: async () => {
       polls++;
       throw Error("unavailable");
@@ -699,7 +703,9 @@ test("always-awake mode works on battery without power polling, recovers crashed
 test("disabled and stopped-during-power-check modes never acquire assertions", async () => {
   let complete,
     starts = 0;
+  // The Mac's: pmset and caffeinate. Windows' helper is windows-stay-awake's.
   const disabled = keepAwake({
+    platform: "darwin",
     mode: "off",
     acquire: () => {
       starts++;
@@ -708,6 +714,7 @@ test("disabled and stopped-during-power-check modes never acquire assertions", a
   });
   disabled.stop();
   const waiting = keepAwake({
+    platform: "darwin",
     mode: "ac",
     readPower: () =>
       new Promise((r) => {

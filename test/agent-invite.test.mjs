@@ -124,15 +124,20 @@ test("an invited agent gets exactly its folder and access, nothing of yours", as
   );
 
   // Commands start in its folder only, within its time limit; only in a
-  // sandbox, which only a Mac has yet (Oct 12: Windows and Linux ran them
-  // as you, free to rewrite Reach's own files).
+  // sandbox (Oct 12: Windows and Linux ran them as you, free to rewrite
+  // Reach's own files). A Mac's is sandbox-exec. A Windows PC's is an
+  // AppContainer run by a helper Reach builds in a folder it made private at
+  // launch (server/windows-sandbox.mjs); this fixture never prepares one, so
+  // the job is refused with that reason. Linux has none.
   const job = await as("/api/jobs", {
     method: "POST",
     body: { root: 0, path: "", command: "pwd" },
   });
   if (process.platform !== "darwin") {
     assert.equal(job.status, 503, JSON.stringify(job.body));
-    assert.match(job.body.error, /run only in a sandbox, which this (Windows PC|computer) doesn't have yet/);
+    assert.match(job.body.error, process.platform === "win32"
+      ? /^Reach couldn't prepare its command sandbox on this Windows PC \(its private folder isn't ready\), so agents' commands can't run here yet\.$/
+      : /run only in a sandbox, which this computer doesn't have yet/);
   } else {
     assert.equal(job.status, 202, JSON.stringify(job.body));
     let done;

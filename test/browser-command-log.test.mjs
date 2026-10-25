@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createBrowserCommandLog } from "../server/browser-command-log.mjs";
@@ -9,6 +10,19 @@ async function fixture(t) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "reach-command-log-"));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   return { temp, dir: path.join(temp, "log") };
+}
+// Windows lets no handle opened to append shorten its file: Node opens
+// O_APPEND there with append rights only, so ftruncate fails EPERM (Windows
+// validation run 40220974633). Modelled on every host, so cutting the log
+// back is shown to go through a handle that may.
+function appendHandlesCannotShorten(t) {
+  const open = fs.open;
+  t.mock.method(fs, "open", async (file, flags, ...rest) => {
+    const handle = await open(file, flags, ...rest);
+    if (typeof flags === "number" && flags & constants.O_APPEND)
+      handle.truncate = async () => { throw Object.assign(Error("EPERM: operation not permitted, ftruncate"), { code: "EPERM", syscall: "ftruncate" }); };
+    return handle;
+  });
 }
 const record = (id = "request-1", extra = {}) => ({ id, clientId: "agent-one", name: "Muse", reason: "Inspect notes", action: { type: "terminal", command: "pwd", root: 0, cwd: "" }, status: "pending", createdAt: 100, expiresAt: 10000, approval: "automatic", ...extra });
 
@@ -93,6 +107,7 @@ test("a full history is set aside with the commands still running carried over, 
 
 test("a write that failed blocks commands until the next one can be written, cutting back what it left", async (t) => {
   const { dir } = await fixture(t);
+  appendHandlesCannotShorten(t);
   // A full disk: part of a line written, then the write fails.
   let full = false;
   const log = await createBrowserCommandLog({ dir, beforeWrite: async (file) => {
@@ -143,6 +158,7 @@ test("a history that can't be read is kept aside and a new one starts", async (t
 
 test("history fails closed on symlinks, unsafe modes, truncated records and unexpected changes", async (t) => {
   const { dir, temp } = await fixture(t);
+  appendHandlesCannotShorten(t);
   const actual = path.join(temp, "actual"); await fs.mkdir(actual, { mode: 0o700 });
   await fs.symlink(actual, dir);
   await assert.rejects(createBrowserCommandLog({ dir }), /private owned directory/);

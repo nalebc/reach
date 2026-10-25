@@ -22,9 +22,39 @@ export function createScreenControlDiagnostics() {
     longTasks.push({ start: Math.round(entry.startTime), duration: Math.round(entry.duration), name: taskNames.has(entry.name) ? entry.name : "unknown" });
     if (longTasks.length > 64) longTasks.shift();
   };
+  // What ran in a long frame (Long Animation Frames: Chrome 123+): each
+  // script by file and function, and how much was style, layout and drawing
+  // (Oct 25: 4 s of the page's own, at the emoji, not a cold emoji font).
+  // Where in the code only: a URL is cut to its file name, never its query.
+  const frames = [];
+  const invokerTypes = new Set(["user-callback", "event-listener", "resolve-promise", "reject-promise", "classic-script", "module-script"]);
+  const ms = value => Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  const file = url => typeof url === "string" ? url.split(/[?#]/)[0].split("/").pop().slice(0, 80) : "";
+  const named = value => typeof value === "string" ? (/:\/\//.test(value) ? "[url]" : value.slice(0, 80)) : "";
+  const frame = entry => {
+    if (!entry || !Number.isFinite(entry.startTime) || !Number.isFinite(entry.duration) || entry.duration < 1000) return;
+    const end = entry.startTime + entry.duration;
+    const scripts = [...(entry.scripts || [])].slice(0, 8).map(script => ({
+      invokerType: invokerTypes.has(script.invokerType) ? script.invokerType : "unknown",
+      invoker: named(script.invoker),
+      fn: named(script.sourceFunctionName),
+      file: file(script.sourceURL),
+      at: Number.isSafeInteger(script.sourceCharPosition) ? script.sourceCharPosition : -1,
+      duration: ms(script.duration),
+      forcedLayoutMs: ms(script.forcedStyleAndLayoutDuration),
+    }));
+    frames.push({
+      start: ms(entry.startTime), duration: ms(entry.duration), blocking: ms(entry.blockingDuration),
+      scriptMs: scripts.reduce((sum, script) => sum + script.duration, 0),
+      styleLayoutMs: entry.styleAndLayoutStart > 0 ? ms(end - entry.styleAndLayoutStart) : 0,
+      scripts,
+    });
+    if (frames.length > 16) frames.shift();
+  };
   if (typeof window === "object" && window && typeof setInterval === "function") {
     try { setInterval(() => tick(performance.now()), 100); } catch {}
     try { new PerformanceObserver(list => { for (const entry of list.getEntries()) longTask(entry); }).observe({ type: "longtask", buffered: true }); } catch {}
+    try { new PerformanceObserver(list => { for (const entry of list.getEntries()) frame(entry); }).observe({ type: "long-animation-frame", buffered: true }); } catch {}
   }
   const messages = new Set([
     "Authenticate first.",
@@ -91,6 +121,7 @@ export function createScreenControlDiagnostics() {
     record,
     tick,
     longTask,
+    frame,
     drain() {
       // Overlap is computed here: a long task's entry can arrive after the
       // tick that ended its gap.
@@ -101,6 +132,7 @@ export function createScreenControlDiagnostics() {
           longTaskMs: tasks.reduce((sum, task) => sum + Math.max(0, Math.min(gap.to, task.start + task.duration) - Math.max(gap.from, task.start)), 0),
         })),
         longTasks: tasks,
+        frames: frames.splice(0),
       };
       const result = { version: 1, events: events.splice(0), dropped, lifecycle: lifecycle.splice(0), lifecycleDropped, stalls };
       dropped = lifecycleDropped = 0;

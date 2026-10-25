@@ -60,8 +60,32 @@ export async function windowsProcesses({ run = exec, nativeDir = folder, build =
   // reads this list instead (one helper line in a file).
   if (process.env.REACH_TEST_WINDOWS_PROCESSES) return parseProcesses(fs.readFileSync(process.env.REACH_TEST_WINDOWS_PROCESSES, "utf8"));
   if (!nativeDir) throw new Error("Reach's folder for its helpers isn't known here.");
-  fs.mkdirSync(windowsBuildDirectory(nativeDir), { recursive: true, mode: 0o700 });
-  const file = await build({ dataDir: nativeDir }, "processes", { dir: nativeDir, platform, signal });
-  const { stdout } = await run(file, [], { timeout: 15000, maxBuffer: 64 << 20, windowsHide: true, ...(signal ? { signal } : {}) });
-  return parseProcesses(stdout);
+  const reading = { controller: new AbortController() };
+  const own = signal ? AbortSignal.any([signal, reading.controller.signal]) : reading.controller.signal;
+  const readings = running.get(nativeDir) || new Set();
+  running.set(nativeDir, readings);
+  reading.done = (async () => {
+    fs.mkdirSync(windowsBuildDirectory(nativeDir), { recursive: true, mode: 0o700 });
+    const file = await build({ dataDir: nativeDir }, "processes", { dir: nativeDir, platform, signal: own });
+    const { stdout } = await run(file, [], { timeout: 15000, maxBuffer: 64 << 20, windowsHide: true, signal: own });
+    return parseProcesses(stdout);
+  })();
+  readings.add(reading);
+  try {
+    return await reading.done;
+  } finally {
+    readings.delete(reading);
+    if (!readings.size && running.get(nativeDir) === readings) running.delete(nativeDir);
+  }
+}
+
+// Readings still running, per data folder. A Reach that quits stops its own
+// and waits for them: on Windows a helper still running holds its program
+// file open (a test removing the folder, or an update replacing the helper,
+// then fails), and nothing should outlive Reach's close.
+const running = new Map();
+export async function stopProcessReadings(dir) {
+  const readings = [...(running.get(dir) || [])];
+  for (const reading of readings) reading.controller.abort();
+  await Promise.allSettled(readings.map((reading) => reading.done));
 }

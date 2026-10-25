@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { agentAskSocket, createAgentAsks } from "../server/agent-sessions/agent-asks.mjs";
+import { agentAskSocket, createAgentAsks, newAgentAskPipe, readAgentAskPipe } from "../server/agent-sessions/agent-asks.mjs";
 import { askKey } from "../server/agent-sessions/claude-transcript.mjs";
 import { createAgentSessions } from "../server/agent-sessions/index.mjs";
 
@@ -28,7 +28,8 @@ const request = { hook_event_name: "PermissionRequest", session_id: SESSION, too
 test("Reach's hook prints the phone's answer as Claude Code's decision", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-hook-test-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const socketPath = path.join(dir, "s.sock");
+  // A socket file on a Mac, Reach's own named pipe on Windows (its trust check: windows-claude-hooks).
+  const socketPath = process.platform === "win32" ? newAgentAskPipe() : path.join(dir, "s.sock");
   let asked;
   const server = net.createServer((socket) => {
     socket.setEncoding("utf8");
@@ -74,13 +75,14 @@ test("Reach's hook steps aside without Reach, for other agents and other events"
 test("a request held for the phone reaches the next Reach after a restart", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-hook-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const socketPath = path.join(dir, "s.sock");
+  // A socket file on a Mac, Reach's own named pipe on Windows (its trust check: windows-claude-hooks).
+  const socketPath = process.platform === "win32" ? newAgentAskPipe() : path.join(dir, "s.sock");
   const until = async (check, ms = 8000) => {
     const end = Date.now() + ms;
     while (!check() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
     return check();
   };
-  const reach = () => createAgentAsks({ socketPath, everyMs: 20, waiting: async () => true, asking: async () => true });
+  const reach = () => createAgentAsks({ socketPath, dataDir: dir, newPipe: () => socketPath, everyMs: 20, waiting: async () => true, asking: async () => true });
   const first = reach();
   await first.listen();
   // Reach was there once: a restart's few minutes, not the short wait for a Reach never seen.
@@ -105,10 +107,11 @@ test("a request held for the phone reaches the next Reach after a restart", asyn
 test("a request asked again after the Mac answered it steps aside", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-hook-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const socketPath = path.join(dir, "s.sock");
+  // A socket file on a Mac, Reach's own named pipe on Windows (its trust check: windows-claude-hooks).
+  const socketPath = process.platform === "win32" ? newAgentAskPipe() : path.join(dir, "s.sock");
   const hook = runHook(["claude", socketPath], request, { REACH_HOOK_RETRY_MS: "20000" });
   await new Promise((r) => setTimeout(r, 1200));
-  const asks = createAgentAsks({ socketPath, everyMs: 20, waiting: async () => true, asking: async () => false });
+  const asks = createAgentAsks({ socketPath, dataDir: dir, newPipe: () => socketPath, everyMs: 20, waiting: async () => true, asking: async () => false });
   await asks.listen();
   t.after(() => asks.close());
   const started = Date.now();
@@ -150,8 +153,10 @@ test("Reach shows a re-asked request only while Claude Code waits on that very p
     macPrompts: { start() {}, close() {}, current: () => ({ prompts: [] }) },
   });
   t.after(() => sessions.close());
-  const sock = agentAskSocket(dataDir);
-  for (let i = 0; i < 200 && !fs.existsSync(sock); i++) await new Promise((r) => setTimeout(r, 10));
+  // Reach's endpoint: its socket file on a Mac; on Windows the pipe its data folder names.
+  const endpoint = () => (process.platform === "win32" ? readAgentAskPipe(dataDir) : fs.existsSync(agentAskSocket(dataDir)) ? agentAskSocket(dataDir) : null);
+  for (let i = 0; i < 200 && !endpoint(); i++) await new Promise((r) => setTimeout(r, 10));
+  const sock = endpoint() ?? agentAskSocket(dataDir);
   const ask = () =>
     new Promise((resolve) => {
       const socket = net.createConnection(sock);
@@ -178,7 +183,9 @@ test("Reach shows a re-asked request only while Claude Code waits on that very p
 
 // The mode check is a few shell lines: "ask" only for a session with a mode
 // waiting (a file named after it), nothing otherwise.
-test("Reach's mode hook asks only for a session with a mode waiting", async (t) => {
+test("Reach's mode hook asks only for a session with a mode waiting", {
+  skip: process.platform === "win32" && "the Mac's /bin/sh mode hook; Windows installs agent-mode-hook.mjs (agent-hook-install.mjs:31-37), tested in windows-claude-hooks.test.mjs:263",
+}, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-modes-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const modeScript = fileURLToPath(new URL("../scripts/agent-mode-hook.sh", import.meta.url));

@@ -696,7 +696,9 @@ test("Reach's own Claude Code process isn't a terminal's; a person's claude in a
       ["11111111-2222-4333-8444-555555555555", { where: "terminal", pid: 700, tty: null, exact: true, busy: false, waiting: null }],
       ["22222222-2222-4222-8222-222222222222", { where: "terminal", pid: 800, tty: null, exact: true, busy: false, waiting: null }],
     ]);
-  const live = await liveClaudeSessions([], { run: async () => ({ stdout: ps }), registry, self: 600 });
+  // A Mac's ps; Windows has none (Reach's own come from its registry there:
+  // agent-claude-host.test.mjs, "on Windows live Claude sessions come from …").
+  const live = await liveClaudeSessions([], { run: async () => ({ stdout: ps }), registry, self: 600, platform: "darwin" });
   assert.equal(live.get("11111111-2222-4333-8444-555555555555").where, "reach");
   assert.equal(live.get("22222222-2222-4222-8222-222222222222").where, "terminal");
 });

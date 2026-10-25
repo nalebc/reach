@@ -23,7 +23,10 @@ test("the sandbox profile denies exactly what it's given, quoted", () => {
   assert.doesNotMatch(empty, /file-read|file-write|unix-socket|remote ip/);
 });
 
-test("what an agent's commands can't reach", () => {
+// The Mac's sandbox-exec deny list: Reach builds it only on a Mac
+// (server/index.mjs jobSandbox); a Windows PC's jobs get windowsJobDenies
+// (server/windows-sandbox.mjs, test/windows-sandbox.test.mjs).
+test("what an agent's commands can't reach", { skip: process.platform === "win32" && "the Mac's sandbox-exec deny list, built only on a Mac (server/index.mjs jobSandbox); Windows' is windowsJobDenies (server/windows-sandbox.mjs)" }, () => {
   const home = "/Users/me", appRoot = "/Users/me/code/reach/";
   const rules = agentShellSandbox({ dataDir: "/Users/me/code/reach/.reach/quick", port: 4317 },
     { home, appRoot, sockets: ["/tmp/reach-501-abc"] });

@@ -1,5 +1,40 @@
 /* While typing on a phone, the key row (KeyRow, key-row.css) replaces the
-   dock. */
-.simple-screen.screen-typing.screen-expanded:has(> .typing-keys) > .simple-screen-dock {
+   dock, except while typing waits after a reconnect: the dock holds what
+   says so and its Send and Discard, which must stay on screen. */
+.simple-screen.screen-typing.screen-expanded:not(.screen-typing-paused):has(> .typing-keys) > .simple-screen-dock {
   display: none;
+}
+/* There, only the pause and its choices: the bar's icons would cover the
+   key row, and the line wraps rather than running off the screen. */
+.simple-screen.screen-typing-paused:has(> .typing-keys) > .simple-screen-dock > .screen-bar {
+  display: none;
+}
+.simple-screen.screen-typing-paused:has(> .typing-keys) .screen-typing-pause {
+  flex-wrap: wrap;
+  justify-content: center;
+  border-radius: 16px;
+  padding: 6px 8px;
+  row-gap: 4px;
+}
+.simple-screen.screen-typing-paused:has(> .typing-keys) .screen-typing-pause > span {
+  white-space: normal;
+  text-align: center;
+}
+/* It floats just above the key row, never over it, whether the screen is
+   full screen or not: 51px is the row (38px keys, 6px padding, its 1px line;
+   key-row.css), 41px when slimmed (screen-immersive.css). */
+.simple-screen.screen-typing.screen-typing-paused:has(> .typing-keys)
+  > .simple-screen-dock.screen-bar-dock {
+  position: absolute;
+  left: 50%;
+  right: auto;
+  top: auto;
+  bottom: calc(51px + 8px);
+  transform: translateX(-50%);
+  margin: 0;
+  background: none;
+}
+.simple-screen.screen-typing.screen-typing-paused[data-compact-viewport="true"]:has(> .typing-keys)
+  > .simple-screen-dock.screen-bar-dock {
+  bottom: calc(41px + 8px);
 }

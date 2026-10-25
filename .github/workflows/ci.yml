@@ -343,16 +343,48 @@ jobs:
     uses: ./.github/workflows/agent-compatibility.yml # zizmor: ignore[self-repository] same-commit reference; actionlint 1.7.12 does not yet parse the equivalent $/ syntax
     permissions:
       contents: read
+  windows-rest:
+    name: Windows, every other test
+    # Every test file no other lane owns also runs on Windows, so a new test
+    # can't silently assume a Mac (Oct 25: 264 files had never run here).
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - name: Every other test, on Windows
+        run: npm run test:ci:windows-rest
+        env:
+          # Test folders outside AppData, which Reach keeps private from
+          # agents on Windows as ~/Library on a Mac (as the windows lane).
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+      - name: Keep the reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tests-windows-rest
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
   required:
     name: CI required
     if: always()
-    needs: [privacy, workflows, go-security, audit, verify, screen-control, ios, compatibility]
+    needs: [privacy, workflows, go-security, audit, verify, windows-rest, screen-control, ios, compatibility]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: node .github/scripts/required-check.mjs privacy workflows go-security audit verify screen-control ios compatibility
+      - run: node .github/scripts/required-check.mjs privacy workflows go-security audit verify windows-rest screen-control ios compatibility
         env:
           REACH_CI_NEEDS: ${{ toJSON(needs) }}

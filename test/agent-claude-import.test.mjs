@@ -27,6 +27,8 @@ const waitUntil = async (ready) => {
 };
 const link = (id) => [`claude://resume?session=${id}`, { background: true }];
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "reach-imports-"));
+// Readings "as macOS gives them" model the Mac on any host (a PC reads its own helpers).
+const MAC = { platform: "darwin" };
 
 test("a session started from Reach joins the Claude app only while nobody is at the Mac and the app is open", async (t) => {
   const file = path.join(tmp(), "claude-imports.json");
@@ -114,22 +116,22 @@ test("waiting imports survive a restart, and stop when Reach quits", async (t) =
 
 test("the Mac's idle time, the Claude app, and the app's own list are read as macOS gives them", async () => {
   const ioreg = async () => ({ stdout: '  |   "HIDIdleTime" = 308700085791\n  |   "HIDIdleTimeDelta" = 1\n' });
-  assert.equal(await idleSeconds(ioreg), 308.700085791);
-  assert.equal(await idleSeconds(async () => ({ stdout: "" })), null);
+  assert.equal(await idleSeconds(ioreg, MAC), 308.700085791);
+  assert.equal(await idleSeconds(async () => ({ stdout: "" }), MAC), null);
 
   const ps = (lines) => async () => ({ stdout: lines.join("\n") });
   assert.equal(
-    await claudeAppRunning(ps(["/Applications/Claude.app/Contents/MacOS/Claude", "/usr/sbin/cfprefsd"])),
+    await claudeAppRunning(ps(["/Applications/Claude.app/Contents/MacOS/Claude", "/usr/sbin/cfprefsd"]), MAC),
     true,
   );
   // Claude Code processes (the app's own copy, the CLI) aren't the app.
   assert.equal(
     await claudeAppRunning(
-      ps(["/Users/me/Library/Application Support/Claude/claude-code/2.1.286/x/claude.app/Contents/MacOS/claude", "/Users/me/.local/bin/claude"]),
+      ps(["/Users/me/Library/Application Support/Claude/claude-code/2.1.286/x/claude.app/Contents/MacOS/claude", "/Users/me/.local/bin/claude"]), MAC,
     ),
     false,
   );
-  assert.equal(await claudeAppRunning(async () => Promise.reject(new Error("ps failed"))), false);
+  assert.equal(await claudeAppRunning(async () => Promise.reject(new Error("ps failed")), MAC), false);
 
   const records = tmp();
   fs.mkdirSync(path.join(records, "account", "org"), { recursive: true });
@@ -142,19 +144,21 @@ test("the Mac's idle time, the Claude app, and the app's own list are read as ma
 test("the Claude app's own sign-in is read from what it does, never from its credentials", async () => {
   const dir = tmp();
   const app = path.join(dir, "Claude.app");
+  // Installed, as a Mac says it: the app in its folder (a PC looks in AppData instead).
+  const installed = () => fs.existsSync(app);
   const records = path.join(dir, "claude-code-sessions");
   const now = Date.now();
-  assert.deepEqual(await claudeAppAccess({ app, records }), { installed: false, signedIn: false });
+  assert.deepEqual(await claudeAppAccess({ app, records, installed }), { installed: false, signedIn: false });
   fs.mkdirSync(app);
   // Installed, never used: not signed in.
-  assert.deepEqual(await claudeAppAccess({ app, records }), { installed: true, signedIn: false });
+  assert.deepEqual(await claudeAppAccess({ app, records, installed }), { installed: true, signedIn: false });
   // Running its own Claude Code sessions: signed in.
   const registry = () => new Map([["s1", { where: "claude-app", pid: 1 }]]);
-  assert.deepEqual(await claudeAppAccess({ app, records, registry }), { installed: true, signedIn: true });
+  assert.deepEqual(await claudeAppAccess({ app, records, installed, registry }), { installed: true, signedIn: true });
   // An account's session folder used lately: signed in; one left for months: not.
   fs.mkdirSync(path.join(records, "account-1"), { recursive: true });
-  assert.deepEqual(await claudeAppAccess({ app, records, now: () => now }), { installed: true, signedIn: true });
-  assert.deepEqual(await claudeAppAccess({ app, records, now: () => now + 60 * 86400000 }), { installed: true, signedIn: false });
+  assert.deepEqual(await claudeAppAccess({ app, records, installed, now: () => now }), { installed: true, signedIn: true });
+  assert.deepEqual(await claudeAppAccess({ app, records, installed, now: () => now + 60 * 86400000 }), { installed: true, signedIn: false });
 });
 
 // The Claude app's own list: when it opened, and when each session was last on screen.
@@ -289,9 +293,9 @@ test("the Claude app's opening time, its sessions on screen, and its Reload are 
       "Mon Oct  5 07:28:15 2026     /Users/me/Library/Application Support/Claude/claude-code/2.1.286/x/claude.app/Contents/MacOS/claude",
     ].join("\n"),
   });
-  assert.equal(await claudeAppStartedAt(ps), new Date(2026, 9, 5, 3, 29, 13).getTime());
-  assert.equal(await claudeAppStartedAt(async () => ({ stdout: "Mon Oct  5 07:28:15 2026     /Users/me/.local/bin/claude\n" })), null);
-  assert.equal(await claudeAppStartedAt(async () => Promise.reject(new Error("ps failed"))), null);
+  assert.equal(await claudeAppStartedAt(ps, MAC), new Date(2026, 9, 5, 3, 29, 13).getTime());
+  assert.equal(await claudeAppStartedAt(async () => ({ stdout: "Mon Oct  5 07:28:15 2026     /Users/me/.local/bin/claude\n" }), MAC), null);
+  assert.equal(await claudeAppStartedAt(async () => Promise.reject(new Error("ps failed")), MAC), null);
 
   const records = tmp();
   const org = path.join(records, "account", "org");
@@ -491,12 +495,12 @@ test("the Claude app is found by its bundle id wherever it lives, its process pa
     return { stdout: "" }; // no Claude.app path in the process list
   };
   // Renamed or moved (~/Applications/Claude 2.app): still found.
-  assert.equal(await claudeAppRunning(mac(4242)), true);
+  assert.equal(await claudeAppRunning(mac(4242), MAC), true);
   assert.deepEqual(calls[0], ["/usr/bin/lsappinfo", "info", "-only", "pid", "-app", "com.anthropic.claudefordesktop"]);
-  assert.equal(await claudeAppStartedAt(mac(4242, "Mon Oct  5 03:29:13 2026")), new Date(2026, 9, 5, 3, 29, 13).getTime());
+  assert.equal(await claudeAppStartedAt(mac(4242, "Mon Oct  5 03:29:13 2026"), MAC), new Date(2026, 9, 5, 3, 29, 13).getTime());
   // Closed: neither way finds it.
-  assert.equal(await claudeAppRunning(mac(null)), false);
-  assert.equal(await claudeAppStartedAt(mac(null)), null);
+  assert.equal(await claudeAppRunning(mac(null), MAC), false);
+  assert.equal(await claudeAppStartedAt(mac(null), MAC), null);
 });
 
 test("a chat joins the Claude app at its own effort: only a level the app's menu has", () => {

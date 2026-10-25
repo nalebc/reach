@@ -10,6 +10,8 @@ import { createRelays } from "../server/agent-sessions/relays.mjs";
 import { createTeamBridge, teamPipe } from "../server/agent-sessions/team-bridge.mjs";
 import { TEAM_LIMITS } from "../server/agent-sessions/team-tools.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
+import { windowsAcl, othersAllowed, ADMINISTRATORS, WRITES } from "./helpers/windows-acl.mjs";
 
 // Team chats (server/agent-sessions/teams.mjs) against a stand-in for the
 // agents, with the real relay engine carrying helpers' results to the lead.
@@ -17,8 +19,11 @@ const script = fileURLToPath(new URL("../scripts/team-mcp.mjs", import.meta.url)
 const user = (id, text) => ({ id, role: "user", kind: "text", text });
 const reply = (id, text) => ({ id, role: "assistant", kind: "text", text });
 
+// A team's key is checked as Reach keeps it: in Reach's own private folder
+// (on Windows its private stage; the runner's temp lets every user read).
+const privateParent = toolPrivateStateParent(test);
 function stage({ authorized = () => "", offered = [] } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-teams-"));
+  const dir = fs.mkdtempSync(path.join(privateParent(), "reach-teams-"));
   let clock = 1_000_000;
   let n = 0;
   const pages = {};
@@ -217,8 +222,19 @@ test("the bridge script offers the team's tools and carries each call to Reach w
   });
   await bridge.listen();
   t.after(() => bridge.close());
-  await assertPrivate(socketPath);
-  const file = path.join(dir, "key.json");
+  // Windows: a named pipe as Windows keeps one Node makes (team-bridge.mjs).
+  // Only this user, SYSTEM and Administrators may write to it or serve it,
+  // so only they can ask anything (it answers only what's asked on the same
+  // connection); anyone may open it to read, as agent-remote's pipe.
+  if (process.platform === "win32") {
+    const acl = await windowsAcl("pipe", socketPath.slice("\\\\.\\pipe\\".length));
+    assert.deepEqual(othersAllowed(acl, WRITES), [], JSON.stringify(acl));
+    assert.ok([acl.me, ADMINISTRATORS].includes(acl.owner), JSON.stringify(acl));
+  } else await assertPrivate(socketPath);
+  // Where Reach keeps a team's key (<data>/teams/<id>.json): the bridge
+  // checks a Windows pipe with a helper built in that data folder.
+  fs.mkdirSync(path.join(dir, "teams"));
+  const file = path.join(dir, "teams", "key.json");
   fs.writeFileSync(file, JSON.stringify({ socket: socketPath, token: "k".repeat(43) }), { mode: 0o600 });
   const client = mcp({ REACH_TEAM_FILE: file });
   t.after(() => client.close());
@@ -232,13 +248,18 @@ test("the bridge script offers the team's tools and carries each call to Reach w
   const failed = await client.call("tools/call", { name: "team_stop", arguments: { task_id: "t9" } });
   assert.equal(failed.result.isError, true);
   assert.equal(failed.result.content[0].text, "No such task on this team.");
-  // A key file others can read isn't used.
-  fs.chmodSync(file, 0o644);
-  const loose = mcp({ REACH_TEAM_FILE: file });
-  t.after(() => loose.close());
-  const refused = await loose.call("tools/call", { name: "team_roster", arguments: {} });
-  assert.match(refused.result.content[0].text, /team has ended/);
-  assert.equal(calls.length, 2, "nothing reached Reach");
+  // A key file others can read isn't used. Its mode says so on a Mac or
+  // Linux (scripts/team-mcp.mjs). Windows ignores modes (chmod can't open it
+  // to others): there the key is private by its folder's access list, which
+  // Reach makes private as it starts (server/windows-private-folder.mjs).
+  if (process.platform !== "win32") {
+    fs.chmodSync(file, 0o644);
+    const loose = mcp({ REACH_TEAM_FILE: file });
+    t.after(() => loose.close());
+    const refused = await loose.call("tools/call", { name: "team_roster", arguments: {} });
+    assert.match(refused.result.content[0].text, /team has ended/);
+    assert.equal(calls.length, 2, "nothing reached Reach");
+  }
 });
 
 test("a helper that doesn't start uses none of the hand-offs, and no team starts without its socket", async () => {

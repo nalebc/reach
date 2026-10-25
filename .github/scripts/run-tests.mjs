@@ -181,6 +181,7 @@ export const suites = {
     // Explicit Mac/Windows browser models and the shared watcher shutdown barrier.
     "agent-tools", "agent-tool-batch", "tool-page-runtime", "mac-terminal-watch",
   ],
+  // Every other test file runs on Windows too: ci.yml's windows-rest job.
   native: [
     "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",
     "agent-claude-model-native", "agent-desktop-focus-native",
@@ -198,8 +199,12 @@ export const suites = {
 };
 
 export function testFiles(suite, root = process.cwd()) {
-  const names = suite === "all"
-    ? fs.readdirSync(path.join(root, "test")).filter(name => name.endsWith(".test.mjs")).sort()
+  const all = () => fs.readdirSync(path.join(root, "test")).filter(name => name.endsWith(".test.mjs")).sort();
+  // Windows by default: every file no other lane owns, so a new test runs on
+  // Windows too unless someone says why not.
+  const owned = () => new Set([...suites.windows, ...suites.native].map(name => `${name}.test.mjs`));
+  const names = suite === "all" ? all()
+    : suite === "windows-rest" ? all().filter(name => !owned().has(name))
     : suites[suite]?.map(name => `${name}.test.mjs`);
   if (!names?.length) throw Error(`Unknown or empty CI test suite: ${suite}`);
   return names.map(name => {
@@ -212,6 +217,7 @@ export function testFiles(suite, root = process.cwd()) {
 export async function run(suite) {
   if (!process.env.npm_execpath) throw Error("Run through npm run test:ci, test:ci:windows, or test:ci:native.");
   if (suite === "native" && process.platform !== "darwin") throw Error("The native security suite requires macOS; a skipped suite is not a pass.");
+  if (suite === "windows-rest" && process.platform !== "win32") throw Error("The rest of the suite on Windows requires Windows; a skipped suite is not a pass.");
   const files = testFiles(suite);
   fs.mkdirSync("reports", { recursive: true });
   const args = ["--import", new URL("../../test/helpers/runaway-guard.mjs", import.meta.url).href, "--test",

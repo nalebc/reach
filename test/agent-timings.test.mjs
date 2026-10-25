@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { callKind, createAgentTimings, STRETCH_GAP_MS } from "../server/agent-timings.mjs";
 import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 // Oct 12: "agents using MCP to control the Mac are very slow". Each call an
 // agent makes is timed (Reach's part) and so is the gap before its next one
@@ -56,8 +58,11 @@ test("Reach's time and the agent's, per call, in stretches split by long pauses"
   assert.equal(timings.add(null, { kind: "act", startedAt: 1, finishedAt: 2 }), null);
 });
 
+// Reach's own private folder (on Windows, its private stage, where the file's
+// access list, not a mode, keeps it private).
+const privateParent = toolPrivateStateParent(test);
 test("kept on disk beside the action log, bounded as it is, read back after a restart", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "reach-agent-timings-"));
+  const directory = fs.mkdtempSync(path.join(privateParent(), "reach-agent-timings-"));
   const file = path.join(directory, "agent-timings.jsonl");
   try {
     let clock = 5_000;
@@ -75,9 +80,10 @@ test("kept on disk beside the action log, bounded as it is, read back after a re
     // A restart reads the newest back, and the agent's time goes on from them.
     // One handle checks the file's mode and tears its last line (no
     // check-then-use on the path).
+    if (process.platform === "win32") await assertPrivate(file);
     const fd = fs.openSync(file, "a");
     try {
-      assert.equal((fs.fstatSync(fd).mode & 0o777).toString(8), "600");
+      if (process.platform !== "win32") assert.equal((fs.fstatSync(fd).mode & 0o777).toString(8), "600");
       fs.writeSync(fd, "{torn");
     } finally {
       fs.closeSync(fd);

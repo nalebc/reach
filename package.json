@@ -56,6 +56,7 @@
     "test:ci": "node .github/scripts/run-tests.mjs all",
     "test:ci:windows": "node .github/scripts/run-tests.mjs windows",
     "test:ci:native": "node .github/scripts/run-tests.mjs native",
+    "test:ci:windows-rest": "node .github/scripts/run-tests.mjs windows-rest",
     "test:ci:regression-baseline": "node .github/scripts/native-regression-baseline.mjs",
     "test:ci:installed": "node .github/scripts/test-installed-package.mjs"
   },

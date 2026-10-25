@@ -8,13 +8,38 @@ import { createWindowsPrivateStage } from "../../server/windows-private-stage.mj
 import { copyPrivateAcceptanceArtifact } from "../acceptance/private-artifact.mjs";
 
 const exec = promisify(execFile);
-let installed, stageDirectory;
+let installed, stageDirectory, folders, folderDirectory;
 // Register at module load, outside any one test's context: later cases in
 // this file still need the same immutable artifact after the first ends.
 after(async () => {
   if (installed) await installed.catch(() => {});
-  if (stageDirectory) await fs.rm(stageDirectory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  if (folders) await folders.catch(() => {});
+  for (const dir of [stageDirectory, folderDirectory].filter(Boolean))
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
+const accountAndProfile = async () => {
+  const system = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32");
+  const sid = accountSid((await exec(path.join(system, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { windowsHide: true, timeout: 10000 })).stdout);
+  const profile = await fs.realpath((await exec(path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.WriteLine([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))"],
+    { windowsHide: true, timeout: 10000 })).stdout.trim());
+  return { sid, profile };
+};
+
+// A fresh folder only this account can use, under the real user profile:
+// where Reach accepts a project or its own folder on Windows (GitHub's
+// D:\a tree and temp are writable by other accounts, and Reach refuses
+// those). Without copying the app, unlike privateWindowsInstall.
+export async function privateWindowsFolder(prefix = "reach-") {
+  if (process.platform !== "win32") return null;
+  folders ||= (async () => {
+    const { sid, profile } = await accountAndProfile();
+    const stage = await createWindowsPrivateStage({ sid, parent: profile });
+    folderDirectory = stage.dir;
+    return stage.dir;
+  })();
+  return fs.mkdtemp(path.join(await folders, prefix));
+}
 
 // GitHub's D:\a checkout and temp tree are writable by other accounts. Copy
 // the built test artifact into a freshly private stage; do not repair their

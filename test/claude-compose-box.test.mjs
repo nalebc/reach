@@ -9,7 +9,8 @@ import fs from "node:fs";
 // header could also still name the chat before, failing as "showing another
 // chat". The helper needs the Claude app, so this reads its source, as the
 // other native helpers' tests do.
-const swift = fs.readFileSync(new URL("../scripts/native/claude-compose.swift", import.meta.url), "utf8");
+// A Windows checkout ends lines with CRLF; the checks below expect LF.
+const swift = fs.readFileSync(new URL("../scripts/native/claude-compose.swift", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const between = (start, end) => {
   const from = swift.indexOf(start);
   assert.ok(from >= 0, `found ${start}`);

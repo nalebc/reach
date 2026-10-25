@@ -14,18 +14,20 @@ const temp = (t) =>
   });
 
 test("H12: Documents, Desktop, Downloads and iCloud Drive are where macOS keeps background services out", () => {
-  const home = "/Users/someone";
+  // A Mac's home, its paths joined as this computer joins them.
+  const home = path.resolve("/Users/someone");
+  const at = (folder) => path.join(home, folder);
   const mac = { home, platform: "darwin", realpath: (p) => p };
-  assert.equal(protectedFolder("/Users/someone/Documents/reach", mac), "Documents");
-  assert.equal(protectedFolder("/Users/someone/Desktop/code/reach", mac), "Desktop");
-  assert.equal(protectedFolder("/Users/someone/Downloads/reach-main", mac), "Downloads");
-  assert.equal(protectedFolder("/Users/someone/Library/Mobile Documents/com~apple~CloudDocs/reach", mac), "iCloud Drive");
-  assert.equal(protectedFolder("/Users/someone/reach", mac), "");
-  assert.equal(protectedFolder("/Users/someone/Documentsx/reach", mac), "", "only the folder itself");
-  assert.equal(protectedFolder("/Users/someone/Documents/reach", { ...mac, platform: "linux" }), "", "only macOS");
+  assert.equal(protectedFolder(at("Documents/reach"), mac), "Documents");
+  assert.equal(protectedFolder(at("Desktop/code/reach"), mac), "Desktop");
+  assert.equal(protectedFolder(at("Downloads/reach-main"), mac), "Downloads");
+  assert.equal(protectedFolder(at("Library/Mobile Documents/com~apple~CloudDocs/reach"), mac), "iCloud Drive");
+  assert.equal(protectedFolder(at("reach"), mac), "");
+  assert.equal(protectedFolder(at("Documentsx/reach"), mac), "", "only the folder itself");
+  assert.equal(protectedFolder(at("Documents/reach"), { ...mac, platform: "linux" }), "", "only macOS");
   // A link to it is still it.
   assert.equal(
-    protectedFolder("/Users/someone/code/reach", { ...mac, realpath: (p) => p.replace("/Users/someone/code", "/Users/someone/Documents") }),
+    protectedFolder(at("code/reach"), { ...mac, realpath: (p) => p.replace(at("code"), at("Documents")) }),
     "Documents",
   );
 });
@@ -122,6 +124,8 @@ test("T9: a long Mac account name still fits, and one too long names the fix dur
     runSetup(root, {
       only: "link",
       deps: {
+        // A Mac's socket; Windows' keyed route has none (scripts/setup.mjs).
+        platform: "darwin",
         print: () => {},
         socketPath: at("abcdefghijklmnopqrstuvwxyz0123"),
         status: async () => ({ BackendState: "Running", Self: { DNSName: "mac.t.ts.net." }, CertDomains: ["mac.t.ts.net"], CurrentTailnet: { MagicDNSEnabled: true } }),

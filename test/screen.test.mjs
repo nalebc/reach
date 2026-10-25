@@ -140,6 +140,10 @@ test("screen HTTP endpoints require viewing plus a separate per-client control g
     roots: [root],
     dataDir: path.join(root, ".reach"),
     port: 0,
+    // On a Windows PC anyone but you watches or controls only once its check
+    // says private windows can be hidden: modeled as passed, as on a Mac
+    // (where no such check exists). No picture is taken here.
+    windowsGuestScreen: { probe: async () => ({ ok: true }), refusal: () => "", source: async () => { throw Error("No live screen in this test."); } },
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${reach.server.address().port}`;

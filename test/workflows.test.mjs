@@ -6,6 +6,8 @@ import path from "node:path";
 import { checkTasks, createWorkflows, plannerMessage, readDraft, WORKFLOW_LIMITS } from "../server/agent-sessions/workflows.mjs";
 import { checkSteps, createRelays } from "../server/agent-sessions/relays.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
+import { eventually } from "./helpers/eventually.mjs";
 
 // Workflows (server/agent-sessions/workflows.mjs, docs/WORKFLOWS.md) against
 // a stand-in for the agents, with the real relay engine saying how each
@@ -15,7 +17,7 @@ const reply = (id, text) => ({ id, role: "assistant", kind: "text", text });
 const edit = (id, file, diff) => ({ id, role: "tool", kind: "file-change", text: file, detail: diff, status: "completed" });
 const plan = (tasks, title = "Passkeys") => `Here's the plan.\n\n\`\`\`json\n${JSON.stringify({ title, tasks }, null, 2)}\n\`\`\``;
 
-function stage({ authorized = () => "", offered = [], file = null, availableAgents = null, models = null } = {}) {
+function stage({ authorized = () => "", offered = [], file = null, availableAgents = null, models = null, stopsWhileStarting = false } = {}) {
   let clock = 1_000_000;
   let n = 0;
   const pages = {};
@@ -28,6 +30,8 @@ function stage({ authorized = () => "", offered = [], file = null, availableAgen
     }),
     read: async (agent, id) => structuredClone(pages[`${agent}:${id}`] || { session: { status: "idle" }, items: [] }),
     start: async (agent, body) => {
+      // Reach stopped before the chat began: this start never comes back.
+      if (stopsWhileStarting) return new Promise(() => {});
       if (body.cwd === "/gone") throw Object.assign(new Error("That folder doesn't exist."), { status: 400 });
       const threadId = `${agent}-${++n}`;
       started.push({ agent, body });
@@ -85,6 +89,9 @@ function stage({ authorized = () => "", offered = [], file = null, availableAgen
 const tasks = (...list) => list.map(([title, agent, kind, together = false]) => ({ title, agent, kind, task: `${title}: do it well.`, together }));
 const states = (w) => w.tasks.map((t) => t.state);
 
+// Reach's own private folder (on Windows its private stage, as Reach's data
+// folder is private there): files it writes are checked as Reach keeps them.
+const privateParent = toolPrivateStateParent(test);
 test("tasks and a planner's draft are checked: only titles, what to do, agents, kinds and order", () => {
   assert.throws(() => checkTasks([{ title: "x", agent: "codex", kind: "build", task: "" }]), /Say what task 1 should do/);
   assert.throws(() => checkTasks([{ agent: "gemini", kind: "build", task: "x" }]), /Task 1: choose Codex or Claude Code/);
@@ -378,18 +385,21 @@ test("Retry keeps the earlier chat in tries, saved and in the list the phone get
 });
 
 test("a task starting when Reach stopped comes back uncertain and is never started again", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-workflows-"));
+  const dir = fs.mkdtempSync(path.join(privateParent(), "reach-workflows-"));
   const file = path.join(dir, "agent-workflows.json");
-  const first = stage({ file });
+  // Reach stops between "starting" and the chat beginning: what it saved
+  // then is all the next Reach has. (It used to be written over by hand,
+  // and on Windows the first Reach, still running, saved over it.)
+  const first = stage({ file, stopsWhileStarting: true });
   const { workflow } = first.workflows.create({ owner: "phone", title: "Once", cwd: "/work/app", tasks: tasks(["One", "codex", "build"]) });
   first.workflows.run(workflow.id, "phone");
-  // Reach stops between "starting" and the chat beginning.
-  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-  saved[0].tasks[0].state = "starting";
-  delete saved[0].tasks[0].chat;
-  delete saved[0].tasks[0].relay;
-  fs.writeFileSync(file, JSON.stringify(saved));
+  const saved = await eventually(() => {
+    const [w] = JSON.parse(fs.readFileSync(file, "utf8"));
+    return w.tasks[0].state === "starting" && w;
+  }, { label: "the task saved as starting" });
+  assert.equal(saved.tasks[0].chat, undefined, "no chat began");
   await assertPrivate(file);
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8"))[0].tasks[0].state, "starting", "nothing after it was saved");
   const again = stage({ file });
   await again.workflows.sync();
   const w = again.workflows.get(workflow.id);

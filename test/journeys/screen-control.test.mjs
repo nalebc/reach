@@ -200,11 +200,12 @@ async function stressRun(t, kind) {
       caption: document.querySelector(".simple-screen-caption")?.innerText || "",
       shown: [...document.querySelectorAll(".screen-feedback, .screen-gesture-feedback, .screen-error, [role=alert], .toast")].map((e) => e.innerText).filter(Boolean).join(" | ").slice(0, 300),
     }))()`);
-    // A phone button, pressed as a person does (a touch at its middle). Only
-    // these fixed lookups run in the page: no code is built from a value.
+    // A phone button, pressed as a person does (a touch at its middle), only
+    // when it is on screen. Only these fixed lookups run in the page: no code
+    // is built from a value.
     const BUTTONS = {
-      "Discard waiting typing": `(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Discard waiting typing" && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
-      "Send waiting typing to current field": `(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Send waiting typing to current field" && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+      "Discard waiting typing": `(() => { const b = document.querySelector('button[aria-label="Discard waiting typing"]'); if (!b || b.disabled) return null; const r = b.getBoundingClientRect(); if (!r.width || !r.height) return null; const x = r.x + r.width / 2, y = r.y + r.height / 2; return document.elementFromPoint(x, y)?.closest("button") === b ? { x, y } : null; })()`,
+      "Send waiting typing to current field": `(() => { const b = document.querySelector('button[aria-label="Send waiting typing to current field"]'); if (!b || b.disabled) return null; const r = b.getBoundingClientRect(); if (!r.width || !r.height) return null; const x = r.x + r.width / 2, y = r.y + r.height / 2; return document.elementFromPoint(x, y)?.closest("button") === b ? { x, y } : null; })()`,
     };
     const pressButton = async (label) => {
       const b = Object.hasOwn(BUTTONS, label) ? await page.evaluate(BUTTONS[label]) : null;
@@ -552,7 +553,7 @@ async function stressRun(t, kind) {
         reconnect = { closes, before: got?.now.slice(start.length) };
         const paused = await page.see(() => /Typing paused/.test(document.body.innerText), "typing paused after the reconnect", 10000).then(() => true, () => false);
         if (!paused) problem(name, "controls reconnected mid-typing but typing wasn't paused", { ...reconnect, phone: await status() });
-        else if (!(await page.see(() => [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Send waiting typing to current field" && !b.disabled), "Send enabled", 15000).then(() => pressButton("Send waiting typing to current field"), () => false)))
+        else if (!(await page.see(() => { const b = document.querySelector('button[aria-label="Send waiting typing to current field"]'); return !!b && !b.disabled && b.getBoundingClientRect().width > 0; }, "Send enabled and on screen", 15000).then(() => pressButton("Send waiting typing to current field"), () => false)))
           problem(name, "couldn't send the typing that waited after the reconnect", { ...reconnect, phone: await status() });
         const want = expected.slice(start.length);
         // `have` is `want` with one contiguous piece of at most 8 characters
@@ -829,6 +830,10 @@ async function stressRun(t, kind) {
       await recordScenario({ name, outcomes, bytesOk: !!got?.ok });
     }
 
+    // Actions the computer itself was slow to do (Reach's own log, by kind:
+    // server/desktop-connection.mjs), beside what the phone saw.
+    report.slowActions = computer.reach.output().split(/\r?\n/)
+      .filter((line) => /^Reach: screen control waited \d+\.\d s for this computer to do an? [a-z-]+\.$/.test(line)).slice(-32);
     fs.mkdirSync(path.resolve("reports", "journeys"), { recursive: true });
     const file = path.resolve("reports", "journeys", `screen-control-${process.platform}-${kind}.json`);
     fs.writeFileSync(file, JSON.stringify(report, null, 2));

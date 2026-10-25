@@ -1204,7 +1204,8 @@ test("a stopped OpenClaw Gateway can be started from Reach; the overview says wh
     /remote/,
   );
   assert.equal(ran.length, 1);
-  await assert.rejects(startOpenClawGateway({ configuration: async () => ({}), run: async () => { throw new Error("no service"); } }), /openclaw gateway start/);
+  // What a Mac says to type; a Windows PC says openclaw.cmd (windows-openclaw's tests).
+  await assert.rejects(startOpenClawGateway({ configuration: async () => ({}), platform: "darwin", run: async () => { throw new Error("no service"); } }), /openclaw gateway start/);
   // The route answers once the Gateway is listed.
   const routes = {};
   let up = 0;
@@ -1933,14 +1934,17 @@ test("a messaging app is added through OpenClaw's own command; Telegram's token 
   const run = async (...args) => (ran.push(args), { stdout: "" });
   const written = [];
   const files = { writeFile: async (...a) => written.push(a), mkdir: async (...a) => written.push(["mkdir", ...a]), chmod: async (...a) => written.push(["chmod", ...a]), rm: async (...a) => written.push(["rm", ...a]), stateDir: "/s" };
+  // In OpenClaw's state folder, joined as this computer joins paths.
+  const credentials = path.join("/s", "credentials");
+  const tokenFile = path.join(credentials, "reach-telegram.token");
   assert.deepEqual(await addOpenClawChannel({ channel: "telegram", token: " 123:ABC$(id);`x`|y " }, { run, env: { SHELL: "/bin/zsh" }, platform: "darwin", ...files, runtime: false }), { added: true });
-  assert.deepEqual(ran[0].slice(0, 2), ["/bin/zsh", ["-lc", 'exec openclaw "$@"', "openclaw", "channels", "add", "--channel", "telegram", "--token-file", "/s/credentials/reach-telegram.token"]]);
+  assert.deepEqual(ran[0].slice(0, 2), ["/bin/zsh", ["-lc", 'exec openclaw "$@"', "openclaw", "channels", "add", "--channel", "telegram", "--token-file", tokenFile]]);
   assert.doesNotMatch(JSON.stringify(ran), /ABC/);
-  assert.deepEqual(written, [["mkdir", "/s/credentials", { recursive: true, mode: 0o700 }], ["/s/credentials/reach-telegram.token", "123:ABC$(id);`x`|y\n", { mode: 0o600 }], ["chmod", "/s/credentials/reach-telegram.token", 0o600]]);
+  assert.deepEqual(written, [["mkdir", credentials, { recursive: true, mode: 0o700 }], [tokenFile, "123:ABC$(id);`x`|y\n", { mode: 0o600 }], ["chmod", tokenFile, 0o600]]);
   // Refused by OpenClaw: the file is removed.
   written.length = 0;
   await assert.rejects(addOpenClawChannel({ channel: "telegram", token: "123:ABCDEFGH" }, { run: async () => { throw new Error("no"); }, env: {}, platform: "darwin", ...files, runtime: false }), (e) => e.status === 409);
-  assert.deepEqual(written.at(-1), ["rm", "/s/credentials/reach-telegram.token", { force: true }]);
+  assert.deepEqual(written.at(-1), ["rm", tokenFile, { force: true }]);
   await addOpenClawChannel({ channel: "slack", botToken: "xoxb-12345678", appToken: "xapp-12345678", name: "Work" }, { run, platform: "darwin", env: {}, ...files, runtime: false });
   assert.deepEqual(ran[1][1].slice(3), ["channels", "add", "--channel", "slack", "--bot-token", "xoxb-12345678", "--app-token", "xapp-12345678", "--name", "Work"]);
   await assert.rejects(addOpenClawChannel({ channel: "whatsapp", token: "12345678" }, { run }), /Telegram, Discord or Slack/);
@@ -1952,7 +1956,7 @@ test("a messaging app is added through OpenClaw's own command; Telegram's token 
   const refused = async () => { throw Object.assign(new Error("bad token MTA-secret"), { stderr: "MTA-secret" }); };
   await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run: refused, platform: "darwin" }), (e) => !/MTA-secret/.test(e.message) && /didn't accept/.test(e.message));
   let checks = 0;
-  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run, authorize: () => { if (++checks > 1) throw new Error("revoked"); } }), /revoked/);
+  await assert.rejects(addOpenClawChannel({ channel: "discord", token: "MTA-secret" }, { run, platform: "darwin", authorize: () => { if (++checks > 1) throw new Error("revoked"); } }), /revoked/);
   assert.equal(ran.length, 2, "a revoked phone adds nothing");
 });
 

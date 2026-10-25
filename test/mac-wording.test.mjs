@@ -39,7 +39,9 @@ const src = new URL("../src/", import.meta.url);
 const said = (text) =>
   (text
     .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
+    // CRLF too (a Windows checkout): "." never matches "\r", so a comment
+    // would otherwise never be stripped.
+    .split(/\r?\n/)
     .map((line) => line.replace(/(^|[^:"'`])\/\/.*$/, "$1"))
     .join("\n")
     .match(/\bMac\b(?!OS)/g) || []).length;

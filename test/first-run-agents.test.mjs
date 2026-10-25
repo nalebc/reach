@@ -217,20 +217,23 @@ test("a missing Claude Code is looked for again after a while, or at once on Che
   // Nothing installed in the usual places either: not this computer's own
   // ~/.local/bin/claude (the test failed on any Mac with Claude Code).
   const none = () => [];
+  // A Mac's login shell is what's asked; Windows has none to ask (it reads
+  // PATH, windows-agent-cli's tests), and the miss is kept alike on both.
+  const mac = { platform: "darwin", locations: none };
   let clock = 1_000_000;
   const run = async () => {
     asked++;
     throw Object.assign(Error("exit 1"), { code: 1 });
   };
   forgetClaudeMiss();
-  assert.equal(await locateClaude(run, { now: () => clock, locations: none }), null);
-  assert.equal(await locateClaude(run, { now: () => clock + 1000, locations: none }), null);
+  assert.equal(await locateClaude(run, { ...mac, now: () => clock }), null);
+  assert.equal(await locateClaude(run, { ...mac, now: () => clock + 1000 }), null);
   assert.equal(asked, 1, "remembered for a while");
   clock += 31000;
-  assert.equal(await locateClaude(run, { now: () => clock, locations: none }), null);
+  assert.equal(await locateClaude(run, { ...mac, now: () => clock }), null);
   assert.equal(asked, 2);
   forgetClaudeMiss();
-  assert.equal(await locateClaude(run, { now: () => clock + 1, locations: none }), null);
+  assert.equal(await locateClaude(run, { ...mac, now: () => clock + 1 }), null);
   assert.equal(asked, 3, "Check again asks at once");
   forgetClaudeMiss();
 });

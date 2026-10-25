@@ -101,6 +101,19 @@ export async function createBrowserCommandLog({ dir, maxBytes = 8 * 1024 * 1024,
     if (!opened.isFile() || opened.nlink !== 1 || !current.isFile() || current.isSymbolicLink() || opened.ino !== current.ino || opened.dev !== current.dev || !owned(opened) || !privateMode(opened) || !directory.isDirectory() || directory.isSymbolicLink() || directory.ino !== folder.ino || directory.dev !== folder.dev || !owned(directory) || !privateMode(directory)) throw fail(500, "Command history is no longer a private owned file.");
     return opened;
   };
+  // Cut the log back to `length` bytes. Windows lets no handle opened to
+  // append shorten its file (Node opens O_APPEND there with append rights
+  // only: ftruncate fails EPERM), so on every computer the cut goes through a
+  // second handle that writes in place, checked to be this very file.
+  const truncate = async (length) => {
+    const writer = await fs.open(file, constants.O_RDWR | (constants.O_NOFOLLOW || 0));
+    try {
+      const [opened, cutting] = await Promise.all([handle.stat(), writer.stat()]);
+      if (!cutting.isFile() || cutting.ino !== opened.ino || cutting.dev !== opened.dev) throw fail(500, "Command history is no longer a private owned file.");
+      await writer.truncate(length);
+      await writer.sync();
+    } finally { await writer.close(); }
+  };
   const syncDir = async () => {
     if (process.platform === "win32") return;
     const directoryHandle = await fs.open(dir, constants.O_RDONLY);
@@ -139,7 +152,7 @@ export async function createBrowserCommandLog({ dir, maxBytes = 8 * 1024 * 1024,
     try {
       const stat = await verifyFile();
       if (stat.size < size) { poisoned = "outside"; return; }
-      if (stat.size > size) { await handle.truncate(size); await handle.sync(); }
+      if (stat.size > size) await truncate(size);
       poisoned = null;
     } catch { /* still can't: commands stay blocked */ }
   };
@@ -191,8 +204,7 @@ export async function createBrowserCommandLog({ dir, maxBytes = 8 * 1024 * 1024,
       // Reach stopped mid-write: the unfinished line's command never began.
       if (raw.length && raw[raw.length - 1] !== 10) {
         const cut = raw.lastIndexOf(10) + 1;
-        await handle.truncate(cut);
-        await handle.sync();
+        await truncate(cut);
         raw = raw.subarray(0, cut);
         console.warn("Reach: the agent command history ended in an unfinished line (Reach stopped mid-write); it was cut back.");
       }

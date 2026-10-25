@@ -136,6 +136,10 @@ test(
       roots: [root],
       dataDir: path.join(root, ".reach"),
       port: 0,
+      // On a Windows PC an agent watches only once its check says private
+      // windows can be hidden: modeled as passed, as on a Mac (where no such
+      // check exists). Frames still come from the stand-in factory below.
+      windowsGuestScreen: { probe: async () => ({ ok: true }), refusal: () => "", source: async () => { throw Error("Streams here come from the stand-in factory."); } },
       screenStreamFactory: async () => () => {
         starts++;
         return {

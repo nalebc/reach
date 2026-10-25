@@ -17,6 +17,16 @@ test("a screen helper that ignores being stopped is ended outright", async (t) =
   await once(source.child.stderr, "data");
   const exited = once(source.child, "exit");
   source.stop();
+  if (process.platform === "win32") {
+    // Windows: kill() is TerminateProcess, which no helper can ignore. It
+    // ends at once, and the later SIGKILL (NativeScreenSource.stop) finds
+    // it gone and sends nothing.
+    const [code, signal] = await exited;
+    assert.deepEqual([code, signal], [null, "SIGTERM"]);
+    t.mock.timers.tick(5000);
+    assert.equal(source.child.signalCode, "SIGTERM");
+    return;
+  }
   t.mock.timers.tick(4999);
   assert.equal(source.child.exitCode, null);
   assert.equal(source.child.signalCode, null, "given time to stop its capture");

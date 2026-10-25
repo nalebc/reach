@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import { parseOptions } from "../scripts/launcher-options.mjs";
 import { assertUnusedPort, ownsServeRoute } from "../scripts/tailscale.mjs";
 import { createReach } from "../server/index.mjs";
+import { privateWindowsFolder } from "./helpers/private-windows-install.mjs";
 
 test("launcher refuses public sharing, occupied Serve ports, and Funnel routes", () => {
   assert.deepEqual(parseOptions([]), {
@@ -124,7 +125,11 @@ test(
   "launcher starts locally, refreshes one-use pairing, and closes its listener on stop",
   { timeout: 20000 },
   async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-launcher-"));
+    // On Windows Reach refuses folders other accounts can change (GitHub's
+    // temp tree is one), as on a real PC: a private one under the profile.
+    const root = process.platform === "win32"
+      ? await privateWindowsFolder("reach-launcher-")
+      : await fs.mkdtemp(path.join(os.tmpdir(), "reach-launcher-"));
     const entry = pathToFileURL(path.resolve("scripts/launch.mjs")).href;
     const child = spawn(
       process.execPath,
@@ -146,8 +151,10 @@ test(
     const waitFor = async (check) => {
       const deadline = Date.now() + 12000;
       while (!check()) {
+        // What the launcher said (on Windows it refuses folders others can
+        // change, and says which): the failure names its own cause.
         if (child.exitCode !== null || Date.now() > deadline)
-          throw Error("Launcher did not become ready.");
+          throw Error(`Launcher did not become ready (exit ${child.exitCode ?? "none"}):\n${output.slice(-2000)}`);
         await new Promise((r) => setTimeout(r, 30));
       }
     };

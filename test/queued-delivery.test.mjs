@@ -16,8 +16,13 @@ import { AppThreads } from "../server/app-threads.mjs";
 const A = "11111111-2222-4333-8444-555555555555";
 const B = "22222222-2222-4333-8444-555555555555";
 
+// A Mac's Reach: only there is the Claude app's own window typed into
+// (appWindow, server/agent-sessions/index.mjs, decided as Reach starts). A
+// Windows PC has no helper for it yet, so its messages go to Claude Code
+// (claude-chat-settings' Windows test).
 const sessionsWith = async (outbox, extra = {}) => {
   return createAgentSessions({
+    platform: "darwin",
     daemon: { rpc: async () => ({}), onNotification() {} },
     codex: {},
     codexLive: { drives: () => false },

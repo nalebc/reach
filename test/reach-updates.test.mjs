@@ -29,8 +29,9 @@ test("where this Reach lives: an npm install's prefix, a checkout, or something 
   assert.equal(reachInstall("/link", layout(nvm)).npm, null, "no npm beside it: any npm, with --prefix");
   const win = "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@nalebc\\reach";
   assert.equal(reachInstall(win, layout(win, { platform: "win32" })).prefix, "C:\\Users\\me\\AppData\\Roaming\\npm");
-  // A checkout: git's job.
-  assert.deepEqual(reachInstall("/src/reach", layout("/src/reach", { files: { "/src/reach/src/main.tsx": 1, "/src/reach/.git": 1 } })), { source: true, version: "0.1.0", name: PACKAGE });
+  // A checkout: git's job. Its files are looked for as this computer joins paths.
+  const checkout = { [path.join("/src/reach", "src", "main.tsx")]: 1, [path.join("/src/reach", ".git")]: 1 };
+  assert.deepEqual(reachInstall("/src/reach", layout("/src/reach", { files: checkout })), { source: true, version: "0.1.0", name: PACKAGE });
   // Elsewhere, unwritable, or not Reach's package: the command, nothing run.
   assert.equal(reachInstall("/apps/reach", layout("/apps/reach")).reason, "layout");
   const locked = reachInstall(root, layout(root, { writable: false }));
@@ -234,7 +235,7 @@ test("the update request: that version, read once, while fresh", (t) => {
 });
 
 test("a portable archive with sources but no git points to the next archive without installing npm", async () => {
-  const install = reachInstall("/apps/reach", layout("/apps/reach", { files: { "/apps/reach/src/main.tsx": 1 } }));
+  const install = reachInstall("/apps/reach", layout("/apps/reach", { files: { [path.join("/apps/reach", "src", "main.tsx")]: 1 } }));
   assert.equal(install.source, false);
   assert.equal(install.reason, "portable");
   assert.match(install.manual, /portable archive/i);
