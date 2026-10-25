@@ -295,15 +295,25 @@ test("a model pick the Mac can't take now says it wasn't changed, never that it 
   let release;
   const held = automation.run(() => new Promise((r) => (release = r)));
   const native = { agent: "claude", id: ID, inApp: true, appTitle: "Chat", model: "claude-opus-5-5", effort: "medium" };
-  const sessions = sessionsWith({
-    claude: { read: async () => ({ session: { ...native }, items: [] }) },
-    claudeHost: { models: async () => [{ value: "sonnet", resolvedModel: "claude-sonnet-5-5" }] },
-    claudeOpen: async () => true,
-    typeIntoApp: true, claudeCompose: {
-      effort: (id, value) => automation.run(async () => ({ effort: value.effort })),
-      model: (id, value) => automation.run(async () => ({ model: value.model })),
-    },
-  });
+  // The Mac's: only there is the Claude app's own window worked (appWindow,
+  // server/agent-sessions/index.mjs, decided as Reach starts); a Windows PC
+  // is the test below.
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  let sessions;
+  try {
+    sessions = sessionsWith({
+      claude: { read: async () => ({ session: { ...native }, items: [] }) },
+      claudeHost: { models: async () => [{ value: "sonnet", resolvedModel: "claude-sonnet-5-5" }] },
+      claudeOpen: async () => true,
+      typeIntoApp: true, claudeCompose: {
+        effort: (id, value) => automation.run(async () => ({ effort: value.effort })),
+        model: (id, value) => automation.run(async () => ({ model: value.model })),
+      },
+    });
+  } finally {
+    Object.defineProperty(process, "platform", real);
+  }
   t.after(() => { release(); sessions.close(); });
   // Effort: kept for the chat, never a click in the app (Oct 10).
   assert.deepEqual(await sessions.model("claude", ID, { effort: "high" }), { model: undefined, effort: "high", applied: true });

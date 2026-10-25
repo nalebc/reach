@@ -7,7 +7,11 @@ import { NativeScreenSource, sweepScreenHelpers } from "../server/screen-stream.
 // for hours, even with Reach paused, and Netflix wouldn't play. No capture
 // may outlive what it was for.
 
-test("a screen helper that ignores being stopped is ended outright", async (t) => {
+// Only where a helper can ignore SIGTERM: on Windows, Node's kill() ends a
+// process outright at once (TerminateProcess), so NativeScreenSource.stop's
+// SIGKILL fallback (server/screen-stream.mjs) never has to come. The test
+// below covers a helper stopping there.
+test("a screen helper that ignores being stopped is ended outright", { skip: process.platform === "win32" ? "Windows' kill() ends a helper outright; no SIGTERM to ignore (NativeScreenSource.stop, server/screen-stream.mjs)" : false }, async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // A helper stuck on SIGTERM; it says when it's ready to be stopped.
   const source = new NativeScreenSource(process.execPath, [

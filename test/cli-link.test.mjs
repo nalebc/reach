@@ -30,7 +30,9 @@ test("links reach into a folder on PATH; the link runs this Reach and its hints 
   assert.match(linkCli({ script: launcher, env, home }).text, /already runs this Reach/);
 });
 
-test("replaces a link to another Reach folder, leaves anything else alone", () => {
+// A link, as on a Mac or Linux. Windows has none (windowsCli in
+// scripts/cli-link.mjs writes a reach.cmd instead): its tests are below.
+test("replaces a link to another Reach folder, leaves anything else alone", { skip: process.platform === "win32" ? "no links on Windows: reach.cmd (windowsCli, scripts/cli-link.mjs)" : false }, () => {
   const home = scratch();
   const bin = path.join(home, ".local/bin");
   fs.mkdirSync(bin, { recursive: true });
@@ -54,7 +56,8 @@ test("replaces a link to another Reach folder, leaves anything else alone", () =
 
 test("with no folder of yours on PATH, says how to add one and links nothing", () => {
   const home = scratch();
-  const result = linkCli({ script: launcher, env: { PATH: "/usr/bin:/bin" }, home });
+  // A Mac's advice; Windows' (PowerShell's) is checked below.
+  const result = linkCli({ script: launcher, env: { PATH: "/usr/bin:/bin" }, home, platform: "darwin" });
   assert.equal(result.ok, false);
   assert.match(result.text, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   assert.equal(fs.existsSync(path.join(home, ".local/bin/reach")), false);

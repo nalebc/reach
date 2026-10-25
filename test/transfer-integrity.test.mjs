@@ -12,6 +12,7 @@ import { startDom } from "./dom/harness.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 import { CHUNK } from "../server/uploads.mjs";
+import { tarFixture } from "./helpers/archive-fixtures.mjs";
 import {
   NodeXHR,
   faultProxy,
@@ -211,7 +212,7 @@ function convert(source, format, out) {
   }
 }
 // A folder of everyday files, then zipped the ways people zip.
-function makeTrip(where) {
+async function makeTrip(where) {
   const trip = path.join(where, "Trip");
   const put = (relative, bytes) => {
     fs.mkdirSync(path.dirname(path.join(trip, relative)), { recursive: true });
@@ -243,9 +244,28 @@ function makeTrip(where) {
     execFileSync("zip", ["-r", "-X", "-q", "Trip zip.zip", "Trip"], { cwd: where });
     zips.zip = "Trip zip.zip";
   } catch {}
-  execFileSync("tar", ["-czf", "Trip.tar.gz", "Trip"], { cwd: where, env: { ...process.env, COPYFILE_DISABLE: "1" } });
+  // Windows' own tar.exe crashed making this one (0xC0000005, nothing said;
+  // Windows Server 2025, validation run 40220974633). Reach opens archives
+  // itself (tar-stream, server/archives.mjs), whatever tar a computer has:
+  // there it's made as archive-fixtures makes one, every entry included.
+  if (process.platform === "win32") fs.writeFileSync(path.join(where, "Trip.tar.gz"), await tarFixture(tarEntries(where, "Trip"), true));
+  else execFileSync("tar", ["-czf", "Trip.tar.gz", "Trip"], { cwd: where, env: { ...process.env, COPYFILE_DISABLE: "1" } });
   zips.tar = "Trip.tar.gz";
   return { trip, zips, jpeg, heic };
+}
+// A folder's tar entries, folders included, named from `where`.
+function tarEntries(where, top) {
+  const entries = [];
+  const walk = (relative) => {
+    entries.push({ name: `${relative}/`, type: "directory" });
+    for (const entry of fs.readdirSync(path.join(where, relative), { withFileTypes: true })) {
+      const inside = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) walk(inside);
+      else entries.push({ name: inside, data: fs.readFileSync(path.join(where, inside)) });
+    }
+  };
+  walk(top);
+  return entries;
 }
 // Path (NFC) → contents hash, folders included.
 function tree(dir, base = dir, out = {}) {
@@ -264,7 +284,7 @@ test("photos, documents and archives cross both ways unchanged, names included",
   const mac = await computer(t);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "reach-integrity-src-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
-  const { trip, zips } = makeTrip(work);
+  const { trip, zips } = await makeTrip(work);
   const sources = [
     ...Object.entries(tree(trip))
       .filter(([, v]) => v !== "folder")
@@ -285,7 +305,7 @@ test("zips from Finder, zip and tar open on the computer with every file intact"
   const mac = await computer(t);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "reach-integrity-src-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
-  const { trip, zips } = makeTrip(work);
+  const { trip, zips } = await makeTrip(work);
   const expected = tree(trip);
   for (const [kind, name] of Object.entries(zips)) {
     fs.mkdirSync(path.join(mac.shared, kind));
@@ -310,7 +330,9 @@ test("Mac files with names a phone can't type still download whole, under their 
     "日本語ファイル.txt",
     "emoji 🎉.txt",
     `${"long ".repeat(48)}name.txt`,
-  ];
+    // Windows can't hold ? * | " in a name, nor keep its trailing dot: those
+    // are a Mac's files only.
+  ].filter((name) => process.platform !== "win32" || !/[?*|"]|\.$/.test(name));
   for (const name of names) {
     const bytes = random(1000 + name.length);
     fs.writeFileSync(path.join(mac.shared, name), bytes);
