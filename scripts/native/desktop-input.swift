@@ -250,11 +250,45 @@ final class Input: @unchecked Sendable {
     }
     return value
   }
+  // The app in front now. NSWorkspace learns of a switch on its run loop,
+  // which this helper never runs otherwise (as for the keyboard layout,
+  // key()): unpumped, it kept the app in front when it was first asked, so
+  // Copy selected text read the app before it (Oct 25, a real Mac).
+  func frontmost() -> NSRunningApplication? {
+    if Thread.isMainThread { CFRunLoopRunInMode(.defaultMode, 0, false) }
+    return NSWorkspace.shared.frontmostApplication
+  }
   func focused() -> AXUIElement? {
     guard let value = attribute(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
       CFGetTypeID(value) == AXUIElementGetTypeID()
     else { return nil }
     return (value as! AXUIElement)
+  }
+  // Where the selection is. Chrome never answers the system-wide ask for the
+  // focused element, even once its pages describe themselves, but answers
+  // for itself (Oct 25: Copy selected text said "Select non-password text"
+  // with text selected on a page). Then the app in front is asked, once its
+  // web content was asked to describe itself, briefly while it wakes.
+  // The system-wide answer counts only when it's the front app's: it can
+  // still name the app that was in front a moment ago.
+  func focusedInFront() -> AXUIElement? {
+    let system = focused()
+    guard let front = frontmost() else { return system }
+    var pid: pid_t = 0
+    if let system, AXUIElementGetPid(system, &pid) != .success || pid == front.processIdentifier {
+      return system
+    }
+    describe(front.processIdentifier)
+    let app = AXUIElementCreateApplication(front.processIdentifier)
+    AXUIElementSetMessagingTimeout(app, 0.2)
+    for attempt in 0..<3 {
+      if let value = attribute(app, kAXFocusedUIElementAttribute),
+        CFGetTypeID(value) == AXUIElementGetTypeID()
+      { return (value as! AXUIElement) }
+      if attempt < 2 { usleep(60_000) }
+    }
+    // Never another app's selection: nothing is better than the wrong text.
+    return nil
   }
   // Web editors can focus a descendant of the editable element. Resolve it
   // the same way when identifying the field and before every guarded edit.
@@ -424,7 +458,7 @@ final class Input: @unchecked Sendable {
     let list =
       CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
       as? [[String: Any]] ?? []
-    var parts = ["\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0)"]
+    var parts = ["\(frontmost()?.processIdentifier ?? 0)"]
     for window in list where window[kCGWindowLayer as String] as? Int == 0 {
       guard let rect = window[kCGWindowBounds as String] as? NSDictionary,
         let bounds = CGRect(dictionaryRepresentation: rect)
@@ -441,7 +475,7 @@ final class Input: @unchecked Sendable {
     { return ["same": true] }
     scanned = (signature, Date())
     let bounds = CGDisplayBounds(display)
-    guard let front = NSWorkspace.shared.frontmostApplication else { return ["fields": []] }
+    guard let front = frontmost() else { return ["fields": []] }
     let pid = front.processIdentifier
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, 0.1)
@@ -822,7 +856,7 @@ final class Input: @unchecked Sendable {
     }
   }
   func context(since: String?) -> [String: Any] {
-    guard let app = NSWorkspace.shared.frontmostApplication else { return ["app": NSNull()] }
+    guard let app = frontmost() else { return ["app": NSNull()] }
     let pid = app.processIdentifier
     if menuCache == nil || menuCache!.pid != pid || Date().timeIntervalSince(menuCache!.at) > 20 {
       var items: [[String: Any]] = []
@@ -846,7 +880,7 @@ final class Input: @unchecked Sendable {
     return ["app": identity, "stamp": menuCache!.stamp, "items": menuCache!.items]
   }
   func pressMenu(_ path: [String]) throws {
-    guard let app = NSWorkspace.shared.frontmostApplication, var current = menuBar(app) else {
+    guard let app = frontmost(), var current = menuBar(app) else {
       throw NSError(domain: "No app is in front on your laptop.", code: 1)
     }
     for (index, title) in path.enumerated() {
@@ -912,7 +946,7 @@ final class Input: @unchecked Sendable {
       ]
     }
     if type == "selection-read" {
-      guard let element = focused(),
+      guard let element = focusedInFront(),
         attribute(element, kAXSubroleAttribute) as? String != "AXSecureTextField"
       else { throw NSError(domain: "Select non-password text on your laptop first.", code: 1) }
       guard let text = attribute(element, kAXSelectedTextAttribute) as? String, !text.isEmpty else {
@@ -920,6 +954,11 @@ final class Input: @unchecked Sendable {
           domain:
             "This app does not expose selected text. Use Command+C on the laptop, then open Clipboard in Screen options.",
           code: 1)
+      }
+      // Chrome's page answers a line break with nothing selected: blank is
+      // nothing to copy, never a blank line on the phone.
+      guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw NSError(domain: "Select some text on your laptop first.", code: 1)
       }
       guard text.utf8.count <= 16384 else {
         throw NSError(domain: "Selected text exceeds 16 KiB.", code: 1)
