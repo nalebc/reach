@@ -127,7 +127,9 @@ function desktopWorld() {
   let clock = 1000, screenAnswer = null, inputAnswer = null;
   const clients = new Map(), requests = [], helpers = [];
   const automation = known({ blocked: () => desktop.automationBusy(), now: () => clock });
+  // A Mac's desktop, modeled on every CI host (its wording, its app ids).
   const desktop = createAgentDesktop({ screen: true }, {
+    platform: "darwin",
     available: () => true,
     pauses: createAgentPauses(),
     now: () => clock,

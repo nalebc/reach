@@ -73,6 +73,8 @@ async function fixture(
     { dataDir },
     {
       driver,
+      // The Mac's browsers, modeled on every CI host (toolApps are Mac apps).
+      platform: "darwin",
       waitMs: 250,
       desktop: {
         catalog: async () => toolApps,
