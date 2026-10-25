@@ -1,6 +1,5 @@
 import { useOpenWantedNeed } from "./deep-link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { macTerminalsFingerprint } from "./mac-terminal-live";
 import {
   Asterisk,
   Bell,
@@ -28,7 +27,6 @@ import {
 } from "./api";
 import type { WorkspaceCapabilities } from "./capabilities";
 import type { ConnectedDevice, FleetConnections } from "./useFleetConnections";
-import type { MacTerminal } from "./DesktopTerminals";
 import { ReachScene } from "./ReachIdentity";
 import type { AgentSession, MacPrompt } from "./agent-sessions";
 import { NeedsYouStrip, agentNeeds, type NeedItem } from "./NeedsYou";
@@ -43,8 +41,6 @@ import { requestWords } from "./scope-words";
 import { AgentLogo, useAgentLogos, type AgentLogos } from "./agent-logos";
 import ScreenPopup from "./ScreenPopup";
 import { useRemoteScreen } from "./useRemoteScreen";
-import { useTerminalPeeks } from "./useTerminalPeeks";
-import HomeTerminals from "./HomeTerminals";
 import { useShortcuts } from "./shortcuts";
 import ShortcutIcon from "./ShortcutIcon";
 import { PauseButton } from "./PauseControl";
@@ -173,136 +169,6 @@ export function useOnScreen(ref: { current: Element | null }, graceMs = 5000) {
   return on;
 }
 
-// Tabs already open in Terminal on the Mac, with their last line. Terminal.app
-// can only be read, not streamed, so tabs are read one after another.
-function useMacTabs(
-  peer: Peer,
-  enabled: boolean,
-  visible: boolean,
-  changes?: string,
-) {
-  const peerKey = JSON.stringify([peer.id, peer.url, peer.token]);
-  const [seenPeer, setSeenPeer] = useState(peerKey);
-  const [tabs, setTabs] = useState<MacTerminal[]>([]);
-  const [peeks, setPeeks] = useState<
-    Record<string, { line: string; at: number }>
-  >({});
-  const list = useRef<MacTerminal[]>([]);
-  useEffect(() => {
-    setSeenPeer(peerKey);
-    list.current = [];
-    setTabs([]);
-    setPeeks({});
-  }, [peerKey]);
-  // A Mac that tells when its Terminal windows change is asked only then
-  // (server/mac-terminal-watch.mjs); others every few seconds, as before.
-  const pushed = macTerminalsFingerprint(changes);
-  const told = pushed !== undefined;
-  // A changed last line counts as new output.
-  const note = (id: string, line: string) =>
-    setPeeks((current) =>
-      current[id]?.line === line
-        ? current
-        : { ...current, [id]: { line, at: current[id] ? Date.now() : 0 } },
-    );
-  useEffect(() => {
-    if (!enabled || !visible) return;
-    let stopped = false;
-    const refresh = async () => {
-      try {
-        const r = await request<{ sessions: MacTerminal[] }>(
-          peer,
-          "/api/terminals/desktop",
-        );
-        if (stopped) return;
-        list.current = r.sessions;
-        setTabs(r.sessions);
-      } catch {
-        /* Permission or app missing: no Mac tabs on Home. */
-        if (!stopped) {
-          list.current = [];
-          setTabs([]);
-        }
-      }
-    };
-    void refresh();
-    const lister = told ? undefined : setInterval(() => void refresh(), 5000);
-    return () => {
-      stopped = true;
-      clearInterval(lister);
-    };
-  }, [enabled, visible, peerKey, told, pushed]);
-  useEffect(() => {
-    if (!enabled || !visible) return;
-    let stopped = false;
-    if (told) {
-      // Every tab's last line, answered by the Mac when one changes.
-      const waits = new Set<AbortController>();
-      void (async () => {
-        let version = -1;
-        while (!stopped) {
-          const wait = new AbortController();
-          waits.add(wait);
-          const limit = setTimeout(() => wait.abort(), 30000);
-          try {
-            const r = await request<{
-              version: number;
-              peeks: Record<string, string>;
-            }>(peer, `/api/terminals/desktop/activity?after=${version}`, {
-              signal: wait.signal,
-            });
-            if (stopped) return;
-            // Nothing new right away: never spin.
-            if (r.version === version)
-              await new Promise((r) => setTimeout(r, 1000));
-            if (stopped) return;
-            version = r.version;
-            for (const [id, line] of Object.entries(r.peeks || {}))
-              note(id, String(line));
-          } catch (e) {
-            if (stopped) return;
-            if ((e as Error).name !== "AbortError")
-              await new Promise((r) => setTimeout(r, 3000));
-          } finally {
-            clearTimeout(limit);
-            waits.delete(wait);
-          }
-        }
-      })();
-      return () => {
-        stopped = true;
-        for (const wait of waits) wait.abort();
-      };
-    }
-    let turn = 0;
-    const read = async () => {
-      const tab = list.current[turn++ % Math.max(1, list.current.length)];
-      if (!tab || stopped) return;
-      try {
-        const { text } = await request<{ text: string }>(
-          peer,
-          `/api/terminals/desktop/${tab.id}`,
-        );
-        if (stopped) return;
-        note(
-          tab.id,
-          String(text)
-            .split("\n")
-            .map((l) => l.trimEnd())
-            .filter((l) => /[\p{L}\p{N}]/u.test(l))
-            .pop() || "",
-        );
-      } catch {}
-    };
-    const reader = setInterval(() => void read(), 900);
-    return () => {
-      stopped = true;
-      clearInterval(reader);
-    };
-  }, [enabled, visible, peerKey, told]);
-  return { tabs: enabled && seenPeer === peerKey ? tabs : [], peeks: seenPeer === peerKey ? peeks : {} };
-}
-
 export default function HomeLive({
   features,
   pinnedTools,
@@ -312,15 +178,12 @@ export default function HomeLive({
   connections,
   connection,
   appLink,
-  terminals,
   chats,
   pending,
   decide,
   navigate,
   openChat,
   openTerminal,
-  openMacTab,
-  onTerminals,
   agentSessions = [],
   macPrompts = [],
   openAgentSession,
@@ -338,15 +201,12 @@ export default function HomeLive({
   connection: string;
   // Signed in from the browser: the Tailscale app, one tap away.
   appLink?: string;
-  terminals: Session[];
   chats: Session[];
   pending: AgentRequest[];
   decide: (request: AgentRequest, decision: "approve" | "deny") => void;
   navigate: (page: string) => void;
   openChat: (id: string) => void;
   openTerminal: (id: string) => void;
-  openMacTab: (id: string) => void;
-  onTerminals?: () => void;
   // Codex and Claude Code sessions anywhere on the Mac (the Chat feed).
   agentSessions?: AgentSession[];
   // What macOS itself is asking right now (answered at the Mac).
@@ -386,13 +246,6 @@ export default function HomeLive({
   const heroPill = watching
     ? heroStatus(stream, computerWord(device.platform))
     : "";
-  const peeks = useTerminalPeeks(peer, features.terminal ? terminals : []);
-  const mac = useMacTabs(
-    peer,
-    features.desktopTerminals,
-    visible,
-    connections[active]?.changes,
-  );
   // Ages and spinning rings follow the clock.
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -522,20 +375,22 @@ export default function HomeLive({
   const [sheet, setSheet] = useState(false),
     [agents, setAgents] = useState<string[] | null>(null),
     [busy, setBusy] = useState("");
-  useEffect(() => setAgents(null), [peer.url, peer.token]);
   useEffect(() => {
-    if (!sheet || !features.terminal || agents) return;
+    setAgents(null);
+    if (!features.terminal) return;
+    let stopped = false;
     void request<{ agents: string[] }>(peer, "/api/terminals/agents")
-      .then((r) => setAgents(r.agents))
-      .catch(() => setAgents([]));
-  }, [sheet, features.terminal, peer.url]);
-  const start = async (run?: string) => {
+      .then((r) => { if (!stopped) setAgents(r.agents || []); })
+      .catch(() => { if (!stopped) setAgents([]); });
+    return () => { stopped = true; };
+  }, [features.terminal, peer.url, peer.token]);
+  const start = async (run: string) => {
     setSheet(false);
     setBusy("start");
     try {
       const created = await post<Session>(peer, "/api/terminals", {
         root: 0,
-        ...(run ? { run } : {}),
+        run,
       });
       refreshSessions();
       openTerminal(created.id);
@@ -580,7 +435,7 @@ export default function HomeLive({
       if (fileInput.current) fileInput.current.value = "";
     }
   };
-  const canStart = features.terminal || features.codex;
+  const canStart = features.terminal && !!agents?.length;
   const canPlus = canStart || features.writeFiles || apps.length > 0;
   const live = features.screen && stream.ready;
   // Everyone else on this computer now: other phones, guests, agents.
@@ -769,19 +624,6 @@ export default function HomeLive({
       {browserApprovals.review}
       {agentAdmissions.review}
 
-      <HomeTerminals
-        peer={peer}
-        sessions={features.terminal ? terminals : []}
-        tabs={mac.tabs}
-        peeks={peeks}
-        desktopPeeks={mac.peeks}
-        now={now}
-        logos={logos}
-        onOpen={openTerminal}
-        onOpenDesktop={openMacTab}
-        onAll={onTerminals || (() => navigate("terminal"))}
-      />
-
       {(canPlus || stories.length > 0) && (
         <section
           className="home-section"
@@ -837,7 +679,7 @@ export default function HomeLive({
             ))}
             {!stories.length && canStart && (
               <p className="home-stories-hint">
-                Start an agent or a terminal on {device.name}.
+                Start an agent on {device.name}.
               </p>
             )}
           </div>
@@ -871,21 +713,10 @@ export default function HomeLive({
                     </span>
                     <span>
                       {agentName[agent] ?? agent}
-                      <small>In a new terminal on {device.name}</small>
+                      <small>On {device.name}</small>
                     </span>
                   </button>
                 ))}
-              {features.terminal && (
-                <button onClick={() => void start()}>
-                  <span className="home-plus-icon">
-                    <Terminal size={20} />
-                  </span>
-                  <span>
-                    Terminal
-                    <small>A new shell in your shared folder</small>
-                  </span>
-                </button>
-              )}
             </div>
           )}
           {features.writeFiles && (

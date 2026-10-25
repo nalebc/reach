@@ -5,15 +5,19 @@ import { startDom } from "./dom/harness.mjs";
 const LOGO = "data:image/png;base64,iVBORw0KGgo=";
 const peer = { id: "mac", name: "Mac", url: "https://mac.test", token: "t", platform: "darwin" };
 let dom, React, HomeLive;
+let desktopReads = 0;
 before(async () => {
   dom = await startDom({
     mobile: true,
     routes: {
       "/api/sessions/logos": () => ({ version: "v1", logos: { codex: LOGO, claude: LOGO, terminal: LOGO } }),
-      "/api/terminals/desktop": () => ({
-        sessions: [{ id: "t1", provider: "terminal", name: "owner — -zsh — 80×24", tty: "/dev/ttys000" }],
-        providers: [],
-      }),
+      "/api/terminals/desktop": () => {
+        desktopReads++;
+        return {
+          sessions: [{ id: "t1", provider: "terminal", name: "owner — -zsh — 80×24", tty: "/dev/ttys000" }],
+          providers: [],
+        };
+      },
     },
   });
   React = dom.React;
@@ -21,16 +25,7 @@ before(async () => {
 });
 after(() => dom?.close());
 
-test("Home uses real app icons for active chats and the resumable terminal", async () => {
-  const { useViewState, viewScope } = await dom.load("/src/view-memory.ts");
-  let remember;
-  function ViewedTerminal() {
-    [, remember] = useViewState(viewScope(peer, "terminal"), "lastViewed", "");
-    return null;
-  }
-  const previous = await dom.render(React.createElement(ViewedTerminal));
-  dom.update(() => remember("mac:t1"));
-  await previous.unmount();
+test("Home shows active chat icons without reading terminals", async () => {
   const view = await dom.render(
     React.createElement(HomeLive, {
       features: { terminal: false, codex: false, screen: false, desktopTerminals: true, shortcuts: false, owner: false, writeFiles: false },
@@ -56,14 +51,16 @@ test("Home uses real app icons for active chats and the resumable terminal", asy
       toast() {},
     }),
   );
-  const icons = () => [...dom.document.querySelectorAll(".story-ring img.agent-logo, .home-terminal-icon img.agent-logo")];
-  await dom.waitFor(() => icons().length === 2);
-  assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex", "Terminal"]);
+  const icons = () => [...dom.document.querySelectorAll(".story-ring img.agent-logo")];
+  await dom.waitFor(() => icons().length === 1);
+  assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex"]);
   // Sized by the frame (drawn larger and cropped), not a small fixed icon in the middle.
-  for (const icon of icons().filter(i => i.closest(".story-ring"))) {
+  for (const icon of icons()) {
     assert.ok(icon.classList.contains("fill"), `${icon.alt} fills its circle`);
     assert.equal(icon.getAttribute("style"), null);
   }
+  assert.equal(desktopReads, 0, "Home does not read desktop terminals");
+  assert.equal(dom.document.querySelector(".home-terminals"), null);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });

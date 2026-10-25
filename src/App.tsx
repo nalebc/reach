@@ -1064,7 +1064,6 @@ function ReachWorkspace() {
                         ? tailscaleAppLink()
                         : undefined
                     }
-                    terminals={terminals}
                     chats={chats}
                     pending={requests.filter((r) => deferred.includes(r.id))}
                     decide={(r, decision) => void decide(r, decision)}
@@ -1074,10 +1073,6 @@ function ReachWorkspace() {
                       setTerminalId(id);
                       navigate("terminal", { then: () => setTerminalSource("reach") });
                     }}
-                    openMacTab={(id) => {
-                      navigate("terminal", { then: () => setTerminalSource(`mac:${id}`) });
-                    }}
-                    onTerminals={() => navigate("terminal", { then: () => setTerminalSource("list") })}
                     agentSessions={agentFeed.sessions || []}
                     macPrompts={agentFeed.macPrompts}
                     showOnScreen={showOnScreen}
