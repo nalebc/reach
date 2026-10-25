@@ -12,6 +12,7 @@ import {
   uninstallClaudeHook,
   uninstallCodexHook,
 } from "../server/agent-sessions/agent-hook-install.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 // The person's own settings, as Claude Code keeps them (two-space JSON).
 const theirs = {
@@ -27,7 +28,7 @@ test("Reach's hook goes into Claude Code's settings once, next to the person's o
   const backupDir = path.join(dir, "backups");
   const original = `${JSON.stringify(theirs, null, 2)}\n`;
   fs.writeFileSync(settingsPath, original);
-  const command = agentHookCommand({ node: "/opt/homebrew/bin/node", script: "/r/scripts/agent-hook.mjs", agent: "claude", socketPath: "/r/.reach/it's.sock" });
+  const command = agentHookCommand({ node: "/opt/homebrew/bin/node", script: "/r/scripts/agent-hook.mjs", agent: "claude", socketPath: "/r/.reach/it's.sock", platform: "darwin" });
   assert.equal(command, `'/opt/homebrew/bin/node' '/r/scripts/agent-hook.mjs' 'claude' '/r/.reach/it'\\''s.sock'`);
 
   assert.deepEqual(installClaudeHook({ settingsPath, backupDir, command }), { changed: true });
@@ -76,7 +77,7 @@ test("Codex's config gets one marked block at the end, trusted only by the perso
   const backupDir = path.join(dir, "backups");
   const original = '[projects."/Users/me/app"]\ntrust_level = "trusted"\n\n[mcp_servers.node_repl]\ncommand = "node"\n';
   fs.writeFileSync(configPath, original);
-  const command = agentHookCommand({ node: "/opt/homebrew/bin/node", script: "/r/scripts/agent-hook.mjs", agent: "codex", socketPath: "/r/s.sock" });
+  const command = agentHookCommand({ node: "/opt/homebrew/bin/node", script: "/r/scripts/agent-hook.mjs", agent: "codex", socketPath: "/r/s.sock", platform: "darwin" });
   assert.deepEqual(installCodexHook({ configPath, backupDir, command }), { changed: true });
   const installed = fs.readFileSync(configPath, "utf8");
   assert.ok(installed.startsWith(original), "the person's config is untouched");
@@ -123,12 +124,13 @@ test("settings are replaced whole: same permissions, through a symlink, nothing 
   writeWhole(link, '{"a":1}\n');
   assert.equal(fsm.lstatSync(link).isSymbolicLink(), true);
   assert.equal(fsm.readFileSync(real, "utf8"), '{"a":1}\n');
-  assert.equal(fsm.statSync(real).mode & 0o777, 0o640);
+  // Windows has no mode bits to keep (every file reads 0666); its access list is the folder's.
+  if (process.platform !== "win32") assert.equal(fsm.statSync(real).mode & 0o777, 0o640);
   assert.deepEqual(fsm.readdirSync(dir).sort(), ["dotfiles-settings.json", "settings.json"]);
   // A new file is the owner's only.
   const fresh = pathm.join(dir, "new.json");
   writeWhole(fresh, "{}\n");
-  assert.equal(fsm.statSync(fresh).mode & 0o777, 0o600);
+  await assertPrivate(fresh);
   fsm.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -140,8 +142,8 @@ test("Reach's mode hook goes in and out with its request hook, and the state che
   const settingsPath = path.join(dir, "settings.json");
   const guard = { matcher: "Bash", hooks: [{ type: "command", command: "/usr/local/bin/guard" }] };
   fs.writeFileSync(settingsPath, JSON.stringify({ hooks: { PreToolUse: [guard] } }));
-  const command = agentHookCommand({ node: "/n", script: "/r/scripts/agent-hook.mjs", agent: "claude", socketPath: "/r/s.sock" });
-  const modeCommand = agentModeHookCommand({ script: "/r/scripts/agent-mode-hook.sh", modesDir: "/r/.reach/pending-modes" });
+  const command = agentHookCommand({ node: "/n", script: "/r/scripts/agent-hook.mjs", agent: "claude", socketPath: "/r/s.sock", platform: "darwin" });
+  const modeCommand = agentModeHookCommand({ script: "/r/scripts/agent-mode-hook.sh", modesDir: "/r/.reach/pending-modes", platform: "darwin" });
   assert.equal(modeCommand, `/bin/sh '/r/scripts/agent-mode-hook.sh' '/r/.reach/pending-modes'`);
   assert.equal(claudeHookState({ settingsPath, command, modeCommand }), "off");
   installClaudeHook({ settingsPath, command, modeCommand });

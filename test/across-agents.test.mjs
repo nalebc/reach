@@ -40,8 +40,9 @@ test("each ended turn becomes one line of the journal, kept a week", () => {
 test("files two chats changed in the last half hour are found, worktrees apart", async () => {
   const now = 10 * 60 * 60 * 1000;
   // Claude Code writes paths in its folder; Codex, full paths (several in one change).
+  // Full paths as this computer resolves them (D:\work\app\… on a Windows runner).
   assert.deepEqual(recentChanges([edit("e1", "src/a.ts", now - 1000), edit("e2", "old.ts", now - 3_600_000)], "/work/app", now - 1_800_000), [
-    { file: "/work/app/src/a.ts", at: now - 1000 },
+    { file: path.resolve("/work/app/src/a.ts"), at: now - 1000 },
   ]);
   const chats = [
     { agent: "codex", id: "c1", title: "Fix login", files: recentChanges([edit("x", "/work/app/src/a.ts, /work/app/src/b.ts", now)], "/work/app") },
@@ -50,7 +51,7 @@ test("files two chats changed in the last half hour are found, worktrees apart",
   ];
   const found = findOverlaps(chats);
   assert.equal(found.length, 1);
-  assert.equal(found[0].file, "/work/app/src/a.ts");
+  assert.equal(found[0].file, path.resolve("/work/app/src/a.ts"));
   assert.deepEqual(found[0].chats.map((c) => c.id), ["c1", "k1"]);
 
   // Only chats at work or written lately are read, and read again only when they change.

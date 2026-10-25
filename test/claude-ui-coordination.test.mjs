@@ -179,7 +179,8 @@ for (const outcome of ['sent', 'uncertain']) test(`actual outbox preserves ${out
   const sessions = createAgentSessions({
     daemon: { rpc: async () => ({}), onNotification() {} }, codex: {}, codexLive: { drives: () => false },
     claude: {}, claudeHost: { onRelease() {} }, signIn: {}, claudeImports: { add: async () => {}, close() {} },
-    agentAsks: { close() {} }, outbox, typeIntoApp: true, claudeCompose: compose, appRetryMs: 5, queueMs: 5,
+    // The Claude app's window helper is the Mac's (no Windows twin yet): modeled on every host.
+    agentAsks: { close() {} }, outbox, platform: "darwin", typeIntoApp: true, claudeCompose: compose, appRetryMs: 5, queueMs: 5,
   });
   t.after(() => sessions.close());
   const waitFor = async (predicate) => {

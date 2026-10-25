@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createClaudeConsent, pressClaudeConsent } from "../server/agent-sessions/claude-consent.mjs";
+import { createClaudeConsent as create, pressClaudeConsent as press } from "../server/agent-sessions/claude-consent.mjs";
 import { createAppCards } from "../server/agent-sessions/app-cards.mjs";
+// The Mac's card on any host (a Windows PC refuses: agent-claude-consent.test.mjs).
+const createClaudeConsent = (options) => create({ platform: "darwin", ...options });
+const pressClaudeConsent = (choice, options = {}) => press(choice, { platform: "darwin", ...options });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const stopped = () => Object.assign(Error("Desktop ownership changed; inspect before retrying."), { status: 409 });
 
