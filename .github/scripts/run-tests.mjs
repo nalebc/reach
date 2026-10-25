@@ -17,6 +17,8 @@ export const suites = {
     // Shared helper startup, queue deadlines, fresh captures and failed observations.
     "agent-desktop", "agent-helper-diagnostics", "agent-speed", "desktop-observation",
     "agent-extended-expiry", "agent-screenshot-route", "agent-image-envelope", "agent-image-envelope-integration", "service-failure-guidance",
+    // Test servers close without waiting on a browser's connections, and every browser test does so.
+    "close-server", "test-hygiene",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
     "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
