@@ -217,7 +217,8 @@ test("a Send now that can't go is tried once, then waits like the others", async
     agentAsks: { close() {} },
     outbox,
     queueMs: 10,
-    typeIntoApp: true, claudeCompose: {
+    // The Claude app's window helper is the Mac's (no Windows twin yet): modeled on every host.
+    platform: "darwin", typeIntoApp: true, claudeCompose: {
       deliver: async () => {
         tries++;
         throw Object.assign(new Error("The Claude app is showing another chat."), { waiting: true });

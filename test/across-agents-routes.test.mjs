@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
+import { teamPipe } from "../server/agent-sessions/team-bridge.mjs";
+import { prepareOwners } from "../server/windows-owners.mjs";
+import { assertPrivate } from "./helpers/private-file.mjs";
 
 // Working across agents over HTTP (docs/ACROSS_AGENTS.md): relays and second
 // opinions for the owner's own devices only, at their own address (not read
@@ -180,11 +183,16 @@ test("the real relay engine takes the owner's own phone and its folder check, an
 test("a team is started, listed and stopped by the owner's devices only, its lead as a new chat with team tools", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "rt-"));
   const started = [];
-  // Its private socket, opened as Reach opens it (a team can't start without).
-  const teamSocket = path.join(root, "t.sock");
+  // Its private socket, opened as Reach opens it (a team can't start without):
+  // a socket file, or on Windows a named pipe of its own (as server/index.mjs).
+  const windows = process.platform === "win32";
+  const dataDir = path.join(root, ".reach");
+  const teamSocket = windows ? teamPipe(dataDir) : path.join(root, "t.sock");
+  // Windows opens Team once the owners helper its lead checks with is built: built first.
+  if (windows) await prepareOwners(dataDir);
   const reach = await createReach({
     roots: [root],
-    dataDir: path.join(root, ".reach"),
+    dataDir,
     teamSocket,
     agentSessions: {
       list: async () => ({ sessions: [], errors: {} }),
@@ -193,6 +201,7 @@ test("a team is started, listed and stopped by the owner's devices only, its lea
       send: async () => ({}),
       stop: async () => ({}),
       models: async () => ({ models: [], modes: [], mode: null }),
+      health: async () => [],
     },
   });
   await new Promise((r) => reach.server.listen(0, "127.0.0.1", r));
@@ -207,8 +216,10 @@ test("a team is started, listed and stopped by the owner's devices only, its lea
     });
   const body = { lead: "codex", helpers: ["claude"], cwd: os.homedir(), text: "Ship pagination", mode: "guardian-approvals" };
   try {
-    for (let i = 0; i < 50 && !fs.existsSync(teamSocket); i++) await new Promise((r) => setTimeout(r, 10));
-    assert.equal(fs.statSync(teamSocket).mode & 0o777, 0o600);
+    // Open: its socket file there, or (Windows) the phone offered Team again.
+    const open = async () => (windows ? (await (await call("/api/sessions/health")).json()).teams !== false : fs.existsSync(teamSocket));
+    for (let i = 0; i < 50 && !(await open()); i++) await new Promise((r) => setTimeout(r, 10));
+    await assertPrivate(teamSocket);
     assert.equal((await call("/api/sessions/teams", body, agent.token)).status, 403);
     assert.equal((await call("/api/sessions/teams", { ...body, mode: "yolo" })).status, 400);
     const r = await call("/api/sessions/teams", body);
@@ -222,7 +233,7 @@ test("a team is started, listed and stopped by the owner's devices only, its lea
     assert.equal(start.keepOut, true);
     assert.match(start.developerInstructions, /You lead a team in Reach/);
     const key = start.config["mcp_servers.reach_team"].env.REACH_TEAM_FILE;
-    assert.equal(fs.statSync(key).mode & 0o777, 0o600);
+    await assertPrivate(key);
     assert.equal(path.dirname(key), path.join(root, ".reach", "teams"));
     assert.deepEqual((await (await call("/api/sessions")).json()).teams.map((x) => x.id), [team.id], "the chat list carries teams");
     assert.equal((await call(`/api/sessions/teams/${team.id}/stop`, {}, agent.token)).status, 403);

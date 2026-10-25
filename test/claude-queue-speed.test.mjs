@@ -34,7 +34,8 @@ test("after a message goes in, the next one goes on the usual beat, not 5 s late
     agentAsks: { close() {} },
     outbox,
     queueMs: 10,
-    typeIntoApp: true, claudeCompose: {
+    // The Claude app's window helper is the Mac's (no Windows twin yet): modeled on every host.
+    platform: "darwin", typeIntoApp: true, claudeCompose: {
       deliver: async (_id, message) => {
         sent.push(message.text);
         return { delivered: true };
