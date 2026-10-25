@@ -29,7 +29,9 @@ export function toolPrivateStateParent(test) {
     if (stage) await fs.rm(stage.dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   return () => {
-    if (!directory) throw Error("The tool fixture's private state stage is not ready.");
+    // Ready inside a test. Another top-level before() runs while this async
+    // one is still making the stage (Node starts them in turn, unawaited).
+    if (!directory) throw Error("The tool fixture's private state stage is not ready: use it inside a test, not a top-level before().");
     return directory;
   };
 }

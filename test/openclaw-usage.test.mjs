@@ -1,4 +1,4 @@
-import test, { after, before } from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -82,11 +82,11 @@ function app(client, ctx = {}) {
 // Reach's own private folder (on Windows its private stage, as Reach's data
 // folder is private there): files it writes are checked as Reach keeps them.
 const privateParent = toolPrivateStateParent(test);
-let dir;
-before(() => {
-  dir = fs.mkdtempSync(path.join(privateParent(), "reach-spend-"));
-});
-after(() => fs.rmSync(dir, { recursive: true, force: true }));
+// Made at first use, inside a test: a second top-level before() runs while
+// the stage's own (async) hook is still making it.
+let made;
+const dataDir = () => (made ??= fs.mkdtempSync(path.join(privateParent(), "reach-spend-")));
+after(() => made && fs.rmSync(made, { recursive: true, force: true }));
 
 test("spend sums today, this month and 30 days from OpenClaw's own day keys", () => {
   const now = new Date(2026, 9, 8, 12).getTime();
@@ -104,7 +104,7 @@ test("spend sums today, this month and 30 days from OpenClaw's own day keys", ()
 
 test("a Gateway without usage methods hides every part", async () => {
   const { client } = fake({ methods: [] });
-  const call = app(client, { dataDir: dir });
+  const call = app(client, { dataDir: dataDir() });
   assert.equal((await call("GET", "/spend")).supported, false);
   assert.equal((await call("GET", "/spend/routing")).supported, false);
 });
@@ -122,7 +122,7 @@ test("2026.3.13: sessions.usage is unlisted, so spend is the default agent's and
       }),
     },
   });
-  const call = app(client, { dataDir: dir });
+  const call = app(client, { dataDir: dataDir() });
   const spend = await call("GET", "/spend");
   assert.equal(spend.supported, true);
   assert.equal(spend.scope, "default");
@@ -151,7 +151,7 @@ test("with sessions.usage, spend covers every agent and a chat shows its cost", 
             },
     },
   });
-  const call = app(client, { dataDir: dir });
+  const call = app(client, { dataDir: dataDir() });
   const spend = await call("GET", "/spend");
   assert.equal(spend.scope, "all");
   assert.equal(spend.today, 3.1);
@@ -182,16 +182,16 @@ test("spend is partial while OpenClaw is still counting sessions (2026.9 cacheSt
 
 test("the budget is validated, authorized and kept 0600", async () => {
   const { client } = fake();
-  const call = app(client, { dataDir: dir });
+  const call = app(client, { dataDir: dataDir() });
   await assert.rejects(call("POST", "/spend/budget", { body: { monthlyUsd: "50" } }), { status: 400 });
   await assert.rejects(call("POST", "/spend/budget", { body: { monthlyUsd: -1 } }), { status: 400 });
   await assert.rejects(
     call("POST", "/spend/budget", { body: { monthlyUsd: 50 }, revoked: () => true }),
     { status: 401 },
   );
-  assert.equal(fs.existsSync(path.join(dir, "openclaw-budget.json")), false);
+  assert.equal(fs.existsSync(path.join(dataDir(), "openclaw-budget.json")), false);
   assert.equal((await call("POST", "/spend/budget", { body: { monthlyUsd: 50 } })).budget, 50);
-  const file = path.join(dir, "openclaw-budget.json");
+  const file = path.join(dataDir(), "openclaw-budget.json");
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { monthlyUsd: 50 });
   await assertPrivate(file);
 });
@@ -308,7 +308,7 @@ test("Cheap background work moves isolated schedules first, then heartbeats in o
 // moved goes in the savings ledger, by OpenClaw's own usage count, under its
 // own kind. Nothing is counted on a guess.
 test("runs Reach moved to the cheap model are recorded as savings, in tokens", async () => {
-  const data = fs.mkdtempSync(path.join(dir, "routed-"));
+  const data = fs.mkdtempSync(path.join(dataDir(), "routed-"));
   let listener;
   const recorded = [];
   const { client } = fake({

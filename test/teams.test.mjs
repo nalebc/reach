@@ -10,6 +10,7 @@ import { createRelays } from "../server/agent-sessions/relays.mjs";
 import { createTeamBridge, teamPipe } from "../server/agent-sessions/team-bridge.mjs";
 import { TEAM_LIMITS } from "../server/agent-sessions/team-tools.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
 import { windowsAcl, othersAllowed, ADMINISTRATORS, WRITES } from "./helpers/windows-acl.mjs";
 
 // Team chats (server/agent-sessions/teams.mjs) against a stand-in for the
@@ -18,8 +19,11 @@ const script = fileURLToPath(new URL("../scripts/team-mcp.mjs", import.meta.url)
 const user = (id, text) => ({ id, role: "user", kind: "text", text });
 const reply = (id, text) => ({ id, role: "assistant", kind: "text", text });
 
+// A team's key is checked as Reach keeps it: in Reach's own private folder
+// (on Windows its private stage; the runner's temp lets every user read).
+const privateParent = toolPrivateStateParent(test);
 function stage({ authorized = () => "", offered = [] } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-teams-"));
+  const dir = fs.mkdtempSync(path.join(privateParent(), "reach-teams-"));
   let clock = 1_000_000;
   let n = 0;
   const pages = {};
