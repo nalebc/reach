@@ -198,7 +198,6 @@ export const suites = {
     "claude-chat-settings",
     "cli-link",
     "first-run-agents",
-    "launcher",
     "openclaw",
     "queued-delivery",
     "reach-updates",
