@@ -15,6 +15,7 @@ import {
   readRouted,
 } from "../server/openclaw-usage.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
 
 const base = "/api/sessions/openclaw";
 const unlisted = (method) =>
@@ -78,9 +79,12 @@ function app(client, ctx = {}) {
   };
 }
 
+// Reach's own private folder (on Windows its private stage, as Reach's data
+// folder is private there): files it writes are checked as Reach keeps them.
+const privateParent = toolPrivateStateParent(test);
 let dir;
 before(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-spend-"));
+  dir = fs.mkdtempSync(path.join(privateParent(), "reach-spend-"));
 });
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
 

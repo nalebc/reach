@@ -8,12 +8,16 @@ import { ALL_SCOPES } from "../server/core.mjs";
 import { teamPipe } from "../server/agent-sessions/team-bridge.mjs";
 import { prepareOwners } from "../server/windows-owners.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
 
 // Working across agents over HTTP (docs/ACROSS_AGENTS.md): relays and second
 // opinions for the owner's own devices only, at their own address (not read
 // as a chat of an agent named "relays"); chats mentioned in a message.
 const CLAUDE = "11111111-2222-4333-8444-555555555555";
 
+// Reach's own private folder (on Windows its private stage, as Reach's data
+// folder is private there): files it writes are checked as Reach keeps them.
+const privateParent = toolPrivateStateParent(test);
 test("relays are set up, listed and cancelled by the owner's devices only", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-relay-route-"));
   const calls = [];
@@ -181,7 +185,7 @@ test("the real relay engine takes the owner's own phone and its folder check, an
 });
 
 test("a team is started, listed and stopped by the owner's devices only, its lead as a new chat with team tools", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rt-"));
+  const root = fs.mkdtempSync(path.join(privateParent(), "rt-"));
   const started = [];
   // Its private socket, opened as Reach opens it (a team can't start without):
   // a socket file, or on Windows a named pipe of its own (as server/index.mjs).

@@ -6,6 +6,7 @@ import path from "node:path";
 import { checkTasks, createWorkflows, plannerMessage, readDraft, WORKFLOW_LIMITS } from "../server/agent-sessions/workflows.mjs";
 import { checkSteps, createRelays } from "../server/agent-sessions/relays.mjs";
 import { assertPrivate } from "./helpers/private-file.mjs";
+import { toolPrivateStateParent } from "./helpers/tool-browser-fixture.mjs";
 
 // Workflows (server/agent-sessions/workflows.mjs, docs/WORKFLOWS.md) against
 // a stand-in for the agents, with the real relay engine saying how each
@@ -85,6 +86,9 @@ function stage({ authorized = () => "", offered = [], file = null, availableAgen
 const tasks = (...list) => list.map(([title, agent, kind, together = false]) => ({ title, agent, kind, task: `${title}: do it well.`, together }));
 const states = (w) => w.tasks.map((t) => t.state);
 
+// Reach's own private folder (on Windows its private stage, as Reach's data
+// folder is private there): files it writes are checked as Reach keeps them.
+const privateParent = toolPrivateStateParent(test);
 test("tasks and a planner's draft are checked: only titles, what to do, agents, kinds and order", () => {
   assert.throws(() => checkTasks([{ title: "x", agent: "codex", kind: "build", task: "" }]), /Say what task 1 should do/);
   assert.throws(() => checkTasks([{ agent: "gemini", kind: "build", task: "x" }]), /Task 1: choose Codex or Claude Code/);
@@ -378,7 +382,7 @@ test("Retry keeps the earlier chat in tries, saved and in the list the phone get
 });
 
 test("a task starting when Reach stopped comes back uncertain and is never started again", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-workflows-"));
+  const dir = fs.mkdtempSync(path.join(privateParent(), "reach-workflows-"));
   const file = path.join(dir, "agent-workflows.json");
   const first = stage({ file });
   const { workflow } = first.workflows.create({ owner: "phone", title: "Once", cwd: "/work/app", tasks: tasks(["One", "codex", "build"]) });
