@@ -33,10 +33,11 @@ export async function readMacIcons(targets, run = exec) {
 // Windows: the image the shell draws for each app (Start's app id) or
 // program (its full path), from scripts/native/app-icons.cs, built into
 // Reach's data folder as every Windows helper is (desktop-native.mjs).
-export async function readWindowsIcons(targets, { size = 64, dataDir = windowsShellFolder(), build = windowsBinary, spawn = spawnChild } = {}) {
+export async function readWindowsIcons(targets, { size = 64, dataDir = windowsShellFolder(), build = windowsBinary, spawn = spawnChild, authorize = () => {} } = {}) {
   if (!targets.length) return [];
   if (!dataDir) return targets.map(() => null);
   const file = await build({ dataDir }, "app-icons");
+  authorize();
   return new Promise((resolve) => {
     const child = spawn(file, [String(size)], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     let out = "";
@@ -56,12 +57,14 @@ export async function readWindowsIcons(targets, { size = 64, dataDir = windowsSh
     child.stdin.end(`${targets.map((target) => String(target).replace(/[\r\n\0]/g, " ")).join("\n")}\n`);
   });
 }
-export const readAppIcons = async (appIds) =>
-  process.platform === "darwin"
+export const readAppIcons = async (appIds, { authorize = () => {} } = {}) => {
+  authorize();
+  return process.platform === "darwin"
     ? readMacIcons(appIds)
     : process.platform === "win32"
-      ? readWindowsIcons(appIds).catch(() => appIds.map(() => null))
+      ? readWindowsIcons(appIds, { authorize }).catch(() => appIds.map(() => null))
       : appIds.map(() => null);
+};
 export const readAppIcon = async (appId) => (await readAppIcons([appId]))[0];
 
 // One native lookup at a time, deduplicated across clients. Ids requested while
@@ -70,21 +73,34 @@ export const readAppIcon = async (appId) => (await readAppIcons([appId]))[0];
 export function createAppIconCache(readMany = readAppIcons) {
   const cache = new Map();
   const waiting = new Map();
-  let reading = false;
-  const pump = async () => {
-    if (reading || !waiting.size) return;
-    reading = true;
+  let reading = null, scheduled = null, closed = false, stopping;
+  const authorize = () => {
+    if (closed) throw Object.assign(new Error("Reach is shutting down."), { status: 503 });
+  };
+  const schedule = () => {
+    if (!closed && !scheduled) scheduled = setImmediate(pump);
+  };
+  const pump = () => {
+    scheduled = null;
+    if (closed || reading || !waiting.size) return;
     const batch = [...waiting].slice(0, 48);
     for (const [id] of batch) waiting.delete(id);
-    let results = [];
-    try {
-      results = await readMany(batch.map(([id]) => id));
-    } catch {}
-    batch.forEach(([, entry], i) => entry.resolve(results?.[i] ?? null));
-    reading = false;
-    void pump();
+    // Register ownership before invoking a reader: it may still be building
+    // its native helper, and its completion includes the actual child close.
+    reading = Promise.resolve().then(async () => {
+      let results = [];
+      try {
+        if (!closed) results = await readMany(batch.map(([id]) => id), { authorize });
+      } catch {}
+      batch.forEach(([, entry], i) => entry.resolve(results?.[i] ?? null));
+    });
+    void reading.then(() => {
+      reading = null;
+      if (waiting.size) schedule();
+    });
   };
-  return (id) => {
+  const get = (id) => {
+    if (closed) return Promise.resolve(null);
     const cached = cache.get(id);
     if (cached && cached.expires > Date.now()) return cached.result;
     let result = waiting.get(id)?.result;
@@ -94,10 +110,23 @@ export function createAppIconCache(readMany = readAppIcons) {
       waiting.set(id, entry);
     }
     // Let the rest of a burst (a whole screen of icons) join this lookup.
-    setImmediate(pump);
+    schedule();
     cache.delete(id);
     cache.set(id, { result, expires: Date.now() + 10 * 60 * 1000 });
     if (cache.size > 160) cache.delete(cache.keys().next().value);
     return result;
   };
+  get.close = () => {
+    if (stopping) return stopping;
+    closed = true;
+    if (scheduled) clearImmediate(scheduled);
+    scheduled = null;
+    for (const entry of waiting.values()) entry.resolve(null);
+    waiting.clear();
+    cache.clear();
+    // Never start queued lookups during shutdown. The current reader keeps
+    // its existing native deadline; returning early can leave its exe locked.
+    return stopping = (reading || Promise.resolve()).then(() => {});
+  };
+  return get;
 }

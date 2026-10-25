@@ -5,9 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { readWindowsIcons } from "../server/app-icons.mjs";
+import { createAppIconCache, readWindowsIcons } from "../server/app-icons.mjs";
+import { readFileIcons } from "../server/file-icons.mjs";
 import { createLogos } from "../server/agent-sessions/logos.mjs";
 import { windowsBinary } from "../server/desktop-native.mjs";
 import { readWindowsApps, readWindowsFileTypeIcons, openWindowsApp } from "../server/windows-shell-data.mjs";
@@ -19,6 +20,98 @@ import { ALL_SCOPES } from "../server/core.mjs";
 // the shell draws for each app or program, from scripts/native/app-icons.cs,
 // as a Mac reads its apps' icons.
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==";
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((yes) => { resolve = yes; });
+  return { promise, resolve };
+};
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+for (const fails of [false, true]) test(`icon cache shutdown owns a held Windows preparation that ${fails ? "fails" : "succeeds without later dispatch"}`, async (t) => {
+  const entered = deferred(), held = deferred();
+  let spawns = 0;
+  const cache = createAppIconCache((ids, options) => readWindowsIcons(ids, {
+    ...options,
+    dataDir: "C:\\owned",
+    build: async () => { entered.resolve(); await held.promise; if (fails) throw Error("owned build failed"); return "owned.exe"; },
+    spawn: () => { spawns++; throw Error("must not dispatch"); },
+  }));
+  t.after(() => held.resolve());
+  const active = cache("app");
+  await entered.promise;
+  const queued = cache("queued");
+  let ended = false;
+  const stopped = cache.close().then(() => { ended = true; });
+  await turn();
+  assert.equal(ended, false, "native preparation belongs to its already-started reader");
+  assert.equal(await queued, null);
+  held.resolve();
+  await stopped;
+  assert.equal(await active, null);
+  assert.equal(spawns, 0);
+});
+
+test("icon cache shutdown waits for a real owned child close, not a queued input promise", async (t) => {
+  const entered = deferred();
+  let child, release, sawClose = false, spawns = 0;
+  const cache = createAppIconCache((ids) => readWindowsIcons(ids, {
+    dataDir: "owned fixture", build: async () => process.execPath,
+    // A real Node subprocess exercises the same stdin/close boundary on every
+    // OS; this case does not claim to execute the Windows shell APIs.
+    spawn: () => {
+      spawns++;
+      child = spawn(process.execPath, ["-e", "process.stdin.resume(); process.stdin.once('end', () => {});"], { stdio: ["pipe", "pipe", "ignore"] });
+      const end = child.stdin.end.bind(child.stdin);
+      child.stdin.end = (...args) => { release = () => end(...args); return child.stdin; };
+      child.once("spawn", () => entered.resolve());
+      child.once("close", () => { sawClose = true; });
+      return child;
+    },
+  }));
+  t.after(async () => { release?.(); await cache.close(); });
+  const active = cache("app");
+  await entered.promise;
+  const queued = cache("queued");
+  let ended = false;
+  const stopped = cache.close().then(() => { ended = true; });
+  await turn();
+  assert.equal(ended, false);
+  assert.equal(sawClose, false);
+  assert.equal(await queued, null);
+  assert.equal(await cache("late"), null);
+  release();
+  await stopped;
+  assert.equal(await active, null);
+  assert.equal(sawClose, true);
+  assert.equal(child.exitCode, 0);
+  assert.equal(child.stdout.readableEnded, true);
+  assert.equal(child.stdin.writableFinished, true);
+  assert.equal(spawns, 1);
+});
+
+test("file icon shutdown rechecks after a successful held Windows build and preserves the existing callback", async (t) => {
+  const entered = deferred(), held = deferred();
+  let runs = 0, originalChecks = 0;
+  const cache = createAppIconCache((types, options) => readFileIcons(types, { ...options, platform: "win32",
+    windows: { dataDir: "C:\\owned", build: async () => { entered.resolve(); await held.promise; return "owned.exe"; },
+      authorize: () => { originalChecks++; } },
+    run: async () => { runs++; return { stdout: PNG + "\n" }; },
+  }));
+  t.after(() => held.resolve());
+  const active = cache("txt");
+  await entered.promise;
+  const stopped = cache.close();
+  held.resolve();
+  await stopped;
+  assert.equal(await active, null);
+  assert.deepEqual({ runs, originalChecks }, { runs: 0, originalChecks: 0 }, "shutdown refuses actual dispatch before calling the older native callback");
+  const normal = await readFileIcons(["txt"], { platform: "win32",
+    windows: { dataDir: "C:\\owned", build: async () => "owned.exe", authorize: () => { originalChecks++; } },
+    run: async () => { runs++; return { stdout: PNG + "\n" }; },
+  });
+  assert.deepEqual(normal, [`data:image/png;base64,${PNG}`]);
+  assert.deepEqual({ runs, originalChecks }, { runs: 1, originalChecks: 1 }, "ordinary callers retain their pre-dispatch callback and successful result");
+});
 function helper(answer) {
   const seen = [];
   return {
@@ -187,6 +280,106 @@ test("on a real Windows PC: Notepad's icon and a Start app's, drawn by Windows; 
     assert.deepEqual(size(icons[1]), [64, 64]);
   } else t.diagnostic("Start lists no apps on this runner");
   assert.equal(icons.at(-1), null, "no file, no icon");
+});
+
+test("on real Windows Reach shutdown joins its icon helper and native file/catalog operations", { skip: process.platform !== "win32", timeout: 180000 }, async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-icon-retirement-"));
+  const entered = { icons: deferred(), types: deferred(), apps: deferred() }, held = deferred();
+  const children = [], actual = promisify(execFile);
+  let releaseInput, closing, reach;
+  t.after(async () => {
+    releaseInput?.(); held.resolve();
+    if (reach) await (closing || reach.close());
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  const executable = await windowsBinary({ dataDir }, "app-icons");
+  const build = async () => executable;
+  const appId = path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", "notepad.exe");
+  const record = (kind, child) => {
+    const entry = { kind, pid: child.pid, closed: false, code: null, signal: null, child };
+    children.push(entry);
+    child.once("close", (code, signal) => { entry.closed = true; entry.code = code; entry.signal = signal; });
+    return entry;
+  };
+  const nativeRead = (kind) => async (file, args, options) => {
+    assert.equal(file, executable);
+    assert.equal(options.timeout, kind === "types" ? 20250 : 12000, "native operation budgets stay unchanged");
+    const operation = actual(file, args, options);
+    const entry = record(kind, operation.child);
+    const result = await operation;
+    assert.equal(entry.closed, true, "the actual native execFile close was observed");
+    entered[kind].resolve();
+    // Hold only delivery of this real native result. No fake output is used.
+    await held.promise;
+    return result;
+  };
+  reach = await createReach({
+    roots: [dataDir], dataDir: path.join(dataDir, "state"),
+    desktopTerminals: { platform: "linux" }, terminalWatch: () => null,
+    appList: () => readWindowsApps({ dataDir, build, run: nativeRead("apps") }),
+    fileIcons: (types) => readFileIcons(types, { platform: "win32", windows: { dataDir, build }, run: nativeRead("types") }),
+    appShortcuts: {
+      listApps: async () => [{ id: appId, name: "Notepad" }],
+      loadIcons: (ids) => readWindowsIcons(ids, { dataDir, build,
+        spawn: (file, args, options) => {
+          assert.equal(file, executable);
+          const child = spawn(file, args, options);
+          record("icons", child);
+          const end = child.stdin.end.bind(child.stdin);
+          // The real C# helper waits for its actual stdin, keeping this owned
+          // executable open until the test deliberately releases its input.
+          child.stdin.end = (...input) => { releaseInput = () => end(...input); return child.stdin; };
+          child.once("spawn", () => entered.icons.resolve());
+          return child;
+        },
+      }),
+    },
+  });
+  await new Promise((resolve) => reach.server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${reach.server.address().port}`;
+  const owner = reach.auth.issue("owned shutdown fixture", ALL_SCOPES);
+  const headers = { Authorization: `Bearer ${owner.token}`, "Content-Type": "application/json" };
+  const observed = (request) => request.then(async (response) => { await response.arrayBuffer(); return response.status; }).catch(() => null);
+  const requests = [
+    fetch(`${origin}/api/files/icons?types=txt`, { headers }),
+    fetch(`${origin}/api/apps`, { headers }),
+  ].map(observed);
+  await Promise.all([entered.types.promise, entered.apps.promise]);
+  // Keep the app helper's original 5.5 s input deadline independent of a
+  // genuinely cold catalog's separate 12 s deadline; neither is extended.
+  requests.push(observed(fetch(`${origin}/api/apps/icons`, { method: "POST", headers, body: JSON.stringify({ ids: [appId] }) })));
+  await entered.icons.promise;
+  const nativeIcon = children.find((entry) => entry.kind === "icons");
+  assert.equal(nativeIcon.closed, false, "the native C# icon helper is genuinely still alive");
+  const serverClosed = new Promise((resolve) => reach.server.once("close", resolve));
+  let ended = false;
+  closing = reach.close().then(() => { ended = true; });
+  await serverClosed;
+  await turn();
+  assert.equal(ended, false, "HTTP drain is not native helper retirement");
+  assert.equal(nativeIcon.closed, false, "the original native child still owns the held stdin after HTTP shutdown");
+  releaseInput(); held.resolve();
+  await closing;
+  await Promise.all(requests);
+  assert.deepEqual(children.map((entry) => entry.kind).sort(), ["apps", "icons", "types"]);
+  for (const entry of children) {
+    assert.equal(entry.closed, true, `${entry.kind} actual child close precedes Reach.close completion`);
+    assert.equal(entry.code, 0, `${entry.kind} native helper exited successfully`);
+    assert.equal(entry.signal, null);
+    assert.equal(entry.child.stdout.readableEnded, true, `${entry.kind} actual stdout EOF`);
+  }
+  assert.equal(nativeIcon.child.stdin.writableFinished, true);
+  fs.unlinkSync(executable);
+  assert.equal(fs.existsSync(executable), false, "the actual exe can be removed without a retry after Reach.close");
+  const proof = { source: process.env.GITHUB_SHA || "local (see source receipt)", platform: process.platform, arch: process.arch,
+    actualWindowsNative: true, actualReachHttp: true, controlledCatalogForAppIcon: true, heldActualStdin: true,
+    currentNativeChildCloseJoined: true, executableUnlinkedWithoutRetry: true,
+    nativeResultDeliveryControlled: ["types", "apps"],
+    children: children.map(({ kind, pid, closed, code, signal }) => ({ kind, pid, closed, code, signal })),
+  };
+  fs.mkdirSync("reports", { recursive: true });
+  fs.writeFileSync("reports/app-icon-shutdown-native.json", JSON.stringify(proof, null, 2) + "\n");
+  t.diagnostic(JSON.stringify(proof));
 });
 
 // Real HTTP authorization with controlled catalog/build/dispatch boundaries;

@@ -17,13 +17,19 @@ export const inContainer = (exists = existsSync) =>
 
 export async function readFileIcons(
   types,
-  { platform = process.platform, run = exec, linux = {}, windows = {} } = {},
+  { platform = process.platform, run = exec, linux = {}, windows = {}, authorize = () => {} } = {},
 ) {
   if (!types.length) return [];
-  if (platform === "darwin") return readMacIcons(types, run);
-  if (platform === "win32") return (await readWindowsFileTypeIcons(types, { run, ...windows })).map(valid);
+  const nativeRun = (...args) => { authorize(); return run(...args); };
+  authorize();
+  if (platform === "darwin") return readMacIcons(types, nativeRun);
+  if (platform === "win32") return (await readWindowsFileTypeIcons(types, { run: nativeRun, ...windows,
+    authorize: () => { authorize(); windows.authorize?.(); },
+  })).map(valid);
   if (platform === "linux" && !inContainer())
-    return readLinuxIcons(types, linux);
+    return readLinuxIcons(types, { ...linux,
+      run: (...args) => { authorize(); return (linux.run || exec)(...args); },
+    });
   return types.map(() => null);
 }
 

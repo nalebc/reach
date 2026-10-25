@@ -601,6 +601,21 @@ export async function createReach(overrides = {}) {
     },
     ...overrides.appShortcuts,
   });
+  let appReadsClosed = false;
+  const appReads = new Set();
+  const appReadOpen = () => {
+    if (appReadsClosed) throw fail(503, "Reach is shutting down.");
+  };
+  const readApps = () => {
+    try { appReadOpen(); } catch (error) { return Promise.reject(error); }
+    const reading = Promise.resolve().then(() => {
+      appReadOpen();
+      return (overrides.appList || apps)({ authorize: appReadOpen });
+    }).then((list) => { appReadOpen(); return list; });
+    appReads.add(reading);
+    void reading.then(() => appReads.delete(reading), () => appReads.delete(reading));
+    return reading;
+  };
   // System-dialog input needs an owner device or explicit Full-person
   // consent (ScreenControl.ownerOnly).
   screenControl.dialogUp = () => (agentSessions.macDialogs?.() || []).length > 0;
@@ -666,7 +681,7 @@ export async function createReach(overrides = {}) {
   // Apps on your phone: each runs on its own hidden display on the Mac.
   const appThreads = new AppThreads({
     file: path.join(config.dataDir, "app-threads.json"),
-    listApps: overrides.appList || apps,
+    listApps: readApps,
     startHelper:
       overrides.appDisplays ||
       ((handlers) => AppDisplaysHelper.start(config, handlers)),
@@ -4691,7 +4706,8 @@ export async function createReach(overrides = {}) {
     res.json(result);
   });
   app.get("/api/apps", async (req, res) => {
-    const list = await (overrides.appList || apps)();
+    const list = await readApps();
+    appReadOpen();
     res.json(
       req.client.scopes.includes("admin") || !req.client.guestApps
         ? list
@@ -4861,7 +4877,8 @@ export async function createReach(overrides = {}) {
   };
   app.get("/api/drive/apps", async (req, res) => {
     driveOnMac();
-    const installed = await (overrides.appList || apps)();
+    const installed = await readApps();
+    appReadOpen();
     res.set("Cache-Control", "no-store").json({
       open: agentApps.list(req.client),
       installed: installed.map(({ id, name }) => ({ id, name })),
@@ -6343,6 +6360,13 @@ export async function createReach(overrides = {}) {
       }
     },
     async close() {
+      // Fence read-only native work before the first await. HTTP retirement
+      // alone does not close icon/catalog helpers that still own data files.
+      appReadsClosed = true;
+      const iconExit = fileIcon.close();
+      const shortcutExit = appShortcuts.close();
+      const catalogExit = Promise.allSettled([...appReads]);
+      const logoExit = agentSessions.logos?.close?.();
       warming.abort();
       appLaunchStore.shutdown();
       maintenanceStore.shutdown();
@@ -6414,7 +6438,7 @@ export async function createReach(overrides = {}) {
       const terminalExit = terminals.dispose();
       codex.dispose();
       const jobExit = jobs.dispose();
-      await Promise.all([apps, closed, terminalExit, jobExit, terminalWatchExit]);
+      await Promise.all([apps, closed, terminalExit, jobExit, terminalWatchExit, iconExit, shortcutExit, catalogExit, logoExit]);
       clearTimeout(cutoff);
       // The last agent timings still on their way to disk land before Reach
       // says it stopped (a test removing the data folder raced them).

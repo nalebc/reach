@@ -138,7 +138,7 @@ export const suites = {
     // Reach's icon in the notification area, workstream P (audit #16).
     "windows-tray",
     // Apps' icons and the agents' logos drawn by Windows (audit #28).
-    "windows-app-icons",
+    "app-icons", "windows-app-icons",
     // Word, RTF and OpenDocument previews read in JS off a Mac (audit #37).
     "document-text", "file-kinds",
     // Voice memos as words through Windows' own recognizer (audit #35).

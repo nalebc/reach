@@ -68,8 +68,28 @@ export function resolveIcon(source, { look = (cmd, args) => execFileSync(cmd, ar
   return source.file;
 }
 
-export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platform = process.platform, resolve = resolveIcon, windows = WINDOWS_LOGO_SOURCES, listApps = startApps, readIcons = (ids) => readWindowsIcons(ids, { size: 128, dataDir }) }) {
-  if (platform === "win32") return windowsLogos({ windows, listApps, readIcons });
+export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platform = process.platform, resolve = resolveIcon, windows = WINDOWS_LOGO_SOURCES, listApps = startApps, readIcons = (ids, options) => readWindowsIcons(ids, { size: 128, dataDir, ...options }) }) {
+  let closed = false, stopping;
+  const pending = new Set(), empty = { version: "", logos: {} };
+  const authorize = () => {
+    if (closed) throw Object.assign(new Error("Reach is shutting down."), { status: 503 });
+  };
+  const own = (load) => {
+    const logos = () => {
+      if (closed) return Promise.resolve(empty);
+      const result = Promise.resolve().then(() => closed ? empty : load());
+      pending.add(result);
+      void result.then(() => pending.delete(result), () => pending.delete(result));
+      return result;
+    };
+    logos.close = () => {
+      if (stopping) return stopping;
+      closed = true;
+      return stopping = Promise.allSettled([...pending]).then(() => {});
+    };
+    return logos;
+  };
+  if (platform === "win32") return own(windowsLogos({ windows, listApps, readIcons, authorize, stopped: () => closed, empty }));
   const dir = path.join(dataDir, "agent-logos");
   let cached = null;
   // Each source's file as last found, looked up again every ten minutes.
@@ -91,7 +111,7 @@ export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platf
   };
   // { version, logos: { name: data URL } }; the version changes when an app
   // updates its icon, so the phone keeps its copy until then.
-  return async function logos() {
+  return own(async function logos() {
     const found = Object.entries(sources).map(([name, source]) => {
       const file = fileOf(name, source);
       return [name, { ...source, file }, stat(file)];
@@ -102,6 +122,7 @@ export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platf
     if (platform === "darwin") {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       for (const [name, source, s] of found) {
+        if (closed) break;
         if (!s) continue;
         const tag = crypto.createHash("sha1").update(`${source.file}|${s}|${source.size}`).digest("hex").slice(0, 12);
         const file = path.join(dir, `${name}-${tag}.png`);
@@ -116,32 +137,35 @@ export function createLogos({ dataDir, sources = LOGO_SOURCES, run = exec, platf
         }
       }
     }
+    if (closed) return empty;
     const value = { version: crypto.createHash("sha1").update(key).digest("base64url").slice(0, 12), logos: out };
     cached = { key, value };
     return value;
-  };
+  });
 }
 
 // Each mark's app as Start lists it, looked up again every ten minutes; the
 // version changes when an app comes or goes.
-function windowsLogos({ windows, listApps, readIcons, now = Date.now }) {
+function windowsLogos({ windows, listApps, readIcons, authorize, stopped, empty, now = Date.now }) {
   let cached = null;
   return async function logos() {
     if (cached && now() - cached.at < 10 * 60 * 1000) return cached.value;
     let list = [];
     try {
-      list = await listApps();
+      list = await listApps({ authorize });
     } catch {
       /* no list: no logos; the phone shows the names */
     }
+    if (stopped()) return empty;
     const byName = new Map(list.map((app) => [String(app.name).toLowerCase(), app.id]));
     const found = Object.entries(windows)
       .map(([name, names]) => [name, names.map((n) => byName.get(n.toLowerCase())).find(Boolean)])
       .filter(([, id]) => id);
     let icons = [];
     try {
-      icons = await readIcons(found.map(([, id]) => id));
+      icons = await readIcons(found.map(([, id]) => id), { authorize });
     } catch {}
+    if (stopped()) return empty;
     const logos = Object.fromEntries(found.map(([name], i) => [name, icons[i]]).filter(([, icon]) => icon));
     const key = found.map(([name, id]) => `${name}=${id}`).join("|");
     const value = { version: crypto.createHash("sha1").update(key).digest("base64url").slice(0, 12), logos };
