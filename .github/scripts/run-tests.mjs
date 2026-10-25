@@ -179,7 +179,7 @@ export const suites = {
     // The tabs agents open closing once they're done, Chrome and Edge alike.
     "agent-tabs", "browser-worker",
     // Explicit Mac/Windows browser models and the shared watcher shutdown barrier.
-    "agent-tools", "tool-page-runtime", "mac-terminal-watch",
+    "agent-tools", "agent-tool-batch", "tool-page-runtime", "mac-terminal-watch",
   ],
   native: [
     "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",

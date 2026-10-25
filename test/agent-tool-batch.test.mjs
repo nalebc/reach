@@ -10,11 +10,15 @@ import { browserToolRequest, browserToolsFor } from "../server/browser-tools.mjs
 import { presetRouteAllowed } from "../server/agent-presets.mjs";
 import { agentRequestTimeout } from "../server/agent-transport.mjs";
 import { serverInstructions } from "../scripts/mcp-server.mjs";
-import { toolBrowserFixture, toolApps } from "./helpers/tool-browser-fixture.mjs";
+import { toolBrowserFixture, toolAppsFor } from "./helpers/tool-browser-fixture.mjs";
 
+// The browser platform is modeled and the same on every CI host: the app
+// inventory, the driver and Reach's own browser allowlist agree (as in
+// test/agent-tools.test.mjs). Unmodeled, real Windows refused the macOS apps.
 function setup(t, extra = {}) {
+  const { platform = "darwin", apps = toolAppsFor(platform), ...options } = extra;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-batch-test-")),
-    driver = toolBrowserFixture(),
+    driver = toolBrowserFixture({ platform }),
     saved = [];
   const client = {
     id: "agent",
@@ -29,7 +33,7 @@ function setup(t, extra = {}) {
   const desktop = {
     catalog: async (auth) => {
       auth();
-      return toolApps;
+      return apps;
     },
     withBrowser: async (_client, _app, auth, work) =>
       work(async () => { auth(); }, async () => {}),
@@ -39,7 +43,7 @@ function setup(t, extra = {}) {
   const make = () => {
     const tools = createAgentTools(
       { dataDir },
-      { desktop, driver, waitMs: 250, runMs: 5000, savings: { record: (entry) => saved.push(entry) }, ...extra },
+      { desktop, driver, platform, waitMs: 250, runMs: 5000, savings: { record: (entry) => saved.push(entry) }, ...options },
     );
     opened.push(tools);
     return tools;
@@ -51,7 +55,7 @@ function setup(t, extra = {}) {
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
   const batch = (input) => tools.batch(authorize, { browser: "Chrome", requestId: crypto.randomUUID(), ...input });
-  return { tools, driver, authorize, batch, saved, dataDir, make };
+  return { tools, driver, authorize, batch, saved, dataDir, make, apps };
 }
 // Reach's own record of the batch tabs it has open.
 const tracked = (f) => JSON.parse(fs.readFileSync(path.join(f.dataDir, "agent-tool-tabs.json"), "utf8"));
@@ -78,12 +82,13 @@ const searchTool = {
 };
 const ops = (driver, op) => driver.calls.filter((call) => call.op === op);
 
-test("a batch opens a tab per item behind, never focuses, leaves the owner's tab alone and closes its own", async (t) => {
-  const f = setup(t);
+for (const [platform, browser] of [["darwin", "Chrome"], ["win32", "Chrome"], ["win32", "Edge"]])
+test(`a batch opens a tab per item behind, never focuses, leaves the owner's tab alone and closes its own (${platform} ${browser})`, async (t) => {
+  const f = setup(t, { platform });
   await f.tools.define(f.authorize, searchTool);
-  const mine = f.driver.add("Chrome", "https://example.com/search?q=mine");
+  const mine = f.driver.add(browser, "https://example.com/search?q=mine");
   const items = ["milk", "eggs", "bread"].map((item) => ({ item }));
-  const result = await f.batch({ id: "shop_add", items });
+  const result = await f.batch({ id: "shop_add", items, browser });
   assert.equal(result.status, "completed");
   assert.deepEqual(result.items.map((item) => [item.status, item.data.result]), items.map(() => ["completed", "Done"]));
   assert.equal(f.driver.counters.clicks, 3);
@@ -96,7 +101,7 @@ test("a batch opens a tab per item behind, never focuses, leaves the owner's tab
   // One scripting check for the whole batch, not one per item.
   assert.equal(ops(f.driver, "preflight").length, 1);
   assert.equal(result.tabsClosed, 3);
-  assert.deepEqual(f.driver.browsers.get("Chrome"), [mine]);
+  assert.deepEqual(f.driver.browsers.get(browser), [mine]);
   assert.equal(mine.dom.window.document.querySelector("#result").textContent, "Ready");
   assert.deepEqual(f.saved, [{ agent: "browser", kind: "tab-batch", tokens: 600, count: 3 }]);
 });
@@ -183,7 +188,7 @@ test("Apps cannot define bank batches; Full control retains its explicit unrestr
   const f = setup(t);
   const definition = { ...searchTool, id: "bank_peek", origins: ["https://www.chase.com"], steps: [{ op: "navigate", url: "https://www.chase.com/" }, { op: "read", target: { css: "main" }, as: "x" }] };
   const client = f.authorize();
-  client.policy = { ...client.policy, preset: "apps", apps: toolApps };
+  client.policy = { ...client.policy, preset: "apps", apps: f.apps };
   await assert.rejects(
     f.tools.define(f.authorize, definition),
     /bank/,
