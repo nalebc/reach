@@ -7,11 +7,7 @@ import { NativeScreenSource, sweepScreenHelpers } from "../server/screen-stream.
 // for hours, even with Reach paused, and Netflix wouldn't play. No capture
 // may outlive what it was for.
 
-// Only where a helper can ignore SIGTERM: on Windows, Node's kill() ends a
-// process outright at once (TerminateProcess), so NativeScreenSource.stop's
-// SIGKILL fallback (server/screen-stream.mjs) never has to come. The test
-// below covers a helper stopping there.
-test("a screen helper that ignores being stopped is ended outright", { skip: process.platform === "win32" ? "Windows' kill() ends a helper outright; no SIGTERM to ignore (NativeScreenSource.stop, server/screen-stream.mjs)" : false }, async (t) => {
+test("a screen helper that ignores being stopped is ended outright", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // A helper stuck on SIGTERM; it says when it's ready to be stopped.
   const source = new NativeScreenSource(process.execPath, [
@@ -21,6 +17,16 @@ test("a screen helper that ignores being stopped is ended outright", { skip: pro
   await once(source.child.stderr, "data");
   const exited = once(source.child, "exit");
   source.stop();
+  if (process.platform === "win32") {
+    // Windows: kill() is TerminateProcess, which no helper can ignore. It
+    // ends at once, and the later SIGKILL (NativeScreenSource.stop) finds
+    // it gone and sends nothing.
+    const [code, signal] = await exited;
+    assert.deepEqual([code, signal], [null, "SIGTERM"]);
+    t.mock.timers.tick(5000);
+    assert.equal(source.child.signalCode, "SIGTERM");
+    return;
+  }
   t.mock.timers.tick(4999);
   assert.equal(source.child.exitCode, null);
   assert.equal(source.child.signalCode, null, "given time to stop its capture");

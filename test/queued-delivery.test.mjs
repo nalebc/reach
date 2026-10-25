@@ -21,24 +21,19 @@ const B = "22222222-2222-4333-8444-555555555555";
 // Windows PC has no helper for it yet, so its messages go to Claude Code
 // (claude-chat-settings' Windows test).
 const sessionsWith = async (outbox, extra = {}) => {
-  const real = Object.getOwnPropertyDescriptor(process, "platform");
-  Object.defineProperty(process, "platform", { value: "darwin" });
-  try {
-    return createAgentSessions({
-      daemon: { rpc: async () => ({}), onNotification() {} },
-      codex: {},
-      codexLive: { drives: () => false },
-      claude: {},
-      claudeHost: { onRelease() {} },
-      signIn: {},
-      claudeImports: { add: async () => {}, close() {} },
-      agentAsks: { close() {} },
-      outbox,
-      ...extra,
-    });
-  } finally {
-    Object.defineProperty(process, "platform", real);
-  }
+  return createAgentSessions({
+    platform: "darwin",
+    daemon: { rpc: async () => ({}), onNotification() {} },
+    codex: {},
+    codexLive: { drives: () => false },
+    claude: {},
+    claudeHost: { onRelease() {} },
+    signIn: {},
+    claudeImports: { add: async () => {}, close() {} },
+    agentAsks: { close() {} },
+    outbox,
+    ...extra,
+  });
 };
 const until = async (check, ms = 2000) => {
   for (const end = Date.now() + ms; !check(); await new Promise((r) => setTimeout(r, 10))) if (Date.now() > end) return false;

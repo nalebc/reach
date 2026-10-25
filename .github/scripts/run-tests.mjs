@@ -181,26 +181,7 @@ export const suites = {
     // Explicit Mac/Windows browser models and the shared watcher shutdown barrier.
     "agent-tools", "agent-tool-batch", "tool-page-runtime", "mac-terminal-watch",
   ],
-  // Every other test file runs on Windows too (ci.yml's windows-rest job),
-  // except these: known Windows failures still being fixed, each found when
-  // they first ran on a real Windows runner (Oct 25) and each, so far, a test
-  // that assumed a Mac. A fixed file leaves this list; nothing new joins it.
-  windowsPending: [
-    "chat-archive",
-    "claude-chat-settings",
-    "cli-link",
-    "first-run-agents",
-    "openclaw",
-    "queued-delivery",
-    "reach-updates",
-    "screen",
-    "screen-capture-ends",
-    "screen-stream",
-    "service",
-    "setup-blockers",
-    "teams",
-    "transfer-integrity",
-  ],
+  // Every other test file runs on Windows too: ci.yml's windows-rest job.
   native: [
     "agent-input", "key-layout-native", "browser-terminal-routes", "money-sites",
     "agent-claude-model-native", "agent-desktop-focus-native",
@@ -221,7 +202,7 @@ export function testFiles(suite, root = process.cwd()) {
   const all = () => fs.readdirSync(path.join(root, "test")).filter(name => name.endsWith(".test.mjs")).sort();
   // Windows by default: every file no other lane owns, so a new test runs on
   // Windows too unless someone says why not.
-  const owned = () => new Set([...suites.windows, ...suites.native, ...suites.windowsPending].map(name => `${name}.test.mjs`));
+  const owned = () => new Set([...suites.windows, ...suites.native].map(name => `${name}.test.mjs`));
   const names = suite === "all" ? all()
     : suite === "windows-rest" ? all().filter(name => !owned().has(name))
     : suites[suite]?.map(name => `${name}.test.mjs`);

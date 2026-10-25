@@ -347,7 +347,6 @@ jobs:
     name: Windows, every other test
     # Every test file no other lane owns also runs on Windows, so a new test
     # can't silently assume a Mac (Oct 25: 264 files had never run here).
-    # Known failures being fixed are listed in run-tests.mjs windowsPending.
     runs-on: windows-2025
     timeout-minutes: 45
     steps:

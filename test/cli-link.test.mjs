@@ -30,9 +30,9 @@ test("links reach into a folder on PATH; the link runs this Reach and its hints 
   assert.match(linkCli({ script: launcher, env, home }).text, /already runs this Reach/);
 });
 
-// A link, as on a Mac or Linux. Windows has none (windowsCli in
-// scripts/cli-link.mjs writes a reach.cmd instead): its tests are below.
-test("replaces a link to another Reach folder, leaves anything else alone", { skip: process.platform === "win32" ? "no links on Windows: reach.cmd (windowsCli, scripts/cli-link.mjs)" : false }, () => {
+// A link, as on a Mac or Linux. Windows has none: there reach cli writes a
+// reach.cmd (windowsCli, scripts/cli-link.mjs), the test after this one.
+test("replaces a link to another Reach folder, leaves anything else alone", { skip: process.platform === "win32" ? "no links on Windows: its reach.cmd is the next test" : false }, () => {
   const home = scratch();
   const bin = path.join(home, ".local/bin");
   fs.mkdirSync(bin, { recursive: true });
@@ -52,6 +52,33 @@ test("replaces a link to another Reach folder, leaves anything else alone", { sk
   assert.equal(refused.ok, false);
   assert.match(refused.text, /is something else, not Reach/);
   assert.equal(fs.readFileSync(path.join(bin, "reach"), "utf8"), "someone else's tool");
+});
+
+// The same on a Windows PC's own disk: a reach.cmd that starts another Reach
+// folder (an older checkout) is pointed here; anything else is left alone.
+test("Windows: replaces another Reach folder's reach.cmd, leaves anything else alone", { skip: process.platform !== "win32" ? "a Windows PC's reach.cmd; a link elsewhere (the test before)" : false }, () => {
+  const home = scratch();
+  const bin = path.join(home, ".local", "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const older = path.join(home, "old reach");
+  fs.mkdirSync(path.join(older, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(older, "scripts", "bootstrap.mjs"), "");
+  fs.writeFileSync(path.join(older, "reach.cmd"), "@echo off\r\n");
+  const shim = path.join(bin, "reach.cmd");
+  fs.writeFileSync(shim, `@echo off\r\n"%USERPROFILE%\\old reach\\reach.cmd" %*\r\n`);
+  const env = { Path: bin, USERPROFILE: home };
+  const moved = linkCli({ script: launcher, env, home });
+  assert.equal(moved.ok, true, moved.text);
+  assert.equal(moved.at, shim);
+  assert.match(moved.text, /It started .*old reach\\reach\.cmd before/);
+  assert.equal(fs.readFileSync(shim, "utf8"), `@echo off\r\n"${path.join(path.dirname(launcher), "reach.cmd").replace(/%/g, "%%")}" %*\r\n`);
+  assert.equal(linkCli({ script: launcher, env, home }).already, true);
+
+  fs.writeFileSync(shim, "@echo off\r\necho mine\r\n");
+  const refused = linkCli({ script: launcher, env, home });
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /is something else, not Reach/);
+  assert.equal(fs.readFileSync(shim, "utf8"), "@echo off\r\necho mine\r\n");
 });
 
 test("with no folder of yours on PATH, says how to add one and links nothing", () => {
