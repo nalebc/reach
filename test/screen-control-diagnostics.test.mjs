@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import fs from "node:fs";
 import { createScreenControlDiagnostics, SCREEN_CONTROL_DIAGNOSTICS } from "./helpers/screen-control-diagnostics.mjs";
+import { findChrome, launchChrome, openTab } from "./helpers/headless-chrome.mjs";
 
 test("screen diagnostics retain connection causes and timing without credentials or input contents", () => {
   const diagnostics = createScreenControlDiagnostics();
@@ -50,11 +51,55 @@ test("bounded traffic preserves the causal lifecycle across a heartbeat flood an
   assert.deepEqual(result.lifecycle.map(value => value.type || value.dir), ["error", "close", "open"]);
   assert.equal(result.events.at(-1).id, 10000);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) < 100000);
-  assert.deepEqual(diagnostics.drain(), { version: 1, events: [], dropped: 0, lifecycle: [], lifecycleDropped: 0 });
+  assert.deepEqual(diagnostics.drain(), { version: 1, events: [], dropped: 0, lifecycle: [], lifecycleDropped: 0, stalls: { gaps: [], longTasks: [] } });
   for (let i = 0; i < 100; i++) diagnostics.record({ dir: "close", socket: i + 1, code: 1012 });
   const bounded = diagnostics.drain();
   assert.equal(bounded.lifecycle.length, 32);
   assert.equal(bounded.lifecycleDropped, 68);
+});
+
+test("a page stall says whether the page's own long tasks filled it or the browser was starved", () => {
+  const diagnostics = createScreenControlDiagnostics();
+  // Heartbeats every 100 ms, then 8.4 s with none (the iPad page, Oct 24).
+  for (let t = 0; t <= 1000; t += 100) diagnostics.tick(t);
+  diagnostics.tick(9400);
+  // The page's own work: one 8 s task inside that gap, reported afterwards.
+  diagnostics.longTask({ startTime: 1200, duration: 8000, name: "self", containerSrc: "https://private.test/?token=PRIVATE_CANARY" });
+  diagnostics.tick(9500);
+  // A second, starved gap: no task of the page's at all.
+  diagnostics.tick(12000);
+  diagnostics.longTask({ startTime: 0, duration: 150, name: "self" });
+  diagnostics.longTask({ startTime: 0, duration: 300, name: "PRIVATE_CANARY" });
+  const { stalls } = diagnostics.drain();
+  assert.deepEqual(stalls.gaps, [
+    { t: 1000, gapMs: 8400, visible: null, longTaskMs: 8000 },
+    { t: 9500, gapMs: 2500, visible: null, longTaskMs: 0 },
+  ]);
+  assert.deepEqual(stalls.longTasks, [{ start: 1200, duration: 8000, name: "self" }, { start: 0, duration: 300, name: "unknown" }], "short tasks dropped; names allowlisted");
+  assert.doesNotMatch(JSON.stringify(stalls), /PRIVATE_CANARY|token|https/);
+  // Short pauses aren't stalls.
+  const calm = createScreenControlDiagnostics();
+  for (let t = 0; t <= 5000; t += 900) calm.tick(t);
+  assert.deepEqual(calm.drain().stalls.gaps, []);
+});
+
+test("in a real browser, a page that blocks its own main thread shows a gap filled by its long task", {
+  skip: !findChrome() && "needs Chrome", timeout: 60000,
+}, async (t) => {
+  const browser = await launchChrome(t, {});
+  const tab = await openTab(browser);
+  await tab.navigate("about:blank");
+  await tab.evaluate(`window.__scDiagnostics = ${SCREEN_CONTROL_DIAGNOSTICS}; true`);
+  await tab.evaluate("new Promise((r) => setTimeout(r, 400))");
+  // The page's own work holds its main thread for 1.5 s.
+  // From the page's own timer, as the page's code runs (a DevTools evaluate
+  // is not one of the page's tasks).
+  await tab.evaluate("new Promise((r) => setTimeout(() => { const end = performance.now() + 1500; while (performance.now() < end); setTimeout(r, 400); }, 0))");
+  const { stalls } = await tab.evaluate("window.__scDiagnostics.drain()");
+  assert.equal(stalls.gaps.length, 1, JSON.stringify(stalls));
+  assert.ok(stalls.gaps[0].gapMs >= 1400, JSON.stringify(stalls));
+  assert.ok(stalls.gaps[0].longTaskMs >= 1300, `the page's own task fills the gap: ${JSON.stringify(stalls)}`);
+  assert.equal(stalls.gaps[0].visible, true);
 });
 
 test("the exact standalone browser bootstrap preserves the same privacy and close metadata", () => {
