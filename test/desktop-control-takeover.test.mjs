@@ -36,7 +36,7 @@ function child() {
   return value;
 }
 const phone = { id: "phone", kind: "device", name: "Phone", scopes: ["admin", "screen"] };
-function world() {
+function world({ slowMs, warn } = {}) {
   const control = new ScreenControl(), connections = new Map(), children = [];
   control.acquire(phone, true);
   const connect = () => {
@@ -48,6 +48,7 @@ function world() {
     ws.input = (message) => ws.emit("message", Buffer.from(JSON.stringify(message)), false);
     desktopConnection(ws, {
       config: { screen: true }, auth: { verify: () => phone }, control, scanner: null, grace: 400,
+      ...(slowMs === undefined ? {} : { slowMs }), ...(warn ? { warn } : {}),
       create: async () => { const process = child(); children.push(process); return new DesktopInput(process); },
       // What server/index.mjs registers each control connection with.
       register: (id, socket) => takeOver(connections, id, socket),
@@ -152,4 +153,26 @@ test("a close without a code is a drop (grace); 1000 lets go at once; Stop ends 
   assert.equal(w.control.holder(), null);
   assert.equal(w.control.reconnecting("phone"), false);
   w.children[0].finish();
+});
+
+// Oct 25 (Windows screen control, iPhone, run 40230028239): the first taps
+// timed out on the phone after 6 s with no answer, and nothing said which
+// action the computer was slow to do. Reach's log now says, by kind only.
+test("an action the computer is slow to do is named in Reach's log, a quick one isn't", async () => {
+  const said = [];
+  const w = world({ slowMs: 100, warn: (line) => said.push(line) });
+  const ws = w.connect();
+  await until(() => ready(ws));
+  ws.input({ type: "input", id: 1, action: { type: "click", x: 0.5, y: 0.5 } });
+  await until(() => ws.sent.some((m) => m.type === "ack" && m.id === 1));
+  assert.deepEqual(said, [], "a quick click says nothing");
+  w.children[0].hold.add("focus");
+  ws.input({ type: "input", id: 2, action: { type: "focus", x: 0.4, y: 0.4 } });
+  await until(() => w.children[0].requests.some((a) => a.type === "focus"));
+  await new Promise((r) => setTimeout(r, 150));
+  w.children[0].stdout.emit("data", Buffer.from(JSON.stringify({ ok: true }) + "\n"));
+  await until(() => ws.sent.some((m) => m.type === "ack" && m.id === 2));
+  assert.equal(said.length, 1, JSON.stringify(said));
+  assert.match(said[0], /^Reach: screen control waited \d+\.\d s for this computer to do a focus\.$/);
+  ws.end(1000);
 });

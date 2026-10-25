@@ -50,6 +50,10 @@ export function desktopConnection(
     // How long Tailscale's word may come late (auth.interruption) before
     // the connection ends, retryable: held meanwhile, nothing runs.
     holdFor = 5000,
+    // One action the computer takes this long to do holds every input
+    // behind it (the phone gives up at 6 s): Reach's log names its kind.
+    slowMs = 2000,
+    warn = (line) => console.warn(line),
   },
 ) {
   let token,
@@ -430,11 +434,17 @@ export function desktopConnection(
           // guests: the helper turns it down unless the owner asked (a Mac's
           // concealed type; Windows' formats that keep it out of clipboard
           // history and monitors, parity audit #13).
-          result = await helper.send(
-            item.action.type === "clipboard-read"
-              ? { ...item.action, owner: client.scopes.includes("admin") }
-              : item.action,
-          );
+          const sentAt = Date.now();
+          try {
+            result = await helper.send(
+              item.action.type === "clipboard-read"
+                ? { ...item.action, owner: client.scopes.includes("admin") }
+                : item.action,
+            );
+          } finally {
+            const tookMs = Date.now() - sentAt;
+            if (tookMs >= slowMs) warn(`Reach: screen control waited ${(tookMs / 1000).toFixed(1)} s for this computer to do a ${type}.`);
+          }
           if (closed || ws.readyState !== 1) throw fail(403, "Desktop control ended.");
           if (current !== epoch) continue;
           // Done: acknowledged once it's confirmed (held, the answer waits).

@@ -118,6 +118,9 @@ The earlier tags remain unchanged; their detailed changes are recorded below.
   the iOS simulator. Every test file now runs on Windows (CI's windows-rest
   job) unless its own platform lane runs it; about 140 first-run failures,
   nearly all tests that assumed a Mac, were fixed at their cause.
+- Reach's log names any screen-control action the computer takes 2 s or more
+  to do, and screen-control journeys record what ran in the phone page's
+  long frames, so a stall says where it came from.
 - Restore the source branch's regression tests and include shared identity,
   typing and terminal layout checks in Windows CI. Run the native Windows
   input checks and screen-control journeys with iPhone, iPad and Android

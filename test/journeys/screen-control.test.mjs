@@ -830,6 +830,10 @@ async function stressRun(t, kind) {
       await recordScenario({ name, outcomes, bytesOk: !!got?.ok });
     }
 
+    // Actions the computer itself was slow to do (Reach's own log, by kind:
+    // server/desktop-connection.mjs), beside what the phone saw.
+    report.slowActions = computer.reach.output().split(/\r?\n/)
+      .filter((line) => /^Reach: screen control waited \d+\.\d s for this computer to do an? [a-z-]+\.$/.test(line)).slice(-32);
     fs.mkdirSync(path.resolve("reports", "journeys"), { recursive: true });
     const file = path.resolve("reports", "journeys", `screen-control-${process.platform}-${kind}.json`);
     fs.writeFileSync(file, JSON.stringify(report, null, 2));
