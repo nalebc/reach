@@ -51,7 +51,7 @@ test("bounded traffic preserves the causal lifecycle across a heartbeat flood an
   assert.deepEqual(result.lifecycle.map(value => value.type || value.dir), ["error", "close", "open"]);
   assert.equal(result.events.at(-1).id, 10000);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) < 100000);
-  assert.deepEqual(diagnostics.drain(), { version: 1, events: [], dropped: 0, lifecycle: [], lifecycleDropped: 0, stalls: { gaps: [], longTasks: [] } });
+  assert.deepEqual(diagnostics.drain(), { version: 1, events: [], dropped: 0, lifecycle: [], lifecycleDropped: 0, stalls: { gaps: [], longTasks: [], frames: [] } });
   for (let i = 0; i < 100; i++) diagnostics.record({ dir: "close", socket: i + 1, code: 1012 });
   const bounded = diagnostics.drain();
   assert.equal(bounded.lifecycle.length, 32);
@@ -83,6 +83,31 @@ test("a page stall says whether the page's own long tasks filled it or the brows
   assert.deepEqual(calm.drain().stalls.gaps, []);
 });
 
+// Oct 25, Android page on Windows: a 4 s task of the page's own, at the
+// emoji. A long animation frame says what ran in it: which script, and how
+// much was style, layout and drawing. Only where in the code: no URL query,
+// page text or anything typed.
+test("a long frame records what ran in it, by file and function, never a URL's query", () => {
+  const diagnostics = createScreenControlDiagnostics();
+  diagnostics.frame({
+    startTime: 113000, duration: 4100, blockingDuration: 4050, renderStart: 113100, styleAndLayoutStart: 113150,
+    scripts: [
+      { invokerType: "event-listener", invoker: "INPUT.oninput", sourceFunctionName: "onInput", sourceURL: "https://mac.tail.ts.net/assets/index-abc.js?token=PRIVATE_CANARY#x", sourceCharPosition: 1234, duration: 80, forcedStyleAndLayoutDuration: 3, pauseDuration: 0 },
+      { invokerType: "PRIVATE_CANARY", invoker: "https://private.test/?token=PRIVATE_CANARY", sourceFunctionName: "x".repeat(200), sourceURL: "", sourceCharPosition: -1, duration: 5 },
+    ],
+  });
+  diagnostics.frame({ startTime: 0, duration: 400, scripts: [] });
+  const { stalls } = diagnostics.drain();
+  assert.deepEqual(stalls.frames, [{
+    start: 113000, duration: 4100, blocking: 4050, scriptMs: 85, styleLayoutMs: 3950,
+    scripts: [
+      { invokerType: "event-listener", invoker: "INPUT.oninput", fn: "onInput", file: "index-abc.js", at: 1234, duration: 80, forcedLayoutMs: 3 },
+      { invokerType: "unknown", invoker: "[url]", fn: "x".repeat(80), file: "", at: -1, duration: 5, forcedLayoutMs: 0 },
+    ],
+  }], "short frames dropped");
+  assert.doesNotMatch(JSON.stringify(stalls), /PRIVATE_CANARY|token|https|tail\.ts/);
+});
+
 test("in a real browser, a page that blocks its own main thread shows a gap filled by its long task", {
   skip: !findChrome() && "needs Chrome", timeout: 60000,
 }, async (t) => {
@@ -100,6 +125,11 @@ test("in a real browser, a page that blocks its own main thread shows a gap fill
   assert.ok(stalls.gaps[0].gapMs >= 1400, JSON.stringify(stalls));
   assert.ok(stalls.gaps[0].longTaskMs >= 1300, `the page's own task fills the gap: ${JSON.stringify(stalls)}`);
   assert.equal(stalls.gaps[0].visible, true);
+  // Its long frame: the page's own timer, all of it script.
+  const [frame] = stalls.frames;
+  assert.ok(frame && frame.duration >= 1300, `the long frame is recorded: ${JSON.stringify(stalls)}`);
+  assert.ok(frame.scripts.some((s) => s.invokerType === "user-callback" && s.duration >= 1300), JSON.stringify(frame));
+  assert.ok(frame.scriptMs >= 1300 && frame.styleLayoutMs < 200, JSON.stringify(frame));
 });
 
 test("the exact standalone browser bootstrap preserves the same privacy and close metadata", () => {
