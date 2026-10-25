@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { toneStability } from "./helpers/tone-stability.mjs";
+import { toneStability, sourceStalls, explainedDropouts } from "./helpers/tone-stability.mjs";
 import { createToneTiming, observeToneSource } from "./helpers/tone-timing.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -312,14 +312,24 @@ async function soundInBrowser(t, { controlled = false } = {}) {
     batches[0].start();
   }
   stage = 3;
+  const steadyWall = Date.now();
   const lateBefore = await tab.evaluate("window.__late");
   for (let i = 0; i < 40; i++) {
     steady.push(await tab.evaluate("window.__sample()"));
     await new Promise((r) => setTimeout(r, 100));
   }
   const late = (await tab.evaluate("window.__late")) - lateBefore;
-  const stability = toneStability(steady, late);
-  Object.assign(measurements, { ranDry: late, blips: stability.blips });
+  // A dropout right after the sound source itself ran behind the clock (the
+  // helper's own packets, measured before Reach's relay, paused longer than
+  // the player's starting buffer: a starved CI machine) is not the player's.
+  // Any other dropout counts as before, so a queue that runs dry while
+  // packets come on time, or a delay Reach adds, still fails.
+  const lates = (await tab.evaluate("window.__toneTiming.snapshot()")).streams["worklet-late"].events
+    .filter((event) => event.wallMs >= steadyWall);
+  const stalls = sourceStalls(timing.snapshot().streams["helper-packet"].events.filter((event) => event.wallMs >= steadyWall - 1000));
+  const explained = Math.min(late, explainedDropouts(lates, stalls));
+  const stability = toneStability(steady, late, { explained });
+  Object.assign(measurements, { ranDry: late, explainedDropouts: explained, sourceStalls: stalls.map((stall) => Math.round(stall.gapMs)), blips: stability.blips });
   if (controlled) {
     batches[0].finish();
     const delivery = batches[0].snapshot();
@@ -330,7 +340,7 @@ async function soundInBrowser(t, { controlled = false } = {}) {
     assert.equal(delivery.timerPending, false);
     assert.ok(delivery.batches >= 20, "the steady window exercised repeated seven-packet batches");
   }
-  assert.ok(stability.passed, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times; blips ${stability.blips}`);
+  assert.ok(stability.passed, `levels ${steady.map((v) => v.toFixed(3))}; ran dry ${late} times (${explained} right after a measured source stall: ${measurements.sourceStalls.join(", ") || "none"} ms); blips ${stability.blips}`);
   assert.deepEqual(tab.problems.filter((p) => /Refused|Content Security Policy|worklet/i.test(p)), [], "nothing refused by the page's policy");
   stage = 4;
   await tap();
