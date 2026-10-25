@@ -25,11 +25,14 @@ export default function RemoteTyping({
   modifier = "meta",
   onRetarget,
   reconnectPaused = false,
+  onHeld,
 }: {
   // Tab or Esc can move the computer's focus: confirm the field again,
   // keeping the keyboard open.
   onRetarget?: () => void;
   reconnectPaused?: boolean;
+  // How many never-sent edits wait for a confirmed field (0 when none).
+  onHeld?: (count: number) => void;
   keyRow?: boolean;
   // The key row's sticky modifier: ⌘ on a Mac, ctrl on Windows.
   modifier?: "meta" | "control";
@@ -44,6 +47,9 @@ export default function RemoteTyping({
     valid = useRef(true);
   const beforeInput = useRef<(e: InputEvent) => void>(() => {});
   const queued = useRef<DesktopAction[]>([]);
+  const heldReport = useRef(onHeld);
+  heldReport.current = onHeld;
+  const reportHeld = () => heldReport.current?.(queued.current.length);
   const generation = useRef(0);
   const revision = useRef(target.editRevision);
   revision.current = target.editRevision;
@@ -77,6 +83,7 @@ export default function RemoteTyping({
       valid.current = false;
       shadow.current = "";
       queued.current = [];
+      reportHeld();
       element?.removeEventListener("beforeinput", handler);
     };
   }, [editorRef]);
@@ -100,6 +107,7 @@ export default function RemoteTyping({
     }
     if (queued.current.length >= 32) return fail(Error("Field confirmation took too long. Tap the field again."));
     queued.current.push(action);
+    reportHeld();
   };
   const dispatch = (action: DesktopAction) => {
     if (!valid.current) return;
@@ -126,6 +134,7 @@ export default function RemoteTyping({
     // Start the next diff from an empty draft without closing the keyboard.
     shadow.current = "";
     queued.current = [];
+    reportHeld();
     composing.current = false;
     deleting.current = false;
     setDraft("");
@@ -133,6 +142,7 @@ export default function RemoteTyping({
   useEffect(() => {
     if (target.pending || !target.focus) return;
     const actions = queued.current.splice(0);
+    reportHeld();
     for (const action of actions) dispatch(action);
   }, [target.pending, target.focus]);
   const key = (name: string, modifiers: string[] = []) => {

@@ -519,12 +519,49 @@ async function stressRun(t, kind) {
         await sleep(40);
       }
       const expected = start + " hello worLD café naïve ü – “ok” ’ 😀 ✓\n" + fast;
-      const got = await until(async () => ({ ok: rec.text() === expected, now: rec.text() }), 15000);
-      if (!got?.ok) problem(name, "typed text differs from what reached the Mac", { expected: expected.slice(start.length), got: got?.now.slice(start.length), phone: await status() });
+      let got = await until(async () => ({ ok: rec.text() === expected, now: rec.text() }), 15000);
       let log = await trace();
+      const closes = log.filter((e) => e.dir === "close");
+      let reconnect;
+      if (!got?.ok && closes.length) {
+        // Controls reconnected mid-typing (a CI page stall can do it): by
+        // design the edit in flight is never sent again and later typing
+        // waits on the phone. Check that recovery instead: the pause is
+        // shown, Send delivers what waited once, and at most that one
+        // unconfirmed edit is missing; nothing is doubled or reordered.
+        reconnect = { closes, before: got?.now.slice(start.length) };
+        const paused = await page.see(() => /Typing paused/.test(document.body.innerText), "typing paused after the reconnect", 10000).then(() => true, () => false);
+        const press = async (label) => {
+          const b = await page.evaluate(`(() => { const b = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          if (!b) return false;
+          await touchDown(b.x, b.y);
+          await sleep(80);
+          await touchUp();
+          return true;
+        };
+        if (!paused) problem(name, "controls reconnected mid-typing but typing wasn't paused", { ...reconnect, phone: await status() });
+        else if (!(await page.see(() => [...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Send waiting typing to current field" && !b.disabled), "Send enabled", 15000).then(() => press("Send waiting typing to current field"), () => false)))
+          problem(name, "couldn't send the typing that waited after the reconnect", { ...reconnect, phone: await status() });
+        const want = expected.slice(start.length);
+        // `have` is `want` with one contiguous piece of at most 8 characters
+        // removed (the one edit whose delivery was unknown), or all of it.
+        const atMostOneMissing = (have) => {
+          if (have === want) return true;
+          if (have.length >= want.length || want.length - have.length > 8) return false;
+          let i = 0;
+          while (i < have.length && have[i] === want[i]) i++;
+          return want.slice(i + want.length - have.length) === have.slice(i);
+        };
+        got = await until(async () => ({ ok: atMostOneMissing(rec.text().slice(start.length)), now: rec.text() }), 15000);
+        reconnect.after = got?.now.slice(start.length);
+        if (!got?.ok) problem(name, "after the reconnect, waiting typing didn't arrive exactly once", { expected: want, ...reconnect, phone: await status() });
+        // Whatever happened, the next scenario starts from fresh typing.
+        if (await page.evaluate(`/Typing paused/.test(document.body.innerText)`)) await press("Discard waiting typing");
+        log = [...log, ...(await trace())];
+      } else if (!got?.ok) problem(name, "typed text differs from what reached the Mac", { expected: expected.slice(start.length), got: got?.now.slice(start.length), phone: await status() });
       const drops = log.filter((e) => e.dir === "in" && e.m?.type === "ack" && e.m.ok === false);
       if (drops.length) problem(name, "actions turned down while typing", { errors: [...new Set(drops.map((d) => d.m.error))], n: drops.length });
-      await recordScenario({ name, ok: !!got?.ok, acks: ackStats(log), closes: log.filter((e) => e.dir === "close") });
+      await recordScenario({ name, ok: !!got?.ok, acks: ackStats(log), closes, ...(reconnect && { reconnect }) });
     }
 
     // 5b. A burst: 40 letters as fast as the page takes them (a held key,

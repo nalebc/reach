@@ -204,6 +204,17 @@ export default function Screen({
   const typingEditor = useRef<HTMLInputElement | HTMLTextAreaElement | null>(
     null,
   );
+  // Never-sent edits the open keyboard holds for a confirmed field.
+  const held = useRef(0);
+  const [heldTyping, setHeldTyping] = useState(0);
+  const onHeld = useCallback((count: number) => {
+    held.current = count;
+    setHeldTyping(count);
+  }, []);
+  // Paused after a reconnect with typing still waiting: taps leave it alone
+  // until it is sent or discarded. With nothing waiting there is nothing to
+  // protect, so the next tap starts over like any other (its own field check).
+  const keepsWaiting = () => !!typingRef.current?.confirmAfterReconnect && held.current > 0;
   const clearTyping = () => {
     typingEpoch.current++;
     setTypingTarget(null);
@@ -212,7 +223,7 @@ export default function Screen({
     // A new gesture makes an earlier click's focus reply obsolete, even
     // before finger-up. Keep a confirmed keyboard available for scrolling.
     typingCheck.current++;
-    if (typingRef.current?.pending && !typingRef.current.confirmAfterReconnect) clearTyping();
+    if (typingRef.current?.pending && !keepsWaiting()) clearTyping();
   };
   const viewer = useRef<HTMLElement>(null),
     mounted = useRef(true);
@@ -346,7 +357,7 @@ export default function Screen({
   // Control is on and its connection is coming back: a tap waits a moment.
   const tapWaits = control && !input.ready && live && visible && stream.ready;
   const detectTyping = async (point: { x: number; y: number }) => {
-    if (typingRef.current?.confirmAfterReconnect) return;
+    if (keepsWaiting()) return;
     if (!input.typing) return;
     const epoch = typingEpoch.current;
     const check = ++typingCheck.current;
@@ -679,7 +690,7 @@ export default function Screen({
   // A tap on a text field opens the keyboard within that tap, no Type button:
   // the Mac said on touch-down that a field is there.
   const typeInField = (point: { x: number; y: number }, secure: boolean) => {
-    if (typingRef.current?.confirmAfterReconnect) return;
+    if (keepsWaiting()) return;
     flushSync(() => {
       typingEpoch.current++;
       setPanel(null);
@@ -1047,7 +1058,7 @@ export default function Screen({
               // Keep a confirmed editor for a repeat; every edit still
               // carries its native focus guard.
               const current = typingRef.current;
-              if (current?.confirmAfterReconnect) return true;
+              if (keepsWaiting()) return true;
               if (repeat && current?.focus && !current.pending) {
                 flushSync(() => setTypingTarget({
                   ...current,
@@ -1093,6 +1104,7 @@ export default function Screen({
                 onError={setError}
                 onRetarget={retarget}
                 reconnectPaused={typingTarget.confirmAfterReconnect}
+                onHeld={onHeld}
               />
             ) : (
               <RemoteTyping
@@ -1100,6 +1112,7 @@ export default function Screen({
                 target={typingTarget}
                 onRetarget={retarget}
                 reconnectPaused={typingTarget.confirmAfterReconnect}
+                onHeld={onHeld}
                 keyRow={mobile}
                 modifier={device.platform === "darwin" ? "meta" : "control"}
                 editorRef={typingEditor}
@@ -1145,6 +1158,18 @@ export default function Screen({
                 >
                   Send waiting typing to current field
                 </button>
+                {heldTyping > 0 && (
+                  <button
+                    type="button"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      clearTyping();
+                      setFeedback("Waiting typing discarded · tap a field to type");
+                    }}
+                  >
+                    Discard waiting typing
+                  </button>
+                )}
               </span>
             )}
             {/* One line at a time over the bar: the pill steps back while
