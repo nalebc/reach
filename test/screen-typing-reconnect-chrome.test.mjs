@@ -404,6 +404,19 @@ export function useRemoteScreen(peer, enabled, live, display) {
     holdTyping = false;
     const next = connections.at(-1);
     await until(() => tab.evaluate(`!!${button("Discard waiting typing")}`), "Discard for waiting typing");
+    // The pause and its choices are on screen while the phone keyboard and
+    // its key row are up, not only in the DOM (the dock is hidden then).
+    const shown = (label) => `(() => { const b = ${button(label)}; if (!b) return false; const r = b.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest("button") === b; })()`;
+    const visibility = await tab.evaluate(`({ send: ${shown("Send waiting typing to current field")}, discard: ${shown("Discard waiting typing")},
+      keys: !!document.querySelector(".typing-keys"), classes: document.querySelector(".simple-screen")?.className,
+      covered: [...document.querySelectorAll(".typing-keys button")].filter((k) => { const r = k.getBoundingClientRect();
+        return document.elementFromPoint(r.x + r.width / 2, r.y + 4)?.closest("button") !== k; }).map((k) => k.textContent) })`);
+    outcomes.push({ boundary: "paused-typing-visible", visibility });
+    assert.equal(visibility.send, true, `Send is on screen: ${JSON.stringify(visibility)}`);
+    assert.equal(visibility.discard, true, `Discard is on screen: ${JSON.stringify(visibility)}`);
+    assert.equal(visibility.keys, true, "the key row is up");
+    assert.deepEqual(visibility.covered, [], "the pause covers none of the key row's keys");
     const held = await tapSurface("reconnect-waiting-tap");
     await pause(600);
     held.focusQueries = focusQueries(next);

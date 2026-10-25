@@ -951,7 +951,7 @@ export default function Screen({
             } as React.CSSProperties
           }
           data-chrome={chrome?.placement}
-          className={`panel screen-viewer remote-viewer simple-screen ${expanded ? "screen-expanded" : ""} ${typing ? "screen-typing" : ""} ${fullscreen ? "screen-immersive" : ""} ${chromeShown ? "" : "chrome-hidden"} ${stream.ready && stream.width ? "" : "screen-waiting"}`}
+          className={`panel screen-viewer remote-viewer simple-screen ${expanded ? "screen-expanded" : ""} ${typing ? "screen-typing" : ""} ${typingTarget?.confirmAfterReconnect ? "screen-typing-paused" : ""} ${fullscreen ? "screen-immersive" : ""} ${chromeShown ? "" : "chrome-hidden"} ${stream.ready && stream.width ? "" : "screen-waiting"}`}
         >
           <div className="screen-toolbar simple-screen-toolbar">
             <span className="screen-state" role="status">
@@ -1148,26 +1148,28 @@ export default function Screen({
               </span>
             )}
             {typingTarget?.confirmAfterReconnect && (
-              <span className="screen-agents-wait" role="status" data-immersive-keep>
+              <span className="screen-agents-wait screen-typing-pause" role="status" data-immersive-keep>
                 <span>Typing paused · check what reached the computer</span>
                 <button
                   type="button"
+                  aria-label="Send waiting typing to current field"
                   disabled={!usable}
                   onPointerDown={(event) => event.preventDefault()}
                   onClick={() => void rejoinTyping(true)}
                 >
-                  Send waiting typing to current field
+                  Send
                 </button>
                 {heldTyping > 0 && (
                   <button
                     type="button"
                     onPointerDown={(event) => event.preventDefault()}
+                    aria-label="Discard waiting typing"
                     onClick={() => {
                       clearTyping();
                       setFeedback("Waiting typing discarded · tap a field to type");
                     }}
                   >
-                    Discard waiting typing
+                    Discard
                   </button>
                 )}
               </span>
