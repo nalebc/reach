@@ -184,7 +184,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<Fixture/>));
       const hero = document.querySelector('.home-hero').getBoundingClientRect();
       const nav = document.querySelector('.mobile-nav').getBoundingClientRect();
       const shortcuts = document.querySelector('.home-pinned').getBoundingClientRect();
-      return { width: innerWidth, scroll: document.documentElement.scrollWidth, hero: hero.toJSON(), shortcuts: shortcuts.toJSON(), nav: nav.toJSON(), mascot: !!document.querySelector('.home-scene .courier-actor'), target: document.querySelector('.home-screen-open').getBoundingClientRect().height };
+      return { width: innerWidth, scroll: document.documentElement.scrollWidth, hero: hero.toJSON(), shortcuts: shortcuts.toJSON(), nav: nav.toJSON(), scene: document.querySelector(".home-scene > svg").getAttribute("viewBox"), name: document.querySelector(".home-hero-text h1")?.textContent, shortcutWidth: document.querySelector(".shortcut-open").getBoundingClientRect().width, mascot: !!document.querySelector('.home-scene .courier-actor'), target: document.querySelector('.home-screen-open').getBoundingClientRect().height };
     })()`);
       results.push(result);
       const shot = await tab.send("Page.captureScreenshot", {
@@ -196,7 +196,9 @@ flushSync(() => createRoot(document.getElementById("root")).render(<Fixture/>));
         Buffer.from(shot.data, "base64"),
       );
       assert.ok(result.scroll <= width, `no overflow at ${width}`);
-      assert.ok(result.hero.height <= 330, `compact card at ${width}`);
+      assert.equal(result.scene, "0 -40 400 275", "original laptop and mascot framing");
+      assert.equal(result.name, "My MacBook Pro");
+      assert.ok(result.shortcutWidth >= result.shortcuts.width - 1, "a lone shortcut uses the available width");
       assert.ok(result.mascot, "Reach mascot stays in the scene");
       assert.ok(result.target >= 44, "screen action has a touch target");
       assert.ok(

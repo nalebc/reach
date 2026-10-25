@@ -183,7 +183,7 @@ export function PinnedTools({
         </div>
       ) : shown.length ? (
         <div className="shortcut-grid">
-          {shown.map(({ id, label, icon: Icon }) => (
+          {shown.map(({ id, label, description, icon: Icon }) => (
             <button
               key={id}
               className="shortcut-open"
@@ -191,6 +191,7 @@ export function PinnedTools({
             >
               <Icon size={22} aria-hidden="true" />
               <span>{label}</span>
+              <small>{description}</small>
               <ArrowUpRight size={15} aria-hidden="true" />
             </button>
           ))}

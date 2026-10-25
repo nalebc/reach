@@ -288,15 +288,6 @@ export default function HomeLive({
             toast={toast}
           />
         )}
-        <span className="home-preview-state">
-          {paused
-            ? "Paused"
-            : live && !heroPill
-              ? "Live preview"
-              : device.sameComputer
-                ? "Viewing this computer"
-                : ""}
-        </span>
         <button
           className="home-hero-scene"
           aria-label={
@@ -318,11 +309,18 @@ export default function HomeLive({
           )}
           <ReachScene
             mode="computer"
-            compact
             companion
             liveScreen={live}
             className="home-scene"
           />
+          <span className="home-screen-open">
+            {features.screen
+              ? "Open screen"
+              : features.screenSetup
+                ? "Set up screen"
+                : "Screen unavailable"}
+            <ChevronRight size={17} aria-hidden="true" />
+          </span>
         </button>
         {heroPill && (
           // The last picture stays, dimmed; this says why. Tap: try again.
@@ -335,23 +333,17 @@ export default function HomeLive({
             {heroPill}
           </button>
         )}
-        <div className="home-hero-footer">
-          <button
-            className="home-screen-open"
-            disabled={!features.screen && !features.screenSetup}
-            onClick={() => navigate(features.screen ? "screen" : "settings")}
-          >
-            {features.screen
-              ? "Open screen"
-              : features.screenSetup
-                ? "Set up screen"
-                : "Screen unavailable"}
-            <ChevronRight size={17} aria-hidden="true" />
-          </button>
+        <div className="home-hero-text">
+          <h1>{device.name}</h1>
           <details className="home-connection">
             <summary aria-label={`Connection details: ${connectionStatus}`}>
               <i className={`status-dot ${online ? "" : "off"}`} />
               {connectionStatus}
+              {(paused || (live && !heroPill)) && (
+                <span className="home-preview-state">
+                  · {paused ? "Paused" : "Live preview"}
+                </span>
+              )}
             </summary>
             <div className="home-connection-info">
               <p>

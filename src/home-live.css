@@ -9,7 +9,8 @@
 }
 .home-hero {
   position: relative;
-  padding: 12px 14px 14px;
+  padding: 14px 14px 18px;
+  text-align: center;
   border: 1px solid #b5e9dc20;
   border-radius: 24px;
   background:
@@ -19,8 +20,8 @@
   position: relative;
   display: block;
   width: 100%;
-  max-width: 360px;
-  aspect-ratio: 360 / 236;
+  max-width: 420px;
+  aspect-ratio: 400 / 275;
   margin: 0 auto;
   padding: 0;
   border: 0;
@@ -32,14 +33,14 @@
   inset: 0;
   z-index: 1;
 }
-/* The original laptop's display, in the tighter 20 -16 360 236 framing. */
+/* The original 400 × 275 scene; overscan keeps the live display behind its bezel. */
 .home-peek {
   position: absolute;
   z-index: 0;
-  left: 31.95%;
-  top: 26.2%;
-  width: 43.8%;
-  height: 40.4%;
+  left: 33.7%;
+  top: 31.2%;
+  width: 39.4%;
+  height: 34.8%;
   object-fit: cover;
   background: #101b18;
   opacity: 0;
@@ -51,15 +52,6 @@
 .home-peek.is-live.is-held {
   opacity: 0.45;
   filter: grayscale(0.6);
-}
-.home-preview-state {
-  position: absolute;
-  z-index: 2;
-  top: 18px;
-  right: 16px;
-  color: var(--muted);
-  font-size: 12px;
-  pointer-events: none;
 }
 .home-hero-status {
   display: block;
@@ -76,31 +68,37 @@
   font-size: 13px;
   cursor: pointer;
 }
-.home-hero-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+.home-live .home-hero-text h1 {
+  margin: 10px 0 2px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
 .home-screen-open {
+  position: absolute;
+  z-index: 2;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   min-height: 44px;
-  padding: 10px 16px;
+  padding: 4px 12px;
   border: 0;
   border-radius: 999px;
   background: #b9efd414;
   color: var(--lime);
   font: inherit;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
 }
-.home-screen-open:active {
+.home-hero-scene:active .home-screen-open {
   background: #b9efd42b;
 }
-.home-screen-open:disabled,
 .home-hero-scene:disabled {
   cursor: default;
   opacity: 0.65;
@@ -112,12 +110,12 @@
 .home-connection summary {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 7px;
   min-height: 44px;
   padding: 8px 2px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
   list-style: none;
 }
@@ -134,7 +132,8 @@
 .home-connection-info {
   position: absolute;
   z-index: 4;
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   bottom: calc(100% + 8px);
   width: min(270px, calc(100vw - 76px));
   padding: 14px;
@@ -145,6 +144,7 @@
   color: var(--text);
   font-size: 13px;
   line-height: 1.5;
+  text-align: left;
 }
 .home-connection p {
   margin: 0 0 8px;
