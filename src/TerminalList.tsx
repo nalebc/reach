@@ -177,7 +177,8 @@ export default function TerminalList({
           )}
         </div>
       )}
-      {onStart && hint && (
+      {/* Said once: with nothing open, the empty note below says it. */}
+      {onStart && hint && (shells.length > 0 || (showMac && macTabs.length > 0)) && (
         <button className="terminal-hint" onClick={hintSeen}>
           Tap one to open a terminal on your {computerWord(peer.platform)}. It
           keeps running when you leave.
@@ -262,7 +263,7 @@ export default function TerminalList({
       {nothing && (
         <p className="terminal-list-note center">
           {onStart
-            ? "Nothing open yet. Start one above; it keeps running when you leave."
+            ? `Nothing open yet. Start one above; it keeps running on your ${computerWord(peer.platform)}.`
             : "Nothing open yet."}
         </p>
       )}
