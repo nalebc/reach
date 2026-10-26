@@ -54,7 +54,7 @@ export default function ComputerMenu({
                 {connections[peer.id]?.state === "connected"
                   ? "Online"
                   : "Offline"}{" "}
-                · {platform(peer.platform || "")} · {connectionName(peer.url)}
+                · {platform(peer.platform || "")} · {connectionName(peer)}
               </small>
             </span>
             {peer.id === active && <Check size={18} aria-hidden="true" />}

@@ -652,10 +652,11 @@ test("Settings setup labels the missing prerequisite and preserves mounted work 
     const draft = view.container.querySelector("textarea");
     await typeInto(draft, "Keep this unsent work exactly");
     const unsent = draft.value;
-    assert.match(view.container.textContent, /Setup needed/);
+    // The row: a noun and a short status.
+    const row = [...view.container.querySelectorAll("button.gs-row")].find(value => value.querySelector(".gs-label")?.textContent === "Fallback");
+    assert.equal(row?.querySelector(".gs-value")?.textContent, "Set up");
     assert.match(view.container.textContent, /Turn Tailscale back on/);
-    const button = [...view.container.querySelectorAll("button")].find(value => value.textContent.includes("Set up fallback"));
-    button.click();
+    row.click();
     await f.dom.waitFor(() => view.container.querySelector('a[href^="https://login.tailscale.com/"]'));
     f.running();
     await f.dom.waitFor(() => view.container.querySelector(".approval-code"));
@@ -669,7 +670,13 @@ test("Settings setup labels the missing prerequisite and preserves mounted work 
     assert.equal(draft.value, unsent);
     assert.equal(f.transport.privateWay(), "native");
     assert.equal(localStorage.getItem("reach.devices"), f.nativeBytes);
-    assert.match(view.container.textContent, /Keep open/);
+    assert.equal(row.querySelector(".gs-value").textContent, "Keep open");
+    // Settings opened again later: what's saved for this computer reads Ready,
+    // not a vague "Check".
+    const again = await f.dom.render(f.dom.React.createElement(FallbackSetup, { peer, device }));
+    const fresh = [...again.container.querySelectorAll("button.gs-row")].find(value => value.querySelector(".gs-label")?.textContent === "Fallback");
+    assert.equal(fresh.querySelector(".gs-value").textContent, "Ready");
+    await again.unmount();
     assert.deepEqual(f.dom.errors, []);
   } finally { await view?.unmount(); await f.close(); }
 });

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
 // First-time hints on the Terminal tab: a note on how to start a terminal,
-// and a hand showing the swipe between terminals. Each shows once.
+// and a hand showing the swipe between terminals. Each shows once. With
+// nothing open the empty note already says it, so the note waits.
 const peer = {
   id: "mac",
   name: "Mac",
@@ -18,6 +19,8 @@ const tab = (id) => ({
   tty: `/dev/ttys${id.length}`,
 });
 let tabs = [];
+// Holds the computer's answer to "which windows are open", when set.
+let hold = null;
 let dom, React, TerminalView;
 before(async () => {
   dom = await startDom({
@@ -27,7 +30,10 @@ before(async () => {
       "@xterm/addon-fit": "test/dom/fakes/xterm.mjs",
     },
     routes: {
-      "/api/terminals/desktop": () => ({ sessions: tabs, providers: [] }),
+      "/api/terminals/desktop": async () => {
+        if (hold) await hold;
+        return { sessions: tabs, providers: [] };
+      },
       "/api/terminals/agents": () => ({ agents: ["codex"] }),
       "/api/terminals": () => ({
         id: "s1",
@@ -49,11 +55,11 @@ before(async () => {
 after(async () => dom?.close());
 beforeEach(() => dom.window.localStorage.clear());
 
-const page = (source = "mac", on = peer) =>
+const page = (source = "mac", on = peer, sessions = []) =>
   React.createElement(TerminalView, {
     desktopTerminals: on.platform === "darwin",
     peer: on,
-    sessions: [],
+    sessions,
     selected: "",
     onSelect() {},
     onNew() {},
@@ -72,8 +78,43 @@ const touch = (element) => {
   element.dispatchEvent(event);
 };
 
-test("the first visit explains the start row; tapping the note or starting hides it for good", async () => {
+test("with nothing open, only the empty note says how to start, said once", async () => {
   tabs = [];
+  const view = await dom.render(page());
+  const note = await dom.waitFor(() =>
+    view.container.querySelector(".terminal-list-note.center"),
+  );
+  assert.equal(
+    note.textContent,
+    "Nothing open yet. Start one above; it keeps running on your Mac.",
+  );
+  assert.equal(view.container.querySelector(".terminal-hint"), null);
+  // The start button still glows the first time.
+  assert.ok(view.container.querySelector(".terminal-quick button.hinted"));
+  await view.unmount();
+});
+
+test("while the computer's windows are still being looked for, no note comes and goes", async () => {
+  tabs = [];
+  let release;
+  hold = new Promise((resolve) => (release = resolve));
+  const view = await dom.render(page("mac", { ...peer, id: "mac-unlisted" }));
+  await settle(30);
+  // Before the list answers: no note to take back once the list turns out
+  // empty.
+  assert.match(view.container.textContent, /Looking for Terminal and iTerm2 windows/);
+  assert.equal(view.container.querySelector(".terminal-hint"), null);
+  release();
+  hold = null;
+  await dom.waitFor(() =>
+    view.container.querySelector(".terminal-list-note.center"),
+  );
+  assert.equal(view.container.querySelector(".terminal-hint"), null);
+  await view.unmount();
+});
+
+test("the first visit explains the start row; tapping the note or starting hides it for good", async () => {
+  tabs = [tab("a")];
   let view = await dom.render(page());
   let hint = await dom.waitFor(() =>
     view.container.querySelector(".terminal-hint"),
@@ -157,11 +198,29 @@ test("the swipe hand shows once, only with another terminal to go to", async () 
   assert.deepEqual(dom.errors, []);
 });
 
-test("on a Windows computer the note says Windows PC, not Mac", async () => {
+test("on a Windows computer the notes say Windows PC, not Mac", async () => {
   tabs = [];
-  const view = await dom.render(
-    page("reach", { ...peer, id: "pc", platform: "win32" }),
+  const pc = { ...peer, id: "pc", platform: "win32" };
+  let view = await dom.render(page("reach", pc));
+  const note = await dom.waitFor(() =>
+    view.container.querySelector(".terminal-list-note.center"),
   );
+  assert.equal(
+    note.textContent,
+    "Nothing open yet. Start one above; it keeps running on your Windows PC.",
+  );
+  assert.equal(view.container.querySelector(".terminal-hint"), null);
+  await view.unmount();
+  // A shell already running from the phone: the list has rows, so the note
+  // shows instead.
+  const shell = {
+    id: "s1",
+    name: "Terminal 1",
+    cwd: "C:\\Users\\n",
+    status: "running",
+    createdAt: "",
+  };
+  view = await dom.render(page("reach", pc, [shell]));
   const hint = await dom.waitFor(() =>
     view.container.querySelector(".terminal-hint"),
   );

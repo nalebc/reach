@@ -87,50 +87,47 @@ for (const [platform, keys] of [
   });
 }
 
-// Landscape fullscreen uses the whole usable viewport; controls float.
-// Portrait keeps the controls outside the desktop image.
+// Fullscreen uses the whole usable viewport, upright or on its side, as a
+// video does; the controls float over it (the owner's choice, Oct 25).
 const MAC = 2940 / 1912;
 const phones = [
   ["iPhone 17 Pro Max on its side", 956, 440, { top: 0, right: 62, bottom: 21, left: 62 }, MAC, "overlay"],
-  ["iPhone 17 Pro Max upright", 440, 956, { top: 62, right: 0, bottom: 34, left: 0 }, MAC, "ends"],
+  ["iPhone 17 Pro Max upright", 440, 956, { top: 62, right: 0, bottom: 34, left: 0 }, MAC, "overlay"],
   ["iPhone 16 on its side", 852, 393, { top: 0, right: 59, bottom: 21, left: 59 }, MAC, "overlay"],
   ["iPhone SE on its side", 667, 375, { top: 0, right: 0, bottom: 0, left: 0 }, 1.6, "overlay"],
-  ["iPhone SE upright", 375, 667, { top: 20, right: 0, bottom: 0, left: 0 }, 1.6, "ends"],
+  ["iPhone SE upright", 375, 667, { top: 20, right: 0, bottom: 0, left: 0 }, 1.6, "overlay"],
   ["iPad on its side", 1180, 820, { top: 24, right: 0, bottom: 20, left: 0 }, 1.6, "overlay"],
   ["Android on its side", 915, 412, { top: 0, right: 0, bottom: 24, left: 30 }, 1920 / 1080, "overlay"],
-  ["Android upright", 412, 915, { top: 24, right: 0, bottom: 24, left: 0 }, 1920 / 1080, "ends"],
+  ["Android upright", 412, 915, { top: 24, right: 0, bottom: 24, left: 0 }, 1920 / 1080, "overlay"],
   ["an ultrawide display on a phone on its side", 956, 440, { top: 0, right: 62, bottom: 21, left: 62 }, 3440 / 1440, "overlay"],
   ["a portrait Windows display on a phone on its side", 956, 440, { top: 0, right: 62, bottom: 21, left: 62 }, 1080 / 1920, "overlay"],
 ];
-test("landscape fullscreen reserves no sidebar or control rows; portrait keeps the image clear", async () => {
-  const { chromeLayout, overlaps } = await dom.load("/src/screen-chrome.ts");
-  for (const [name, width, height, insets, aspect, placement] of phones) {
+test("fullscreen reserves no sidebar or control rows, upright or on its side", async () => {
+  const { chromeLayout } = await dom.load("/src/screen-chrome.ts");
+  for (const [name, width, height, insets, aspect] of phones) {
     const layout = chromeLayout(width, height, aspect, insets);
-    assert.equal(layout.placement, placement, name);
+    assert.equal(layout.placement, "overlay", name);
     const { picture, stage } = layout;
-    if (placement === "overlay") {
-      assert.deepEqual(stage, { x: insets.left, y: insets.top,
-        w: width - insets.left - insets.right, h: height - insets.top - insets.bottom }, name);
-      assert.deepEqual(layout.chrome, [], `${name}: controls reserve no viewport space`);
-    } else {
-      for (const chrome of layout.chrome) {
-        assert.ok(!overlaps(picture, chrome), `${name}: the picture is clear`);
-        assert.ok(!overlaps(stage, chrome), `${name}: zoomed in, still clear`);
-      }
-      assert.equal(layout.chrome[0].y, 0, `${name}: status on top`);
-      assert.equal(layout.chrome[1].y + layout.chrome[1].h, height, `${name}: the bar below`);
-    }
-    assert.ok(picture.x >= insets.left - 0.5 && picture.y >= insets.top - 0.5, name);
-    assert.ok(picture.x + picture.w <= width - insets.right + 0.5 && picture.y + picture.h <= height - insets.bottom + 0.5, name);
+    // On its side the picture runs top to bottom, under the home bar as a
+    // video does; upright it keeps clear of the notch and the home bar.
+    const side = width > height;
+    const top = side ? 0 : insets.top, bottom = side ? 0 : insets.bottom;
+    assert.deepEqual(stage, { x: insets.left, y: top,
+      w: width - insets.left - insets.right, h: height - top - bottom }, name);
+    // As big as the screen allows: one side touches the safe area's edges.
+    assert.ok(Math.abs(picture.w - stage.w) < 0.5 || Math.abs(picture.h - stage.h) < 0.5, `${name}: as big as it fits`);
+    // Centred on black, nothing kept above or below for the controls.
+    assert.ok(Math.abs(picture.y - stage.y - (stage.h - picture.h) / 2) < 0.5, `${name}: centred`);
+    assert.ok(picture.x >= insets.left - 0.5 && picture.y >= top - 0.5, name);
+    assert.ok(picture.x + picture.w <= width - insets.right + 0.5 && picture.y + picture.h <= height - bottom + 0.5, name);
     assert.ok(Math.abs(picture.w / picture.h - aspect) < 0.01, name);
   }
 });
 
-test("landscape fullscreen keeps taps accurate across Mac and Windows image shapes and phone safe areas", async () => {
+test("fullscreen keeps taps accurate across Mac and Windows image shapes, phone safe areas and both orientations", async () => {
   const { chromeLayout } = await dom.load("/src/screen-chrome.ts");
   const { screenPoint } = await dom.load("/src/screen-pointer.ts");
   for (const [name, width, height, insets] of phones) {
-    if (width <= height) continue;
     for (const [frameW, frameH] of [[1470, 956], [1920, 1080], [1080, 1920], [3440, 1440]]) {
       const { picture, stage } = chromeLayout(width, height, frameW / frameH, insets);
       assert.equal(stage.w, width - insets.left - insets.right);
@@ -144,7 +141,7 @@ test("landscape fullscreen keeps taps accurate across Mac and Windows image shap
   }
 });
 
-for (const platform of ["darwin", "win32"]) test(`${platform}: fullscreen switches between floating landscape controls and portrait rows`, async () => {
+for (const platform of ["darwin", "win32"]) test(`${platform}: fullscreen floats its controls on its side and upright alike`, async () => {
   const size = (width, height) => {
     Object.defineProperty(dom.window, "innerWidth", { value: width, configurable: true });
     Object.defineProperty(dom.window, "innerHeight", { value: height, configurable: true });
@@ -164,8 +161,10 @@ for (const platform of ["darwin", "win32"]) test(`${platform}: fullscreen switch
   size(844, 390);
   await settle(30);
   assert.equal(viewer.dataset.chrome, "overlay");
+  // Upright, the same: the picture alone, the controls floating over it.
   size(440, 956);
-  await dom.waitFor(() => $('.screen-immersive[data-chrome="ends"]'));
+  await settle(30);
+  assert.equal(viewer.dataset.chrome, "overlay");
   assert.equal(viewer.querySelector(".fake-desktop"), canvas);
   size(956, 440);
   await dom.waitFor(() => $('.screen-immersive[data-chrome="overlay"]'));
@@ -184,12 +183,11 @@ for (const platform of ["darwin", "win32"]) test(`${platform}: fullscreen switch
   assert.deepEqual(dom.errors, []);
 });
 
-test("the fullscreen stylesheet floats horizontal landscape controls and lets touches through after fading", () => {
+test("the fullscreen stylesheet floats its controls and lets touches through after fading", () => {
   const css = fs.readFileSync(new URL("../src/screen-chrome.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /data-chrome="ends"/, "no rows kept for the controls upright");
   for (const bar of ["simple-screen-toolbar", "simple-screen-dock.screen-bar-dock"]) {
     const selector = bar.replaceAll(".", "\\.");
-    const ends = new RegExp(`\\[data-chrome="ends"\\]:not\\(\\.screen-typing\\)\\s*>\\s*\\.${selector} \\{([^}]*)\\}`);
-    assert.match(ends.exec(css)?.[1] || "", /position: relative;/);
     const overlay = new RegExp(`\\[data-chrome="overlay"\\]:not\\(\\.screen-typing\\)\\s*>\\s*\\.${selector} \\{([^}]*)\\}`);
     assert.match(overlay.exec(css)?.[1] || "", /position: absolute;/);
   }

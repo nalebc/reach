@@ -978,3 +978,23 @@
   font-size: 12.5px;
   font-weight: 400;
 }
+
+/* The Invite pill (InviteButton in invite-menu.tsx): one look wherever the
+   owner invites, Home's Access card and Agents & people's header. */
+.invite-pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* A finger's worth: 44 px, as Apple and Google ask of a tap target. */
+  height: 44px;
+  padding: 0 16px 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: #ededed;
+  color: #111;
+  font: 600 14px system-ui, sans-serif;
+}
+.invite-pill:active {
+  background: #fff;
+}

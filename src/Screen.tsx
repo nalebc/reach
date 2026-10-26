@@ -527,15 +527,16 @@ export default function Screen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input.ready, typingTarget?.rejoin]);
   const typing = !!typingTarget && typingAllowed && !panel;
-  const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
+  const { fullscreen, expanded, mobile, landscape, nativeOffer, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
-  // Landscape fills the viewport with floating controls. Portrait keeps
-  // the controls outside the picture; typing uses the keyboard's layout.
+  // Fullscreen fills the viewport with floating controls, upright or on
+  // its side; typing uses the keyboard's layout.
   if (stream.width > 0 && stream.height > 0)
     aspect.current = stream.width / stream.height;
   const chrome = useScreenChrome(viewer, fullscreen && !typing, aspect.current);
-  // Turning a phone back closes its automatic fullscreen.
-  const turnToLeave = chrome?.placement === "overlay" && landscape;
+  // Turning a phone back closes its automatic fullscreen. Android can
+  // still hide its browser's bars with a tap, so the button stays there.
+  const turnToLeave = chrome?.placement === "overlay" && landscape && !nativeOffer;
   // Fullscreen hides the bars until the screen is touched; they stay while
   // something needs attention.
   const chromeShown = useImmersiveChrome(
@@ -1278,11 +1279,11 @@ export default function Screen({
               )}
               {!turnToLeave && (
                 <button
-                  aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                  aria-pressed={fullscreen}
+                  aria-label={fullscreen && !nativeOffer ? "Exit fullscreen" : "Enter fullscreen"}
+                  aria-pressed={fullscreen && !nativeOffer}
                   onClick={() => void toggleFullscreen()}
                 >
-                  {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+                  {fullscreen && !nativeOffer ? <Minimize size={18} /> : <Maximize size={18} />}
                 </button>
               )}
               <button

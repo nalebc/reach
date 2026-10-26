@@ -13,6 +13,7 @@ before(async () => {
   dom = await startDom({
     mobile: true,
     routes: {
+      "/api/health": () => ({ product: "Reach", version: "0.1.0" }),
       "/api/reach/update": (init) => {
         if (init?.method === "POST") {
           const body = JSON.parse(init.body || "{}");
@@ -74,6 +75,27 @@ test("not the owner, a checkout, or up to date: the interface row as it was", as
   view = await dom.render(React.createElement(InterfaceUpdates, { peer, owner: false }));
   await settle();
   assert.doesNotMatch(value(), /Update to/, "a guest never sees it");
+  await view.unmount();
+});
+
+test("which Reach it is: the version under its name, up to date or not, for anyone", async () => {
+  const version = () => dom.document.querySelector(".interface-updates .reach-version")?.textContent;
+  for (const state of ["current", "source"]) {
+    mac = { version: "0.1.0", state };
+    const view = await dom.render(React.createElement(InterfaceUpdates, { peer, owner: true }));
+    await settle();
+    assert.equal(version(), "Version 0.1.0", `the owner sees it when ${state}`);
+    await view.unmount();
+  }
+  mac = { version: "0.1.0", state: "available", to: "0.2.0" };
+  let view = await dom.render(React.createElement(InterfaceUpdates, { peer, owner: true }));
+  await settle();
+  assert.equal(version(), "Version 0.1.0", "the one it runs, beside the update");
+  assert.equal(value(), "Update to 0.2.0");
+  await view.unmount();
+  view = await dom.render(React.createElement(InterfaceUpdates, { peer, owner: false }));
+  await settle();
+  assert.equal(version(), "Version 0.1.0", "someone else reads it from /api/health");
   await view.unmount();
 });
 

@@ -66,8 +66,12 @@ export default function FallbackSetup({ peer, device }: { peer: Peer; device: De
   return <>
     <button className="gs-row" onClick={() => setOpen(true)}>
       <ShieldCheck size={21} />
-      <span className="gs-label">Set up fallback</span>
-      <span className="gs-value">{fallbackSetupNeeded(peer) ? "Setup needed" : state.phase === "ready" ? state.cold === "ready" ? "Ready" : "Keep open" : "Check"}</span>
+      {/* A noun and a short status, like the Connection row above it: what
+          it is, then where it stands. The sheet does the setting up. */}
+      <span className="gs-label">Fallback</span>
+      {/* Saved for this computer (from today or an earlier visit) reads Ready;
+          only a setup that didn't finish saving says otherwise. */}
+      <span className="gs-value">{fallbackSetupNeeded(peer) ? "Set up" : state.phase === "error" ? "Check" : state.phase === "ready" && state.cold !== "ready" ? "Keep open" : "Ready"}</span>
       <ChevronRight className="gs-chevron" size={18} />
     </button>
     {open && <FallbackSetupSheet peer={peer} device={device} onClose={() => setOpen(false)} onState={setState} />}

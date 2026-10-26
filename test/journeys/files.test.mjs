@@ -46,9 +46,15 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
   await page.skipIntro();
   await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
   await page.tap({ selector: `.tools-page .tool-open`, text: "Files" }, "Files, in Tools");
-  // Home first, its files listed.
-  await page.see(() => document.querySelector(".files-title")?.innerText?.trim() === "Home", "Home's files", 30000);
-  await page.see({ js: `(${names})().includes("Journey notes.txt")` }, "the text file in Home", 30000);
+  // Home first, its files listed. Named as Finder and File Explorer name it,
+  // by the account folder's own name beside a house, never "Home" (the tab
+  // bar has a Home tab). The computer names the root by its real path; a
+  // folder itself called "home" (this journey's own, off a real PC) reads
+  // "Home folder", as src/file-root-label.ts says.
+  const base = path.basename(fs.realpathSync.native(computer.reach.home));
+  const own = base.toLowerCase() === "home" ? "Home folder" : base;
+  await page.see({ js: `(() => { const h = document.querySelector(".files-title h1, h1.files-title"); return h?.innerText?.trim() === ${JSON.stringify(own)} && !!h.querySelector("svg.files-title-icon"); })()` }, `the home folder, "${own}", with its house`, 30000);
+  await page.see({ js: `(${names})().includes("Journey notes.txt")` }, "the text file in the home folder", 30000);
   await page.shot("home");
   await page.tap({ selector: "button.file-main", text: "Journey notes.txt" }, "the text file");
   const shown = await page.see(

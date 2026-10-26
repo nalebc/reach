@@ -30,7 +30,9 @@ test(`Home: a new phone signs in, and Home shows this ${word} by its name, onlin
   await page.shot("home");
   await page.tap('[aria-label="Tools"]', "Tools");
   await page.tap('[aria-label="Agents & people"]', "access management");
-  await page.see(`Who can use ${name}`, "Agents & people, opened from Tools");
+  // Agents & people, its own page. Whether it names the computer again
+  // depends on how many this phone has (jsdom: computer-name-ui.test.mjs).
+  await page.see(() => document.querySelector(".ppl-head h1")?.textContent === "Agents & people", "Agents & people, opened from Tools");
   await page.see(/This device/, "this phone among your devices");
   await page.shot("agents-and-people");
 });

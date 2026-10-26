@@ -1,7 +1,33 @@
-/* Pause (PauseControl.tsx): one small round button, and a quiet cover where
-   the screen or an app would be while Reach is paused. */
+/* Pause (PauseControl.tsx): one small pill, icon and word, and a quiet cover
+   where the screen or an app would be while Reach is paused. */
+.pause-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 11px 4px 9px;
+  border: 1px solid #b5e9dc26;
+  border-radius: 999px;
+  background: #0d171dcc;
+  color: var(--muted, #93a096);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 16px;
+  cursor: pointer;
+}
+.pause-button:hover {
+  color: #e2f0e3;
+}
+/* Paused: lit, so it reads as on at a glance. */
 .pause-button.is-paused {
+  border-color: rgb(185 239 212 / 0.4);
+  background: rgb(185 239 212 / 0.14);
   color: var(--lime);
+}
+.pause-button:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .paused-cover {

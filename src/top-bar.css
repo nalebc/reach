@@ -1,0 +1,180 @@
+/* One top bar on phones and tablets. Home, Files, Agents & people and
+   Settings share Reach's header (logo, computers, bell); Chat and the
+   Terminal page draw their own. All three use these measures, so the bar
+   is the same height under the status bar, its round buttons are the same
+   glass circles, a page's title has one type style, and the bell is always
+   the last button on the right. Mac and Windows hosts alike: this is the
+   phone's own layout. */
+:root {
+  --bar-height: 56px;
+  --bar-inline: 18px;
+  --bar-button: 40px;
+  --bar-gap: 6px;
+  --bar-button-bg: rgb(255 255 255 / 0.06);
+  --bar-button-ring: inset 0 0 0 1px var(--hairline);
+  --bar-title-size: 17px;
+  --bar-title-weight: 600;
+  --bar-line: rgb(255 255 255 / 0.07);
+}
+
+@media (max-width: 1024px), (pointer: coarse) {
+  /* Reach's header: the bar's height below the status bar, a hairline
+     underneath, the same side inset as the page. */
+  .app-shell .main-shell > .topbar {
+    height: calc(var(--bar-height) + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) var(--bar-inline) 0;
+    border-bottom: 1px solid var(--bar-line);
+  }
+  .app-shell .main-shell > .topbar .topbar-right {
+    gap: var(--bar-gap);
+  }
+  /* Tablets get the phone's header too: the desktop's status words,
+     avatar and its icon buttons sat under the floating computers there. */
+  .app-shell .main-shell > .topbar .topbar-right > .icon-button,
+  .app-shell .main-shell > .topbar .topbar-right > .topbar-status,
+  .app-shell .main-shell > .topbar .topbar-right > .avatar {
+    display: none;
+  }
+  /* The computers float in the same bar, ending one button and gap before
+     the bell (or at the inset when there is no bell); their left edge stays
+     clear of the logo. */
+  .app-shell .main-shell > .fleet-switcher {
+    --bar-end: var(--bar-inline);
+    right: var(--bar-end);
+    max-width: calc(100% - 128px - var(--bar-end));
+    height: calc(var(--bar-height) + env(safe-area-inset-top));
+    gap: var(--bar-gap);
+    padding: env(safe-area-inset-top) 0 0 4px;
+  }
+  .app-shell .main-shell > .topbar:has(.notification-bell) + .fleet-switcher {
+    --bar-end: calc(var(--bar-inline) + var(--bar-button) + var(--bar-gap));
+    right: var(--bar-end);
+    max-width: calc(100% - 128px - var(--bar-end));
+    padding-right: 0;
+  }
+  .app-shell .main-shell > .fleet-switcher button {
+    height: var(--bar-button);
+  }
+
+  /* Every round icon button in a top bar: one glass circle. */
+  .app-shell .main-shell > .topbar .notification-bell,
+  .app-shell .main-shell > .fleet-switcher .fleet-add,
+  .app-shell .chat-mobile-round,
+  .app-shell .chat-mobile-tools .notification-bell,
+  .app-shell .chat-mobile-tools .usage-button,
+  .app-shell .terminal-bar-icon {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: var(--bar-button);
+    height: var(--bar-button);
+    min-width: var(--bar-button);
+    min-height: var(--bar-button);
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--bar-button-bg);
+    box-shadow: var(--bar-button-ring);
+  }
+  .app-shell .chat-mobile-tools .usage-button .usage-ring {
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  /* Stop keeps its red, on the same circle. */
+  .app-shell .terminal-bar-icon.terminal-stop {
+    background: color-mix(in srgb, #f18d8d 10%, transparent);
+  }
+
+  /* The Terminal page's bar: the same height and inset (the keyboard-open
+     compact bar stays slimmer: room for the terminal matters more then). */
+  .app-shell .terminal-bar {
+    min-height: var(--bar-height);
+    gap: var(--bar-gap);
+    padding: 0 var(--bar-inline);
+    border-bottom-color: var(--bar-line);
+  }
+  /* Its title sits in the middle of the bar whether or not the back arrow
+     shows (the Terminals list has none), with the buttons at either edge;
+     it gives way to them rather than running under. */
+  .app-shell .terminal-bar {
+    position: relative;
+  }
+  .app-shell .terminal-bar > .terminal-switch {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    flex: none;
+    width: max-content;
+    max-width: calc(100% - 2 * (var(--bar-inline) + var(--bar-button) + var(--bar-gap)));
+  }
+  /* With Stop beside New, a centred name would lose a button's width on
+     both sides: there it fills the room between the buttons instead. */
+  .app-shell .terminal-bar:has(.terminal-stop) > .terminal-switch {
+    position: static;
+    flex: 1;
+    width: auto;
+    max-width: none;
+    transform: none;
+  }
+  /* Inside it, the terminal's name keeps its room; the folder gives way
+     first (a share of a shrink-wrapped title would cut short names). */
+  .app-shell .terminal-bar > .terminal-switch span {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
+  }
+  .app-shell .terminal-bar > .terminal-switch small {
+    flex: 0 100 auto;
+  }
+  .app-shell .terminal-bar > .terminal-switch + .terminal-bar-icon {
+    margin-left: auto;
+  }
+  .app-shell .terminal-swipe-hint {
+    top: calc(env(safe-area-inset-top) + var(--bar-height) + 6px);
+  }
+
+  /* A page's title in its bar: one type style. */
+  .app-shell .terminal-bar .terminal-switch,
+  .app-shell .terminal-bar .terminal-switch span {
+    font-family: inherit;
+    font-size: var(--bar-title-size);
+    font-weight: var(--bar-title-weight);
+    letter-spacing: -0.2px;
+  }
+}
+
+/* Chat draws its own bar only on phones (wider, it has a page heading). */
+@media (max-width: 600px) {
+  /* Chat's bar: the same height, its hairline running edge to edge like
+     the others rather than stopping at the list's inset. */
+  .app-shell .chat-library .chat-list-top {
+    margin-inline: calc(-1 * var(--bar-inline));
+    padding: env(safe-area-inset-top) var(--bar-inline) 0;
+    box-shadow: 0 1px var(--bar-line);
+  }
+  .app-shell .chat-mobile-header {
+    grid-template-columns: var(--bar-button) minmax(0, 1fr) auto;
+    height: var(--bar-height);
+    min-height: 0;
+  }
+  .app-shell .chat-mobile-tools {
+    gap: var(--bar-gap);
+  }
+  .app-shell .chat-app-current {
+    font-family: inherit;
+    font-size: var(--bar-title-size);
+    font-weight: var(--bar-title-weight);
+    letter-spacing: -0.2px;
+  }
+  .app-shell .chat-mobile-menu {
+    top: calc(env(safe-area-inset-top) + var(--bar-height) + 4px);
+  }
+  /* Under the menu button, now that the bar runs edge to edge. */
+  .app-shell .chat-mobile-actions {
+    left: var(--bar-inline);
+  }
+}
+@media (max-width: 360px) {
+  .app-shell .chat-app-current { font-size: 15px; }
+}

@@ -107,8 +107,11 @@ test("lists Face ID set up here, checked; says what it does; removes one after y
   assert.equal(c.querySelector("h2").textContent, "Face ID");
   assert.match(
     c.textContent,
-    /A new browser of yours \(another browser on this iPhone, or a new one with your passkeys\) signs in with Face ID instead of a code at your Mac\. Agents & people can require it to approve agents\./,
+    /Signs in your new browsers without a code at your Mac\./,
   );
+  // One line only: approving agents with it is explained in Agents & people.
+  assert.equal(c.querySelectorAll(".gs-foot:not(.faceid-line)").length, 1);
+  assert.doesNotMatch(c.textContent, /approve agents/);
   assert.match(c.textContent, /iPhone\s*Last used Oct 5/);
   assert.ok(c.querySelector(".faceid-on"), "on: a green check");
   assert.ok(button(c, "Add Face ID on this iPhone"));
@@ -269,7 +272,7 @@ test("in each device's own words: Android (Samsung too), Windows, a Mac", async 
         const c = view.container;
         assert.equal(c.querySelector("h2").textContent, title, ua);
         assert.ok(button(c, keys.length ? add : use), `${ua}: ${keys.length ? add : use}`);
-        assert.match(c.textContent, new RegExp(`signs in with ${title.replace(/^F/, "f")} instead of a code at your Windows PC`), ua);
+        assert.match(c.textContent, /Signs in your new browsers without a code at your Windows PC\./, ua);
         await view.unmount();
       }
     }
