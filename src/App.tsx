@@ -880,7 +880,6 @@ function ReachWorkspace() {
             </strong>
           </div>
           <div className="topbar-right">
-            {page === "overview" && <NotificationBell compact />}
             {page !== "screen" && features.shortcuts && (
               <button
                 className="icon-button"
@@ -903,6 +902,8 @@ function ReachWorkspace() {
             >
               <RefreshCw size={17} />
             </button>
+            {/* The bell is the last round button, as in every top bar. */}
+            {page === "overview" && <NotificationBell compact />}
             <span className="avatar small">
               {peer?.name.slice(0, 1).toUpperCase()}
             </span>

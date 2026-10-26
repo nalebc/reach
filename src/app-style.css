@@ -481,16 +481,12 @@
     top: 0;
     background: var(--bg);
   }
+  /* Its height, inset and room beside the bell: top-bar.css. */
   .app-shell .main-shell > .fleet-switcher {
     position: fixed;
     z-index: 6;
     top: 0;
-    right: 0;
-    max-width: calc(100% - 128px);
-    height: calc(58px + env(safe-area-inset-top));
     align-items: center;
-    gap: 6px;
-    padding: 0 14px 0 4px;
     border: 0;
     background: none;
   }
@@ -498,10 +494,5 @@
     flex-shrink: 1;
     min-width: 0;
     padding: 8px 12px;
-  }
-  .app-shell .main-shell > .fleet-switcher .fleet-add {
-    flex-shrink: 0;
-    width: 34px;
-    height: 34px;
   }
 }

@@ -564,7 +564,7 @@ export function TerminalView({
   return (
     <div className="terminal-page" ref={page}>
       <header className="terminal-bar" {...swipeHandlers}>
-        <button className="terminal-bar-icon" aria-label="Leave terminal" onClick={onExit}>
+        <button className="terminal-bar-icon" aria-label="Leave terminal" title="Leave terminal" onClick={onExit}>
           <ChevronLeft size={20} />
         </button>
         {listing ? (
@@ -597,6 +597,7 @@ export function TerminalView({
         <button
           className="terminal-bar-icon"
           aria-label="New terminal"
+          title="New terminal"
           aria-haspopup="menu"
           aria-expanded={menu === "new"}
           disabled={starting}

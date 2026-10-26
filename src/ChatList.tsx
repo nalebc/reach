@@ -250,6 +250,7 @@ export function ChatLibraryHeader({
         <button
           className="chat-mobile-round"
           aria-label="Chat list menu"
+          title="Chat list menu"
           aria-expanded={actionsOpen}
           onClick={() => {
             setActionsOpen(!actionsOpen);
@@ -278,6 +279,7 @@ export function ChatLibraryHeader({
             <button
               className="chat-mobile-round chat-workflows"
               aria-label={`Workflows${workflows.active ? `, ${workflows.active} active` : ""}${workflows.paused ? `, ${workflows.paused} paused` : ""}`}
+              title="Workflows"
               onClick={() => {
                 workflows.onOpen();
                 setAppMenuOpen(false);
@@ -295,6 +297,7 @@ export function ChatLibraryHeader({
           <button
             className="chat-mobile-round"
             aria-label="Search chats"
+            title="Search chats"
             aria-expanded={searchOpen}
             onClick={() => {
               onSearch();
@@ -380,11 +383,10 @@ export function ChatLibraryHeader({
         <span className="chat-list-device">{peer.name}</span>
       </div>
       <div className="chat-heading-actions">
-        <button className="chat-refresh" aria-label="Search chats" aria-expanded={searchOpen} onClick={onSearch}>
+        <button className="chat-refresh" aria-label="Search chats" title="Search chats" aria-expanded={searchOpen} onClick={onSearch}>
           <Search size={16} />
         </button>
         <UsageButton health={usageHere} logos={logos} />
-        <NotificationBell compact />
         {workflows && (
           <button
             className="chat-refresh chat-workflows"
@@ -404,11 +406,14 @@ export function ChatLibraryHeader({
           <button
             className="chat-refresh"
             aria-label="Refresh apps and chats"
+            title="Refresh"
             onClick={onRefresh}
           >
             <RefreshCw size={16} />
           </button>
         )}
+        {/* The bell is the last round button, as in every top bar. */}
+        <NotificationBell compact />
         {onNew && (
           <button className="chat-create" aria-label="New chat" onClick={onNew}>
             <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>

@@ -64,7 +64,7 @@ export function ComputerSwitcher({
           <span>{c.name}</span>
         </button>
       ))}
-      <button className="fleet-add" aria-label="Add a computer" onClick={pair}>
+      <button className="fleet-add" aria-label="Add a computer" title="Add a computer" onClick={pair}>
         <Plus size={17} />
       </button>
     </nav>
