@@ -116,6 +116,7 @@ import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type Ope
 import { currentView, leavingForReload, pushPage, replacePage, seedBase, stackDepth } from "./nav-history";
 import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
+import { useBackWithinReach } from "./back-within-reach";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
 // when first opened, then quietly in the background once the app is idle.
 const loadScreen = () => import("./Screen");
@@ -353,6 +354,15 @@ function ReachWorkspace() {
       return () => clearTimeout(t);
     }
   }, [notice]);
+  // Said only when the computer comes back after the phone showed it out of
+  // reach, never on a plain open (src/back-within-reach.ts).
+  const forgetLost = useBackWithinReach({
+    peer,
+    pageLost: !loading && !!error && !device,
+    presence: peer ? connections[peer.id]?.state : undefined,
+    workspace: !!device && !error,
+    announce: toast,
+  });
   const refreshSessions = useCallback(() => {
     if (!peer) return;
     const generation = connectionGeneration.current;
@@ -716,16 +726,22 @@ function ReachWorkspace() {
     localStorage.setItem(activeKey(),p.id);
     setPairing(false);
     setPage("overview");
+    // Paired by hand (a new computer, or "Pair again"): news, and it says so.
+    forgetLost();
     toast(`${p.name} is within reach`);
   };
   // Your linked computers join by themselves (src/fleet-join.ts).
   const waitingComputers = useFleetJoin(peer, peers, deviceLabel(), (p) => {
+    // A computer this phone already has (saved under another address) is
+    // only refreshed: joining it again on an open or a computer switch isn't
+    // news. Only a computer new to this phone is announced.
+    const known = peers.some((old) => sameComputer(old, p));
     setPeers((old) => {
       const next = upsertPeer(old, { ...p, pairedAt: Date.now() });
       savePeers(next);
       return next;
     });
-    toast(`${p.name} is within reach`);
+    if (!known) toast(`${p.name} is within reach`);
   });
   const choose = (id: string, then?: () => void) => {
     if (id === peer?.id) return;
