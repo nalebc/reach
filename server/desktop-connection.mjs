@@ -437,7 +437,9 @@ export function desktopConnection(
           const sentAt = Date.now();
           try {
             result = await helper.send(
-              item.action.type === "clipboard-read"
+              // Copy selected text may copy on the computer (⌘C): a hidden
+              // password it copies is the owner's alone, as a clipboard read.
+              item.action.type === "clipboard-read" || item.action.type === "selection-read"
                 ? { ...item.action, owner: client.scopes.includes("admin") }
                 : item.action,
             );

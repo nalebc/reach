@@ -41,11 +41,14 @@ navigation, and Copy selected text on Mac Chrome pages.
 
 ### Fixed
 
-- On a Mac, Copy selected text works on pages in Chrome and other apps that
-  answer only for themselves: Reach asks the app in front for its focused
-  element, never another app's. A blank selection says to select text first
-  instead of copying a blank line. The helper also reads the app in front
-  afresh each time, not the one in front when screen control began.
+- On a Mac, Copy selected text works on pages in Chrome and in apps that
+  don't tell macOS what's selected (Numbers, some Electron apps): Reach asks
+  the app in front for its focused element, never another app's, and when
+  the app won't say, copies the selection as you would (⌘C) and puts the
+  Mac's clipboard back. A hidden password copied that way is the owner's
+  alone. A blank selection says to select text first instead of copying a
+  blank line. The helper also reads the app in front afresh each time, not
+  the one in front when screen control began.
 - Escape puts a dragged queued message back even when pressed the moment it
   lifts.
 

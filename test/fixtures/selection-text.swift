@@ -7,12 +7,27 @@ import AppKit
 // an app in front opening a link does (macOS brings nothing forward for a
 // process in the background), and answers "launched <pid>". Nothing is
 // typed or clicked. "front" answers "front <pid>": the app in front now.
+// "copyonly" puts in front a view that only copies on ⌘C.
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let window = NSWindow(
   contentRect: NSRect(x: 240, y: 240, width: 460, height: 120), styleMask: [.titled], backing: .buffered,
   defer: false)
 window.title = "Reach selection fixture"
+// An app's view that copies on ⌘C but tells Accessibility nothing about a
+// selection (as Numbers' table does).
+final class CopyOnlyView: NSView {
+  override var acceptsFirstResponder: Bool { true }
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    guard event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" else {
+      return super.performKeyEquivalent(with: event)
+    }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("copied by the app", forType: .string)
+    return true
+  }
+}
+let copyOnly = CopyOnlyView(frame: NSRect(x: 0, y: 0, width: 460, height: 120))
 let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 460, height: 120))
 view.string = "Reach copies this native selection"
 window.contentView = view
@@ -50,6 +65,17 @@ DispatchQueue.global().async {
             fflush(stdout)
           }
         }
+      }
+      continue
+    }
+    if line == "copyonly" {
+      DispatchQueue.main.async {
+        app.activate(ignoringOtherApps: true)
+        window.contentView = copyOnly
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(copyOnly)
+        print("copyonly")
+        fflush(stdout)
       }
       continue
     }
