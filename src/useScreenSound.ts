@@ -40,6 +40,16 @@ const STARTING_MS = 60000;
 
 export function useScreenSound(peer: Peer, active: boolean) {
   const [on, setOn] = useState(false);
+  // Another computer: its sound starts only when asked. Turned off while
+  // rendering it, never in an effect: React runs effects a moment after the
+  // speaker is on screen, and one there, run for the first computer too,
+  // undid a tap made in that moment (Oct 26: Chrome on macOS CI, tapped as
+  // soon as the page loaded).
+  const [soundFor, setSoundFor] = useState(peer.url);
+  if (soundFor !== peer.url) {
+    setSoundFor(peer.url);
+    setOn(false);
+  }
   const [state, setState] = useState<SoundState>("off");
   // Why sound stopped, once (the screen says it in its line).
   const [error, setError] = useState("");
@@ -78,10 +88,6 @@ export function useScreenSound(peer: Peer, active: boolean) {
     setOn(false);
     void context.current?.suspend().catch(() => {});
   }, []);
-  // Another computer: its sound starts only when asked.
-  useEffect(() => {
-    setOn(false);
-  }, [peer.url]);
   useEffect(
     () => () => {
       retry.current.cancel();

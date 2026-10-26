@@ -52,7 +52,10 @@ async function controlledBrowser(t, { closePipes = false, answerClose = true, co
       requests.push(request.method);
       if ((request.method === "Browser.close" && !answerClose) || request.method === "Unanswered.call") return done();
       queueMicrotask(() => {
-        output.write(JSON.stringify({ id: request.id, result: { product: "controlled browser" } }) + "\0");
+        const result = request.method === "SystemInfo.getProcessInfo"
+          ? { processInfo: [{ type: "browser" }, { type: "renderer" }, { type: "renderer" }] }
+          : { product: "controlled browser" };
+        output.write(JSON.stringify({ id: request.id, result }) + "\0");
         if (request.method === "Browser.close") exit();
       });
       done();
@@ -76,7 +79,10 @@ async function controlledBrowser(t, { closePipes = false, answerClose = true, co
     };
   };
   const browser = await launchChrome({ after: hook => hooks.push(hook) }, { binary: "controlled-browser", launchProcess });
-  return { browser, requests, terminations, profile, finish,
+  // Something Chrome says unasked (an event), for one tab or the browser.
+  const event = (method, params = {}, sessionId) =>
+    output.write(JSON.stringify({ method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
+  return { browser, requests, terminations, profile, finish, event,
     async dispose() {
       exit(); finish();
       await Promise.allSettled(hooks.map(hook => hook()));
@@ -117,6 +123,34 @@ test("an unresponsive browser has a bounded owned-process fallback and retires u
     assert.deepEqual(f.terminations, [process.platform === "win32" ? "owned-job-model" : "group-model"]);
     await assert.rejects(fs.promises.stat(f.profile), { code: "ENOENT" });
     await assert.rejects(f.browser.send("After.close"), /Chrome exited/);
+  } finally { await f.dispose(); }
+});
+
+test("a tab whose renderer crashed, or that DevTools let go of, fails its calls at once and says which", { timeout: 5000 }, async t => {
+  const f = await controlledBrowser(t);
+  try {
+    // Each call's own deadline (20 s, 60 s) is past this test's: only the
+    // event can end them.
+    const crashed = assert.rejects(f.browser.send("Unanswered.call", {}, "tab-1"), /^Error: Unanswered\.call: the tab's renderer crashed$/);
+    let otherEnded = false;
+    const other = f.browser.send("Unanswered.call", {}, "tab-2", 60000).finally(() => { otherEnded = true; });
+    f.event("Inspector.targetCrashed", {}, "tab-1");
+    await crashed;
+    await assert.rejects(f.browser.send("Page.enable", {}, "tab-1"), /^Error: Page\.enable: the tab's renderer crashed$/, "later calls to that tab fail without waiting");
+    assert.deepEqual(await f.browser.send("Browser.getVersion"), { product: "controlled browser" }, "the browser itself goes on");
+    assert.equal(otherEnded, false, "another tab's call still waits for its own answer");
+    f.event("Target.detachedFromTarget", { sessionId: "tab-2", targetId: "target-2" });
+    await assert.rejects(other, /^Error: Unanswered\.call: DevTools let go of the tab$/);
+  } finally { await f.dispose(); }
+});
+
+test("a tab that doesn't answer says whether the browser still does, and its processes", { timeout: 5000 }, async t => {
+  const f = await controlledBrowser(t);
+  try {
+    await assert.rejects(f.browser.send("Unanswered.call", {}, "tab-1", 50),
+      /^Error: Unanswered\.call: no answer from Chrome in 0\.05 s; the browser answered in \d+ ms, reported no crash and no detach for this tab, its processes \{"browser":1,"renderer":2\} \(no stderr\)$/);
+    // A browser-wide call has no tab to ask about.
+    await assert.rejects(f.browser.send("Unanswered.call", {}, undefined, 50), /^Error: Unanswered\.call: no answer from Chrome in 0\.05 s \(no stderr\)$/);
   } finally { await f.dispose(); }
 });
 
