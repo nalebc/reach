@@ -8,7 +8,7 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
-## [0.4.3] — 2026-10-25
+## [0.4.3] — 2026-10-26
 
 Early-access release: one permanent owner link that works with the phone's
 Tailscale app on or off, browser enrollment during owner setup, Tools
