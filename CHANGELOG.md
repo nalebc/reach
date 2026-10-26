@@ -14,6 +14,11 @@ release notes, so date the heading before tagging.
   word: green for the Tailscale app, amber for Tailscale in the browser or
   the public link, grey when offline. Reach picks the route; nothing to
   switch. About shows the version Reach runs beside "Up to date".
+- Screen fullscreen shows the computer alone, upright as well as on its
+  side, as a video plays fullscreen: the controls float over the picture
+  and fade until it's touched, instead of keeping a bar above and below.
+  On its side the picture runs under the home bar. On Android the
+  fullscreen button also hides the browser's address bar.
 
 ### Fixed
 

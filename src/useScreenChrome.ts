@@ -1,8 +1,8 @@
 import { useLayoutEffect, useState, type RefObject } from "react";
 import { chromeLayout, safeInsets, type ChromeLayout } from "./screen-chrome";
 
-// Measure the fullscreen viewport when it turns or resizes. Landscape
-// overlays its controls; portrait reserves their rows (screen-chrome.ts).
+// Measure the fullscreen viewport when it turns or resizes; the controls
+// float over it either way (screen-chrome.ts).
 export function useScreenChrome(
   viewer: RefObject<HTMLElement | null>,
   active: boolean,
