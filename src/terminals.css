@@ -25,6 +25,15 @@
     padding: env(safe-area-inset-top) env(safe-area-inset-right) 0
       env(safe-area-inset-left);
   }
+  /* The Terminal tab's list is a main page like Home and Chat: the bottom
+     bar stays over it, and the last row scrolls clear of the bar. An open
+     terminal still covers it. */
+  .app-shell:has(.terminal-page.at-root) .mobile-nav {
+    z-index: 41;
+  }
+  .terminal-page.at-root > .terminal-stage > .terminal-list {
+    padding-bottom: calc(106px + env(safe-area-inset-bottom));
+  }
 }
 .terminal-bar {
   flex: 0 0 auto;
