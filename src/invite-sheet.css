@@ -986,8 +986,9 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 40px;
-  padding: 0 15px 0 12px;
+  /* A finger's worth: 44 px, as Apple and Google ask of a tap target. */
+  height: 44px;
+  padding: 0 16px 0 13px;
   border: 0;
   border-radius: 999px;
   background: #ededed;

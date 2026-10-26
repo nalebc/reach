@@ -671,6 +671,12 @@ test("Settings setup labels the missing prerequisite and preserves mounted work 
     assert.equal(f.transport.privateWay(), "native");
     assert.equal(localStorage.getItem("reach.devices"), f.nativeBytes);
     assert.equal(row.querySelector(".gs-value").textContent, "Keep open");
+    // Settings opened again later: what's saved for this computer reads Ready,
+    // not a vague "Check".
+    const again = await f.dom.render(f.dom.React.createElement(FallbackSetup, { peer, device }));
+    const fresh = [...again.container.querySelectorAll("button.gs-row")].find(value => value.querySelector(".gs-label")?.textContent === "Fallback");
+    assert.equal(fresh.querySelector(".gs-value").textContent, "Ready");
+    await again.unmount();
     assert.deepEqual(f.dom.errors, []);
   } finally { await view?.unmount(); await f.close(); }
 });
