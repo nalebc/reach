@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { isNative, saveBlob } from "./native";
+import { isHomeRoot, rootLabel } from "./file-root-label";
 import {
   Archive,
   Check,
@@ -32,6 +33,7 @@ import {
   FilePlay,
   FolderOpen,
   FolderPlus,
+  House,
   Image,
   LayoutGrid,
   List as ListIcon,
@@ -467,10 +469,14 @@ export default function Files({
   const types = useMemo(() => entries.map(iconType), [entries]);
   const iconFor = useFileTypeIcons(peer, types);
   const nativeIcon = (file: FileEntry) => iconFor(iconType(file));
-  const rootName =
-    device.roots.find((r) => r.id === root)?.name || "Shared folder";
+  const currentRoot = device.roots.find((r) => r.id === root);
+  const rootName = rootLabel(currentRoot);
+  // The home folder's title carries a house, as Finder's sidebar shows it.
+  const house = !dir && isHomeRoot(currentRoot) && (
+    <House className="files-title-icon" size={24} aria-label="Home folder" />
+  );
   // Agents run on this computer, so they get the file's own path.
-  const rootPath = device.roots.find((r) => r.id === root)?.path || "";
+  const rootPath = currentRoot?.path || "";
   const separator = device.platform === "win32" ? "\\" : "/";
   const fullPath = (file: FileEntry) =>
     [rootPath.replace(/[\\/]+$/, ""), ...file.path.split("/")].join(separator);
@@ -700,11 +706,17 @@ export default function Files({
               aria-expanded={panel === "locations"}
               onClick={() => toggle("locations")}
             >
-              <h1>{title}</h1>
+              <h1>
+                {house}
+                {title}
+              </h1>
               <ChevronDown size={20} />
             </button>
           ) : (
-            <h1 className="files-title">{title}</h1>
+            <h1 className="files-title">
+              {house}
+              {title}
+            </h1>
           )}
           <div className="files-tools">
             {selecting ? (
@@ -824,8 +836,8 @@ export default function Files({
                   setPanel("");
                 }}
               >
-                <FolderOpen size={16} />
-                {r.name}
+                {isHomeRoot(r) ? <House size={16} /> : <FolderOpen size={16} />}
+                {rootLabel(r)}
                 {root === r.id && <Check size={15} />}
               </button>
             ))}
