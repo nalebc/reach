@@ -25,6 +25,9 @@ navigation, and Copy selected text on Mac Chrome pages.
   owners are offered the same setup once. The browser registers its own
   non-exportable key, and Reach issues that connection its own credential with
   the same access; guests, restricted devices and agents can't use this.
+  While an agent or person is using the computer, the owner's own enrolled
+  second connection still gets in (it's checked as that owner's client,
+  never by account or device name alone).
 - A Tools page, with any tool pinned to Home as a shortcut you can reorder,
   and a menu of your computers.
 
