@@ -151,10 +151,7 @@ test("closing a console window asks first, in the PC's words", async (t) => {
   assert.deepEqual(closed, [{ confirm: true }]);
 });
 
-// Home shows the computer, not its terminals (Oct 25, "Remove terminal
-// activity from Home"): a PC's tabs are in Terminals, named as the tests above
-// check. A Windows PC's Home still renders, with no terminal stories on it.
-test("a Windows PC's Home renders without terminal activity; its tabs live in Terminals", async (t) => {
+test("Home shows the PC's tabs with a PC badge, said to be on your Windows PC", async (t) => {
   const view = await dom.render(
     React.createElement(HomeLive, {
       features: { terminal: false, codex: false, screen: false, desktopTerminals: true, shortcuts: false, owner: true, writeFiles: false },
@@ -178,9 +175,7 @@ test("a Windows PC's Home renders without terminal activity; its tabs live in Te
     }),
   );
   t.after(() => view.unmount());
-  await dom.waitFor(() => dom.document.querySelector("main, section, .home-live, [class*='home']"));
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(dom.document.querySelector(".story"), null, "no terminal stories on Home");
-  assert.doesNotMatch(dom.document.body.textContent, /npm {2}run dev/, "the PC's tab isn't listed on Home");
-  assert.deepEqual(dom.errors, []);
+  const story = await dom.waitFor(() => dom.document.querySelector('.story[aria-label^="Command Prompt - npm  run dev"]'));
+  assert.match(story.getAttribute("aria-label"), /, on your Windows PC/);
+  assert.equal(story.querySelector(".story-badge").textContent, "PC");
 });
