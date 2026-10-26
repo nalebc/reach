@@ -1,6 +1,7 @@
 import { Component, Suspense, type ReactNode } from "react";
 import { RefreshCw, House, TriangleAlert } from "lucide-react";
 import { Spinner } from "./ui";
+import { retryFailedPages } from "./lazy-page";
 
 /** Keep navigation mounted when a page fails; retry remounts only its contents.
  * Pages whose code loads on demand show a spinner here while it arrives. */
@@ -12,6 +13,11 @@ export default class ScreenBoundary extends Component<
   { failed: boolean; attempt: number }
 > {
   state = { failed: false, attempt: 0 };
+  constructor(props: { children: ReactNode; onHome?: () => void }) {
+    super(props);
+    // A page opened again loads afresh, as Try again does (src/lazy-page.ts).
+    retryFailedPages();
+  }
   static getDerivedStateFromError() {
     return { failed: true };
   }
@@ -28,12 +34,13 @@ export default class ScreenBoundary extends Component<
           <div className="button-row">
             <button
               className="button primary"
-              onClick={() =>
+              onClick={() => {
+                retryFailedPages();
                 this.setState((s) => ({
                   failed: false,
                   attempt: s.attempt + 1,
-                }))
-              }
+                }));
+              }}
             >
               <RefreshCw size={17} />
               Try again

@@ -582,20 +582,25 @@ test("chat name, model and thinking settings preserve failed edits and save the 
   await settle();
   settingsFail = true;
   await click("Save changes");
-  assert.match(dom.document.body.textContent, /Gateway rejected settings/);
+  // What the Mac answered shows once its reply is read: a React render
+  // scheduled after the tap, which a busy runner can put past any fixed sleep.
+  await dom.waitFor(() => /Gateway rejected settings/.test(dom.document.body.textContent));
+  assert.equal(settingsSent.length, 1, "one write for the first tap");
   assert.equal(
     dom.document.querySelector('[aria-label="OpenClaw chat name"]').value,
     "Login page improved",
   );
   settingsFail = false;
   await click("Save changes");
+  // Its own write, sent once the form's request is on its way.
+  await dom.waitFor(() => settingsSent.length === 2);
   assert.deepEqual(settingsSent.at(-1), {
     key: sessions[2].key,
     label: "Login page improved",
     model: "provider/model",
     thinkingLevel: "high",
   });
-  assert.equal(dom.document.querySelector(".claw-settings"), null);
+  await dom.waitFor(() => !dom.document.querySelector(".claw-settings"));
   await dom.waitFor(
     () =>
       dom.document.querySelector("h1").textContent === "Login page improved",

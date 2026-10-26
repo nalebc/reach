@@ -16,12 +16,12 @@ import {
 } from "./capabilities";
 import { useCodexAvailability } from "./useCodexAvailability";
 import ScreenBoundary from "./ScreenBoundary";
+import { lazyPage } from "./lazy-page";
 import ConnectForm from "./ConnectForm";
 import QuickLauncher from "./QuickLauncher";
 import { ReconnectTimer } from "./reconnect";
 import ScreenPopup from "./ScreenPopup";
 import {
-  lazy,
   useEffect,
   useMemo,
   useState,
@@ -129,8 +129,9 @@ import { useBackWithinReach } from "./back-within-reach";
 // when first opened, then quietly in the background once the app is idle.
 const loadScreen = () => import("./Screen");
 const loadSessions = () => import("./Sessions");
-const Screen = lazy(loadScreen);
-const TerminalView = lazy(() =>
+// Fetched again if the connection drops while they load (src/lazy-page.ts).
+const Screen = lazyPage(loadScreen);
+const TerminalView = lazyPage(() =>
   loadSessions().then((m) => ({ default: m.TerminalView })),
 );
 const pages = [
