@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Copy, Wifi } from "lucide-react";
+import { ClipboardList, Copy } from "lucide-react";
 import type { Peer } from "./api";
 import { Modal } from "./ui";
 import { connectionReport } from "./connection-report";
@@ -17,7 +17,7 @@ export default function ConnectionReport({ peer, toast }: { peer: Peer; toast(me
   };
   return <>
     <button className="gs-row" onClick={copy} aria-label="Copy connection report">
-      <Wifi size={21} />
+      <ClipboardList size={21} />
       <span className="gs-label">Connection report</span>
       <span className="gs-value">Copy</span>
       <Copy className="gs-chevron" size={18} />

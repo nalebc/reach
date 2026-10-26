@@ -1,7 +1,7 @@
 // Before anything reads storage: a browser that refuses it still opens Reach.
 import "./storage-fallback";
 import { viewScope, useViewScroll } from "./view-memory";
-import { useFleetConnections } from "./useFleetConnections";
+import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
@@ -112,7 +112,7 @@ import { bindPrivatePeer, installTailnet, tailnetBrowser, type TailnetNode } fro
 import { tailnetSuffix, type StartConfig } from "./start-flow";
 import { watchPrivateRecovery } from "./app-watch";
 import { keepDoorKey } from "./door-key";
-import { connectionName, connectionWay, tailscaleAppLink } from "./connection";
+import { connectionName, connectionWay, tailscaleAppLink, useConnectionStatus } from "./connection";
 import PhonePrompts from "./PhonePrompts";
 import { accessChanged } from "./live-access";
 import { useFleetJoin } from "./fleet-join";
@@ -124,6 +124,7 @@ import { lastPlace, openTarget, rememberPlace, wantNeed, withoutTarget, type Ope
 import { backOne, currentEntry, currentView, leavingForReload, pageDepth, pushPage, replacePage, seedBase, stackDepth } from "./nav-history";
 import { requestOpenThread } from "./handoffs";
 import { scopeLabel } from "./scope-words";
+import { useBackWithinReach } from "./back-within-reach";
 // Screens with heavy code (remote screen, terminal engine, Codex chat) load
 // when first opened, then quietly in the background once the app is idle.
 const loadScreen = () => import("./Screen");
@@ -384,6 +385,15 @@ function ReachWorkspace() {
       return () => clearTimeout(t);
     }
   }, [notice]);
+  // Said only when the computer comes back after the phone showed it out of
+  // reach, never on a plain open (src/back-within-reach.ts).
+  const forgetLost = useBackWithinReach({
+    peer,
+    pageLost: !loading && !!error && !device,
+    presence: peer ? connections[peer.id]?.state : undefined,
+    workspace: !!device && !error,
+    announce: toast,
+  });
   const refreshSessions = useCallback(() => {
     if (!peer) return;
     const generation = connectionGeneration.current;
@@ -772,16 +782,22 @@ function ReachWorkspace() {
     localStorage.setItem(activeKey(),p.id);
     setPairing(false);
     setPage("overview");
+    // Paired by hand (a new computer, or "Pair again"): news, and it says so.
+    forgetLost();
     toast(`${p.name} is within reach`);
   };
   // Your linked computers join by themselves (src/fleet-join.ts).
   const waitingComputers = useFleetJoin(peer, peers, deviceLabel(), (p) => {
+    // A computer this phone already has (saved under another address) is
+    // only refreshed: joining it again on an open or a computer switch isn't
+    // news. Only a computer new to this phone is announced.
+    const known = peers.some((old) => sameComputer(old, p));
     setPeers((old) => {
       const next = upsertPeer(old, { ...p, pairedAt: Date.now() });
       savePeers(next);
       return next;
     });
-    toast(`${p.name} is within reach`);
+    if (!known) toast(`${p.name} is within reach`);
   });
   const choose = (id: string, then?: () => void) => {
     if (id === peer?.id) return;
@@ -1081,9 +1097,9 @@ function ReachWorkspace() {
                     peer={peer}
                     active={peer.id}
                     connections={connections}
-                    connection={connectionName(peer.url)}
+                    connection={connectionName(peer)}
                     appLink={
-                      connectionWay(peer.url) === "browser"
+                      connectionWay(peer) === "browser"
                         ? tailscaleAppLink()
                         : undefined
                     }
@@ -1247,6 +1263,7 @@ function ReachWorkspace() {
                     features={features}
                     peer={peer}
                     device={device}
+                    connection={connections[peer.id]?.state}
                     toast={toast}
                     onChanged={refreshDevice}
                     invite={() => navigate("invite")}
@@ -1740,12 +1757,15 @@ export function SettingsPage({
   invite,
   peer,
   device,
+  connection,
   toast,
   forget,
   onChanged,
 }: {
   peer: Peer;
   device: Device;
+  // This computer's live link to the phone (useFleetConnections).
+  connection?: FleetConnection["state"];
   toast: (s: string) => void;
   forget: () => void;
   invite: () => void;
@@ -1763,8 +1783,8 @@ export function SettingsPage({
     }
   };
   const [details, setDetails] = useState(false);
-  const online = true;
-  const host = connectionName(peer.url);
+  const status = useConnectionStatus(peer, connection);
+  const owner = !device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest");
   return (
     // As ChatGPT lays out its settings: who it is on top, then short
     // grouped lists (a line icon, a name, a value, a chevron). Reach's own
@@ -1776,11 +1796,25 @@ export function SettingsPage({
         </span>
         <h1>{device.name}</h1>
         <p>
-          <span className={`status-text ${online ? "on" : ""}`}>Connected</span>
+          <span className={`status-text ${status.tone === "off" ? "" : "on"}`}>
+            {status.tone === "off" ? status.label : status.tone === "waiting" ? "Connecting…" : "Online"}
+          </span>
           <span>{platform(device.platform)}</span>
-          {host && <span>{host}</span>}
         </p>
       </header>
+
+      {/* How this phone reaches it, in a word and a dot. Reach picks the
+          route by itself (docs/CONNECTION_POLICY.md); nothing to choose. */}
+      <div className="gs-group gs-first">
+        <div className="gs-row connection-row">
+          <Wifi size={21} />
+          <span className="gs-label">Connection</span>
+          <span className={`gs-value conn-status ${status.tone}`} role="status">
+            {status.label}
+          </span>
+        </div>
+        <FallbackSetup peer={peer} device={device} />
+      </div>
 
       <h2 className="gs-title">This computer</h2>
       <div className="gs-group">
@@ -1805,16 +1839,13 @@ export function SettingsPage({
           <span className="gs-value">{device.roots.length}</span>
           <ChevronRight className="gs-chevron" size={18} />
         </button>
-        <InterfaceUpdates peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
-        <ConnectionReport peer={peer} toast={toast} />
-        <FallbackSetup peer={peer} device={device} />
       </div>
 
       {/* What Reach drives here, behind or too old: Update (KeepInSync.tsx). */}
-      <KeepInSync peer={peer} owner={!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")} />
+      <KeepInSync peer={peer} owner={owner} />
 
       {/* Who can use this computer: one place (PeopleHub.tsx), the owner's. */}
-      {(!device.access || (device.access.scopes.includes("admin") && device.access.kind !== "guest")) && (
+      {owner && (
         <>
           <h2 className="gs-title">Access</h2>
           <div className="gs-group">
@@ -1829,6 +1860,13 @@ export function SettingsPage({
 
       <FaceIdSettings peer={peer} />
       {/* Notifications live in the bell's panel only: nothing about them here. */}
+
+      {/* Reach itself: its version and updates, and what to send with a bug. */}
+      <h2 className="gs-title">About</h2>
+      <div className="gs-group">
+        <InterfaceUpdates peer={peer} owner={owner} />
+        <ConnectionReport peer={peer} toast={toast} />
+      </div>
 
       <div className="gs-group gs-end">
         <button className="gs-row gs-danger" onClick={forget}>

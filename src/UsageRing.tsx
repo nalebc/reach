@@ -57,6 +57,7 @@ export function UsageButton({ health, logos }: { health: AgentHealth[]; logos: A
       <button
         className={`usage-button ${top.usage.level}`}
         aria-label="Usage"
+        title="Usage"
         aria-description={usageSentence(nameOf(top.health), top.usage)}
         onClick={() => setOpen(true)}
       >

@@ -237,7 +237,7 @@ test("private browsing (storage blocked): Not now holds for this visit, nothing 
 
 // N3, N6: the way in, said the same in Home, the computer picker and Settings; signed in
 // from the browser, "faster with the app" is a link to it.
-test("The computer picker names the connection as Home does: Tailscale, or Tailscale in browser", async () => {
+test("The computer picker names the connection as Home does: Tailscale app, or Tailscale in browser", async () => {
   const { default: ComputerMenu } = await dom.load("/src/ComputerMenu.tsx");
   dom.window.HTMLDialogElement.prototype.showModal ??= function () {
     this.open = true;
@@ -257,7 +257,7 @@ test("The computer picker names the connection as Home does: Tailscale, or Tails
     );
   phone();
   let view = await picker();
-  assert.match(view.container.querySelector(".computer-menu-row small").textContent, /Tailscale$/);
+  assert.match(view.container.querySelector(".computer-menu-row small").textContent, /Tailscale app$/);
   await view.unmount();
   phone({ browserNode: true });
   view = await picker();

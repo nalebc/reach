@@ -309,7 +309,7 @@ test(
     // What it's for, said on the page in this phone's words.
     assert.match(
       await text(),
-      /A new browser of yours \(another browser on this iPhone, or a new one with your passkeys\) signs in with Face ID instead of a code at your Mac\. Agents & people can require it to approve agents\./,
+      /Signs in your new browsers without a code at your Mac\./,
     );
     // Its challenge comes before the tap (Safari shows Face ID from a tap only).
     const challenges = () => serve.seen.filter((r) => r === "POST /api/auth/passkeys/options").length;

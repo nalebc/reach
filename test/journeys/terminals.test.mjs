@@ -40,10 +40,17 @@ test(`Terminals: a terminal opened from the phone runs on this ${word} and answe
   await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
   await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
   await page.see(() => document.querySelector('[aria-label="Start a terminal"]'), "the ways to start a terminal");
-  await page.tap(/^Terminal$/, "Terminal, to start one");
+  // The list, opened from Tools: its arrow goes back there, and the bottom
+  // bar is still there to tap (nothing painted over it).
+  const barOnTop = `(() => { const b = document.querySelector('nav.mobile-nav button[aria-label="Tools"]'); if (!b) return false; const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && b.contains(hit); })()`;
+  await page.see({ js: `${barOnTop} && !!document.querySelector('button[aria-label="Leave terminal"]')` }, "the bottom bar over the list, its arrow back to Tools");
+  await page.shot("terminal-list");
+  await page.tap({ selector: `[aria-label="Start a terminal"] button`, text: /^Terminal$/ }, "Terminal, to start one");
   // Its shell's prompt: the computer's own shell answered.
   await page.see(() => (document.querySelector(".terminal-screen .xterm-rows")?.innerText || "").trim().length > 0, "the shell's first words", 90000);
   await page.shot("terminal-opened");
+  // A level deeper: the terminal covers the bar and has its back arrow.
+  await page.see({ js: `!${barOnTop} && !!document.querySelector('button[aria-label="Leave terminal"]')` }, "the open terminal over the bar, with its back arrow");
   const echo = marker("typed");
   await page.tap(".terminal-screen", "the terminal");
   await page.type(`echo ${echo}`);

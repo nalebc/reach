@@ -251,6 +251,7 @@ export function ChatLibraryHeader({
         <button
           className="chat-mobile-round"
           aria-label="Chat list menu"
+          title="Chat list menu"
           aria-expanded={actionsOpen}
           onClick={() => {
             setActionsOpen(!actionsOpen);
@@ -279,6 +280,7 @@ export function ChatLibraryHeader({
             <button
               className="chat-mobile-round chat-workflows"
               aria-label={`Workflows${workflows.active ? `, ${workflows.active} active` : ""}${workflows.paused ? `, ${workflows.paused} paused` : ""}`}
+              title="Workflows"
               onClick={() => {
                 workflows.onOpen();
                 setAppMenuOpen(false);
@@ -296,6 +298,7 @@ export function ChatLibraryHeader({
           <button
             className="chat-mobile-round"
             aria-label="Search chats"
+            title="Search chats"
             aria-expanded={searchOpen}
             onClick={() => {
               onSearch();
@@ -381,11 +384,10 @@ export function ChatLibraryHeader({
         <span className="chat-list-device">{peer.name}</span>
       </div>
       <div className="chat-heading-actions">
-        <button className="chat-refresh" aria-label="Search chats" aria-expanded={searchOpen} onClick={onSearch}>
+        <button className="chat-refresh" aria-label="Search chats" title="Search chats" aria-expanded={searchOpen} onClick={onSearch}>
           <Search size={16} />
         </button>
         <UsageButton health={usageHere} logos={logos} />
-        <NotificationBell compact />
         {workflows && (
           <button
             className="chat-refresh chat-workflows"
@@ -405,11 +407,14 @@ export function ChatLibraryHeader({
           <button
             className="chat-refresh"
             aria-label="Refresh apps and chats"
+            title="Refresh"
             onClick={onRefresh}
           >
             <RefreshCw size={16} />
           </button>
         )}
+        {/* The bell is the last round button, as in every top bar. */}
+        <NotificationBell compact />
         {onNew && (
           <button className="chat-create" aria-label="New chat" onClick={onNew}>
             <span className="chat-compose-mascot" aria-hidden="true"><BrandCourier active /></span>
@@ -671,6 +676,7 @@ export default function ChatList({
   onArchived,
   workflows,
   projects: codexProjects = [],
+  computers = 1,
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -703,6 +709,9 @@ export default function ChatList({
   workflows?: WorkflowsEntry;
   // The Codex app's projects (its sidebar), this computer's.
   projects?: AgentProject[];
+  // How many computers you have: the strip naming this one shows only when
+  // there's another to tell it from.
+  computers?: number;
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -947,7 +956,7 @@ export default function ChatList({
           </label>
         )}
       </div>
-      {!compact && <div className="chat-source-strip" aria-label="Chat source">
+      {!compact && computers > 1 && <div className="chat-source-strip" aria-label="Chat source">
         <span>All</span>
         <span className="chat-source-device"><span className="chat-source-dot" /><Laptop size={16} />{peer.name}</span>
       </div>}

@@ -14,6 +14,7 @@ import {
 } from "react";
 import { isNative, saveBlob } from "./native";
 import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
+import { isHomeRoot, rootLabel } from "./file-root-label";
 import {
   Archive,
   Check,
@@ -33,6 +34,7 @@ import {
   FilePlay,
   FolderOpen,
   FolderPlus,
+  House,
   Image,
   LayoutGrid,
   List as ListIcon,
@@ -292,6 +294,9 @@ export default function Files({
   const canExtract = features.mac && canWrite;
   // A person with full access gets the folder actions too.
   const guest = device.access?.kind === "guest" && !features.mac;
+  // Above the title: whose files a guest sees, or which computer when you
+  // have several. With only one, its name is already on Home's card.
+  const host = guest ? `Shared by ${device.name}` : (peers?.length ?? 0) > 1 ? device.name : "";
   const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -470,10 +475,14 @@ export default function Files({
   const types = useMemo(() => entries.map(iconType), [entries]);
   const iconFor = useFileTypeIcons(peer, types);
   const nativeIcon = (file: FileEntry) => iconFor(iconType(file));
-  const rootName =
-    device.roots.find((r) => r.id === root)?.name || "Shared folder";
+  const currentRoot = device.roots.find((r) => r.id === root);
+  const rootName = rootLabel(currentRoot);
+  // The home folder's title carries a house, as Finder's sidebar shows it.
+  const house = !dir && isHomeRoot(currentRoot) && (
+    <House className="files-title-icon" size={24} aria-label="Home folder" />
+  );
   // Agents run on this computer, so they get the file's own path.
-  const rootPath = device.roots.find((r) => r.id === root)?.path || "";
+  const rootPath = currentRoot?.path || "";
   const separator = device.platform === "win32" ? "\\" : "/";
   const fullPath = (file: FileEntry) =>
     [rootPath.replace(/[\\/]+$/, ""), ...file.path.split("/")].join(separator);
@@ -677,8 +686,8 @@ export default function Files({
       }}
     >
       <header className="files-header">
-        <nav className="files-crumbs" aria-label="Folder path">
-          <span>{guest ? `Shared by ${device.name}` : device.name}</span>
+        {(host || parts.length > 0) && <nav className="files-crumbs" aria-label="Folder path">
+          {host && <span>{host}</span>}
           {parts.length > 0 && (
             <button onClick={() => go("")}>{rootName}</button>
           )}
@@ -687,7 +696,7 @@ export default function Files({
               {part}
             </button>
           ))}
-        </nav>
+        </nav>}
         <div className="files-titlebar">
           {parts.length > 0 && (
             <button
@@ -704,11 +713,17 @@ export default function Files({
               aria-expanded={panel === "locations"}
               onClick={() => toggle("locations")}
             >
-              <h1>{title}</h1>
+              <h1>
+                {house}
+                {title}
+              </h1>
               <ChevronDown size={20} />
             </button>
           ) : (
-            <h1 className="files-title">{title}</h1>
+            <h1 className="files-title">
+              {house}
+              {title}
+            </h1>
           )}
           <div className="files-tools">
             {selecting ? (
@@ -828,8 +843,8 @@ export default function Files({
                   setPanel("");
                 }}
               >
-                <FolderOpen size={16} />
-                {r.name}
+                {isHomeRoot(r) ? <House size={16} /> : <FolderOpen size={16} />}
+                {rootLabel(r)}
                 {root === r.id && <Check size={15} />}
               </button>
             ))}

@@ -174,8 +174,8 @@ test("actual built Reach cold-opens its original private origin through a comple
     "no approval request precedes the first approved App launch");
   await tab.navigate(frontOrigin);
   await wait("document.querySelector('.settings-nav')"); await tab.evaluate("document.querySelector('.settings-nav').click()");
-  await wait("[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Set up fallback'))");
-  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Set up fallback')).click()");
+  await wait("[...document.querySelectorAll('button')].some(b=>b.querySelector('.gs-label')?.textContent==='Fallback')");
+  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.querySelector('.gs-label')?.textContent==='Fallback').click()");
   await wait("document.querySelector('a[href^=\"https://login.tailscale.com/\"]')");
   cors = false;
   await inPage(function (value) { globalThis.fixtureIdentity = value; runtime.completeSignIn(); }, identity);
@@ -183,7 +183,7 @@ test("actual built Reach cold-opens its original private origin through a comple
   assert.equal(reach.approvals.list().length, 0, "real cross-port CORS refusal cannot submit a request");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.offline-shell.enabled')"), null);
   await tab.evaluate("[...document.querySelectorAll('dialog button')].find(b=>b.textContent==='Close setup').click()"); cors = true;
-  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Set up fallback')).click()");
+  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.querySelector('.gs-label')?.textContent==='Fallback').click()");
   await wait("document.querySelector('.approval-code')");
   const request = reach.approvals.list()[0]; assert.equal(request.identity.nodeId, "browser-node");
   reach.approvals.decide(request.id, "approve", "separate disposable fixture owner");

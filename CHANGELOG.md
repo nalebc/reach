@@ -12,7 +12,8 @@ release notes, so date the heading before tagging.
 
 Early-access release: one permanent owner link that works with the phone's
 Tailscale app on or off, browser enrollment during owner setup, Tools
-navigation, and Copy selected text on Mac Chrome pages.
+navigation, a UI review across the phone's pages, fullscreen Screen like a
+video, and Copy selected text on Mac Chrome pages and in apps like Numbers.
 
 ### Added
 
@@ -41,6 +42,25 @@ navigation, and Copy selected text on Mac Chrome pages.
 - Bottom navigation is Home, Screen and Tools; Files, Terminals, Chat and the
   rest open from Tools, and the More sheet is gone. Each open tab remembers
   its views for the session, never requests, results or credentials.
+- One look across the phone's pages:
+  - Home, Chat and Terminals share one top bar (height, round buttons, title, then the bell and Settings).
+  - Terminals keeps the bottom bar over its list, with a back arrow to Tools.
+  - With one computer, its name shows once: no top-bar pill, no Files caption, no Chat row.
+  - Files names the home folder as Finder and Explorer do.
+  - "…is within reach" shows only when it's news.
+  - Home's Pause reads Pause or Paused.
+  - Agents & people invites with the same "+ Invite" pill as Home.
+  - Settings says Face ID in one line, and Fallback as Set up or Ready.
+- Settings opens with how this phone reaches the computer, as a dot and a
+  word: green for the Tailscale app, amber for Tailscale in the browser or
+  the public link, grey when offline. Reach picks the route; nothing to
+  switch. About shows the version Reach runs beside "Up to date".
+- Screen fullscreen shows the computer alone, upright as well as on its
+  side, as a video plays fullscreen: the controls float over the picture
+  and fade until it's touched, instead of keeping a bar above and below.
+  On its side the picture runs under the home bar. On Android the
+  fullscreen button also hides the browser's address bar.
+- Home and the computer menu call a public link "Public link", never "Tailscale".
 
 ### Fixed
 

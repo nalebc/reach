@@ -206,3 +206,8 @@ button.gs-row:disabled {
 .sync-row .sync-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .sync-row > .as-banner-btn, .sync-row > .spin { flex: 0 0 auto; align-self: center; }
 .sync-row.compact { padding: 8px 4px; min-height: 0; }
+
+/* The connection, right under who it is: no heading of its own. */
+.gs-group.gs-first {
+  margin-top: 18px;
+}

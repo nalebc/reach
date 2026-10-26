@@ -59,7 +59,7 @@ test(
     await page.skipIntro();
     // Pause, from Home.
     await page.tap(`button.home-pause[aria-label="Pause Reach on your ${word}"]`, "Pause, on Home");
-    await page.see(() => document.querySelector(`button.home-pause[aria-label^="Resume Reach on your"]`), "Pause turned to Resume", 30000);
+    await page.see(() => document.querySelector(`button.home-pause[aria-pressed="true"]`)?.innerText.trim() === "Paused", "Pause turned to Paused", 30000);
     await page.see(/· paused/, "Home saying it's paused", 30000);
     await page.shot("paused-home");
     // The screen, paused: said there, with no way to control it.

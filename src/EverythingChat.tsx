@@ -1358,7 +1358,7 @@ export default function EverythingChat({
     return (
       <div className="chat-workspace">
         {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
-        <ChatList peer={peer} active={active} sessions={sessions} logos={logos} apps={apps}
+        <ChatList peer={peer} active={active} sessions={sessions} logos={logos} apps={apps} computers={computers?.length}
           agent={app.agent} onAgentChange={setAgent} appPending={appPending}
           onRefresh={() => { recheck(); void reload(); }} health={health}
           onSectionMoved={() => void reload()} onArchived={() => void reload()}
