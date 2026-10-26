@@ -272,8 +272,12 @@ test("Windows keeps its permanent link while waiting for the browser page, then 
   assert.ok(scanTerminalQRs(reach.output()).includes(`https://${HOST}`));
 });
 
+// One permanent owner link (docs/CONNECTION_POLICY.md, Oct 25): before
+// Funnel is allowed, no QR stands in for it. A phone already on this
+// tailnet asks for the private QR (type private); the permanent QR comes
+// by itself once the public route is ready.
 for (const funnelEnable of ["wait", "exit"]) {
-  test(`Windows shows a private QR before Funnel approval (${funnelEnable}), then adds browser pairing without another command`, asWindows, async (t) => {
+  test(`Windows waits for Funnel approval (${funnelEnable}) with the permanent link, a private QR on request, then the browser QR without another command`, asWindows, async (t) => {
     const { seen, started } = keyedReach(t, {
       ready: /Type a device request code to approve/,
       scenario: { funnelEnable },
@@ -281,9 +285,12 @@ for (const funnelEnable of ["wait", "exit"]) {
     const reach = await started;
     const text = reach.output();
     assert.match(text, /Allow Tailscale Funnel for this computer/);
-    assert.deepEqual(scanTerminalQRs(text), [`https://${HOST}:8443`]);
-    assert.match(text, /Your phone's Tailscale app must be on this computer's Tailscale network/);
+    assert.deepEqual(scanTerminalQRs(text), [], "no QR replaces the permanent owner link");
+    assert.ok(text.includes(`Preparing your permanent phone link: https://${HOST}`));
     assert.doesNotMatch(text, /Open on your phone:/, "no unusable public QR is advertised");
+    reach.stdin.write("private\n");
+    await until(() => scanTerminalQRs(reach.output()).includes(`https://${HOST}:8443`), "the private QR, asked for");
+    assert.match(reach.output(), /Your phone's Tailscale app must be on this computer's Tailscale network/);
     const method = await viaProxy(seen.fake, 8443, "/api/auth/method");
     assert.equal(method.status, 200);
     assert.equal(method.json.eligible, true, "the private QR reaches an eligible private sign-in route");
@@ -291,9 +298,10 @@ for (const funnelEnable of ["wait", "exit"]) {
     const windowBefore = JSON.parse(fs.readFileSync(windowFile, "utf8"));
     const serve = (await keyedSessions(seen.fake)).serve;
     const key = serve.args.at(-1).match(KEYED)[2];
-    assertNoKey(key, seen.root, text);
+    assertNoKey(key, seen.root, reach.output());
     await seen.fake.setStatus({ funnelEnabled: true });
     await until(() => scanTerminalQRs(reach.output()).includes(`https://${HOST}`), "the browser QR after Funnel approval", 20000);
+    assert.ok(reach.output().includes(`Open on your phone: https://${HOST}\n`));
     assert.equal(JSON.parse(fs.readFileSync(windowFile, "utf8")).until, windowBefore.until, "recovery does not extend the original pairing window");
     const recovered = JSON.parse(fs.readFileSync(path.join(seen.root, ".reach/host-status.json"), "utf8"));
     assert.equal(recovered.browserLink.ready, true);
