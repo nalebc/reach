@@ -20,6 +20,7 @@ import { useAgentLogos } from "./agent-logos";
 import { useRemoteScreen } from "./useRemoteScreen";
 import { PauseButton } from "./PauseControl";
 import { computerWord, pausedIn } from "./pause";
+import HomeStories from "./HomeStories";
 import "./home-live.css";
 
 // Why the live preview shows no fresh picture, as one short pill ("" while
@@ -80,10 +81,13 @@ export default function HomeLive({
   connection,
   appLink,
   chats,
+  terminals = [],
   pending,
   decide,
   navigate,
   openChat,
+  openTerminal,
+  openMacTab,
   agentSessions = [],
   macPrompts = [],
   openAgentSession,
@@ -101,10 +105,14 @@ export default function HomeLive({
   // Signed in from the browser: the Tailscale app, one tap away.
   appLink?: string;
   chats: Session[];
+  // Reach's own terminals, for "Live on your Mac".
+  terminals?: Session[];
   pending: AgentRequest[];
   decide: (request: AgentRequest, decision: "approve" | "deny") => void;
   navigate: (page: string) => void;
   openChat: (id: string) => void;
+  openTerminal?: (id: string) => void;
+  openMacTab?: (id: string) => void;
   // Codex and Claude Code sessions anywhere on the Mac (the Chat feed).
   agentSessions?: AgentSession[];
   // What macOS itself is asking right now (answered at the Mac).
@@ -377,6 +385,25 @@ export default function HomeLive({
           </details>
         </div>
       </section>
+
+      {/* What's running on the computer, as circles that turn while they
+          work: one tap opens it. */}
+      {openTerminal && openMacTab && (
+        <HomeStories
+          peer={peer}
+          device={device}
+          features={features}
+          visible={visible}
+          changes={connections[active]?.changes}
+          terminals={terminals}
+          agentSessions={agentSessions}
+          logos={logos}
+          openTerminal={openTerminal}
+          openMacTab={openMacTab}
+          openAgentSession={openAgentSession}
+          onStart={() => navigate("terminal")}
+        />
+      )}
 
       {pinnedTools}
 

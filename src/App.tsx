@@ -1104,6 +1104,14 @@ function ReachWorkspace() {
                         : undefined
                     }
                     chats={chats}
+                    terminals={terminals}
+                    openTerminal={(id) => {
+                      setTerminalId(id);
+                      navigate("terminal", { then: () => setTerminalSource("reach") });
+                    }}
+                    openMacTab={(id) => {
+                      navigate("terminal", { then: () => setTerminalSource(`mac:${id}`) });
+                    }}
                     pending={requests.filter((r) => deferred.includes(r.id))}
                     decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}

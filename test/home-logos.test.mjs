@@ -55,7 +55,9 @@ test("Home retains agent icons on requests that need attention", async () => {
   await dom.waitFor(() => icons().length === 1);
   assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex"]);
   assert.equal(icons()[0].getAttribute("src"), LOGO);
-  assert.equal(desktopReads, 0, "Home does not read desktop terminals");
+  // The waiting chat also wears its real icon in its circle, amber.
+  await dom.waitFor(() => dom.document.querySelector('.story[aria-label="Fix login, needs you"] img.agent-logo'));
+  assert.ok(dom.document.querySelector('.story[aria-label="Fix login, needs you"] .story-ring.attention'));
   assert.equal(dom.document.querySelector(".home-terminals"), null);
   assert.deepEqual(dom.errors, []);
   await view.unmount();

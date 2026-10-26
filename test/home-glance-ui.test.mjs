@@ -59,7 +59,9 @@ const home = (props = {}) =>
     ...props,
   });
 
-test("Home does not repeat active or recent chats as an activity section", async () => {
+// The owner asked for these back (Oct 26): Home feels alive when what runs
+// on the computer turns in its circle (HomeStories.tsx, and its own tests).
+test("Home shows what's running as circles under the computer: working, failed, just done; long done ones leave", async () => {
   const view = await dom.render(
     home({
       agentSessions: [
@@ -70,8 +72,13 @@ test("Home does not repeat active or recent chats as an activity section", async
       ],
     }),
   );
-  assert.equal(dom.document.querySelector(".home-section, .home-stories, .home-now"), null);
-  assert.doesNotMatch(view.container.textContent, /Fix login|Broken build|Long done|Working/);
+  const section = await dom.waitFor(() => dom.document.querySelector(".home-section .home-stories"));
+  assert.deepEqual([...section.querySelectorAll(".story > small")].map((s) => s.textContent), ["Broken build", "Working", "Fix login"]);
+  assert.ok(section.querySelector(".story-ring.active"), "the working one turns");
+  assert.doesNotMatch(view.container.textContent, /Long done/);
+  // Under the computer's card, never above what needs you.
+  const order = [...dom.document.querySelector(".home-live").children].map((el) => el.className);
+  assert.ok(order.indexOf("home-section") > order.indexOf("home-hero"));
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });
