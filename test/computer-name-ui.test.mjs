@@ -8,7 +8,7 @@ import { startDom, settle } from "./dom/harness.mjs";
 // only when there's another computer to tell it from. The top bar's pill
 // (and its "+") shows only when there's a choice: two linked computers, or
 // one waiting to be linked. Adding a computer stays in More.
-const mac = { id: "mac", name: "Lebdiris-MacBook-Pro", url: "https://mac.tail.ts.net", token: "t", platform: "darwin" };
+const mac = { id: "mac", name: "Studio-Mac", url: "https://mac.tail.ts.net", token: "t", platform: "darwin" };
 const pc = { id: "pc", name: "Desk-PC", url: "https://desk-pc.tail.ts.net", token: "t", platform: "win32" };
 const waiting = { origin: "https://studio.tail.ts.net", name: "Studio", short: "studio", linked: false };
 const connections = { mac: { state: "connected", devices: [] }, pc: { state: "connected", devices: [] } };
