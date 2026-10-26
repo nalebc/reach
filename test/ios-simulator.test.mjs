@@ -431,7 +431,18 @@ test("iOS simulator pairs through the real UI, reads files and runs native trans
       pageEvidence: pageState, proxyEvidence: proxyForwarder.snapshot(), nativeLifecycle: lifecycle.snapshot(), runtime: runtime.version, backgroundedDuringDownload, hostResources: resources, physicalDevice: false }, null, 2) + "\n");
     reported = true;
     await new Promise(resolve => setTimeout(resolve, 1500));
-    await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });
+    // The screenshot is evidence for whoever reads the report, not a check:
+    // the report above already holds every result. On a loaded runner simctl
+    // hung taking it after all eight checks passed (runs 40341388685 and
+    // main's 0e299f0c), so a missing screenshot is written into the report
+    // and never decides the test.
+    try {
+      await sim("screenshot", ["io", device, "screenshot", output.replace(/\.json$/, "") + ".png"], { limit: 30000, attempts: 2 });
+    } catch (error) {
+      const written = JSON.parse(await fs.readFile(output, "utf8"));
+      await fs.writeFile(output, JSON.stringify({ ...written, steps, screenshot: error.message }, null, 2) + "\n");
+      t.diagnostic(`No screenshot: ${error.message}`);
+    }
     if (!report.ok && /Native download/.test(report.error)) {
       const logs = await sim("native download log", ["spawn", device, "log", "show", "--last", "1m", "--style", "compact", "--predicate", 'process == "nsurlsessiond" AND (messageType == error OR messageType == fault)']).catch(error => ({ stdout: error.message }));
       await fs.writeFile(output.replace(/\.json$/, "") + ".native.log", logs.stdout);

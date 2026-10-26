@@ -482,6 +482,24 @@ export function desktopConnection(
     }
   };
   const deadline = setTimeout(() => close("Authenticate first."), 5000);
+  // Is the link still there? Asked of the phone's browser, not its page: a
+  // browser answers a ping from its own network code, even while the page's
+  // script is busy, and the page's heartbeats come from that script (Oct 25,
+  // Windows CI: a phone page ran one 4 s task mid-typing, sent nothing, and
+  // control closed and paused its typing, with the link fine all along).
+  // Asked only after a second without a word; a link that answers nothing
+  // still ends 3 s after its last word.
+  ws.on("pong", () => {
+    lastSeen = Date.now();
+  });
+  const askLink = () => {
+    if (ws.readyState !== 1 || typeof ws.ping !== "function" || Date.now() - lastSeen < 1000) return;
+    try {
+      ws.ping();
+    } catch {
+      // Closing: its close ends this connection.
+    }
+  };
   const check = setInterval(() => {
     if (token) {
       try {
@@ -489,10 +507,13 @@ export function desktopConnection(
         if (parked) return;
         if (!starting && !busy && Date.now() - lastSeen > 3000)
           close("Desktop control disconnected. Reconnecting…", true);
-        // Changes on the Mac itself (a window opening, an app switch): a
-        // cheap look, a full one only when windows moved.
-        else if (fields && !scanning && Date.now() - scannedAt > 1000)
-          void scan(true);
+        else {
+          askLink();
+          // Changes on the Mac itself (a window opening, an app switch): a
+          // cheap look, a full one only when windows moved.
+          if (fields && !scanning && Date.now() - scannedAt > 1000)
+            void scan(true);
+        }
       } catch (e) {
         // Held: what's queued waits; the hold's end closes it.
         if (!e?.held) close(e.message, e?.retryable === true);

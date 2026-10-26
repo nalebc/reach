@@ -31,6 +31,8 @@ export const suites = {
     // The app-in-front read beside the input queue, on the scanner, and a
     // phone's new control connection taking over from its old one (Oct 18).
     "desktop-context-scanner", "desktop-control-takeover", "desktop-control-reconnect",
+    // A phone page busy for seconds keeps control; a dead link still ends it (Oct 25).
+    "desktop-control-page-stall-chrome",
     "windows-desktop-input-native", "windows-desktop-input",
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map",
