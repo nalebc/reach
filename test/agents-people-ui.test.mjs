@@ -224,7 +224,12 @@ test("one Agents list: no Agent sessions row, no second Invite button, empty ext
   const { container: c } = await render();
   await dom.waitFor(() => c.querySelector(".ppl-row"));
   assert.doesNotMatch(c.textContent, /Agent sessions|Invite agent|Agent shortcuts|Service access|Search agents/);
-  assert.equal(c.querySelectorAll('[aria-label="Invite"]').length, 1, "the + is the one way to invite");
+  assert.equal(c.querySelectorAll('[aria-label="Invite"]').length, 1, "Invite in the header is the one way to invite");
+  // The header's button looks and reads like Home's: a labelled Invite pill,
+  // not a bare "+".
+  const invite = c.querySelector('.ppl-head [aria-label="Invite"]');
+  assert.equal(invite.textContent.trim(), "Invite");
+  assert.ok(invite.classList.contains("invite-pill"));
   for (const label of ["Shortcuts", "Services", "Ended"]) assert.equal(rowNamed(c, label), undefined, label);
 });
 

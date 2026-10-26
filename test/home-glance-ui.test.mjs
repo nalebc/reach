@@ -113,7 +113,11 @@ test("Access on Home: who's here or may come in, one tap to Agents & people, one
   );
   assert.equal(card.querySelectorAll(".home-access-faces i svg.mascot").length, 2);
   card.querySelector(".home-access-who").click();
-  card.querySelector('[aria-label="Invite an agent or someone"]').click();
+  // The same labelled Invite pill as Agents & people's header.
+  const invite = card.querySelector('[aria-label="Invite an agent or someone"]');
+  assert.equal(invite.textContent.trim(), "Invite");
+  assert.ok(invite.classList.contains("invite-pill"));
+  invite.click();
   assert.deepEqual(went, ["invite", "invite:new"]);
   assert.deepEqual(dom.errors, []);
   await view.unmount();

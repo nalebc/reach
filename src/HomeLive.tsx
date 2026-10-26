@@ -49,6 +49,7 @@ import ShortcutIcon from "./ShortcutIcon";
 import { PauseButton } from "./PauseControl";
 import { accessOf, hasAccessNow, listedAccess, statusIn, type AccessSession } from "./access-list";
 import { Mascot } from "./Mascot";
+import { InviteButton } from "./invite-menu";
 import { computerWord, pausedIn } from "./pause";
 import "./home-live.css";
 
@@ -762,13 +763,7 @@ export default function HomeLive({
             </span>
             <ChevronRight className="home-access-go" size={17} />
           </button>
-          <button
-            className="home-access-add"
-            aria-label="Invite an agent or someone"
-            onClick={() => navigate("invite:new")}
-          >
-            <Plus size={17} /> Invite
-          </button>
+          <InviteButton label="Invite an agent or someone" onClick={() => navigate("invite:new")} />
         </section>
       )}
 
