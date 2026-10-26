@@ -8,6 +8,12 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-10-25
+
+Early-access release: one permanent owner link that works with the phone's
+Tailscale app on or off, browser enrollment during owner setup, Tools
+navigation, and Copy selected text on Mac Chrome pages.
+
 ### Added
 
 - One permanent owner link per computer. The same link works whether the
