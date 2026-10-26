@@ -37,7 +37,11 @@ video, and Copy selected text on Mac Chrome pages and in apps like Numbers.
 - Home shows what's running on the computer again, as circles under its
   card: a ring turns while an agent or terminal works, pulses amber when it
   needs you, and keeps a check (or "!") for a few minutes after it ends. One
-  tap opens it; nothing running, no row.
+  tap opens it; nothing running, no row. They stay in one row that scrolls
+  sideways, and Reach's own launcher windows aren't among them.
+- Home's computer card is quieter: no name under it (the top bar has it),
+  no "Open screen" pill (tap the preview, or Screen in the bottom bar), and
+  its status is one line with nothing to expand.
 - The public start page and its fixed files stay available at the owner link
   without a pairing window, so the bookmark always opens; owner APIs and
   WebSockets remain private. Setup shows the phone QR only once that link is

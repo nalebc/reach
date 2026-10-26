@@ -9,7 +9,7 @@ test("Settings: the connection with its dot, and Reach's version", { skip, timeo
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.see(() => document.querySelector(".home-hero-text h1")?.textContent, "Home");
+  await page.see(() => document.querySelector(".home-connection")?.textContent, "Home");
   await page.tap('button.workspace-settings[aria-label="Settings"]', "Settings, in the top bar");
   const route = await page.see(() => document.querySelector(".connection-row .conn-status")?.textContent, "the connection row");
   assert.equal(route, "Tailscale app", "the phone reaches it over Tailscale, said in words");

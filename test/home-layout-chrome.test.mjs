@@ -195,7 +195,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       const hero = document.querySelector('.home-hero').getBoundingClientRect();
       const nav = document.querySelector('.mobile-nav').getBoundingClientRect();
       const shortcuts = document.querySelector('.home-pinned').getBoundingClientRect();
-      return { width: innerWidth, scroll: document.documentElement.scrollWidth, hero: hero.toJSON(), shortcuts: shortcuts.toJSON(), nav: nav.toJSON(), scene: document.querySelector(".home-scene > svg").getAttribute("viewBox"), name: document.querySelector(".home-hero-text h1")?.textContent, shortcutWidth: document.querySelector(".shortcut-open").getBoundingClientRect().width, mascot: !!document.querySelector('.home-scene .courier-actor'), target: document.querySelector('.home-screen-open').getBoundingClientRect().height };
+      return { width: innerWidth, scroll: document.documentElement.scrollWidth, hero: hero.toJSON(), shortcuts: shortcuts.toJSON(), nav: nav.toJSON(), scene: document.querySelector(".home-scene > svg").getAttribute("viewBox"), name: document.querySelector(".home-hero-text h1")?.textContent ?? null, pill: !!document.querySelector(".home-screen-open"), shortcutWidth: document.querySelector(".shortcut-open").getBoundingClientRect().width, mascot: !!document.querySelector('.home-scene .courier-actor'), target: document.querySelector('.home-screen-launch').getBoundingClientRect().height };
     })()`);
       results.push(result);
       const shot = await tab.send("Page.captureScreenshot", {
@@ -208,10 +208,13 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       );
       assert.ok(result.scroll <= width, `no overflow at ${width}`);
       assert.equal(result.scene, "0 -40 400 275", "original laptop and mascot framing");
-      assert.equal(result.name, "My MacBook Pro");
+      // The name is in the top bar only; the card says how it is, and the
+      // preview itself opens Screen (also in the bottom bar), no pill.
+      assert.equal(result.name, null);
+      assert.equal(result.pill, false);
       assert.ok(result.shortcutWidth >= result.shortcuts.width - 1, "a lone shortcut uses the available width");
       assert.ok(result.mascot, "Reach mascot stays in the scene");
-      assert.ok(result.target >= 44, "screen action has a touch target");
+      assert.ok(result.target >= 44, "the preview is a touch target for Screen");
       assert.ok(
         result.shortcuts.bottom < height - 65,
         "shortcuts fit in the first screen",
@@ -316,8 +319,8 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
     await pause(180);
     assert.deepEqual(await pose(), pausedPose, "Reach's motion setting also stops the mascot");
     assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.home-hero-scene'), '::before').animationName"), "none");
-    await click(`document.querySelector('.home-screen-open')`);
-    assert.equal(await tab.evaluate("window.__fixture.page"), "screen", "the original Open screen action still works");
+    await click(`document.querySelector('.home-screen-launch')`);
+    assert.equal(await tab.evaluate("window.__fixture.page"), "screen", "tapping the preview still opens Screen");
     fs.writeFileSync(
       path.join(report, "layout.json"),
       JSON.stringify(

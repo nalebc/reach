@@ -110,53 +110,23 @@
   opacity: 0.65;
 }
 .home-connection {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
 }
-.home-connection summary {
+.home-connection-line {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 44px;
-  padding: 8px 2px;
-  color: var(--muted);
+  min-height: 36px;
+}
+.home-connection-help {
+  color: var(--muted, #93a096);
   font-size: 12.5px;
-  cursor: pointer;
-  list-style: none;
-}
-.home-connection summary::-webkit-details-marker {
-  display: none;
-}
-.home-connection summary::after {
-  content: "⌄";
-  font-size: 16px;
-}
-.home-connection[open] summary::after {
-  transform: rotate(180deg);
-}
-.home-connection-info {
-  position: absolute;
-  z-index: 4;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(100% + 8px);
-  width: min(270px, calc(100vw - 76px));
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: #18221c;
-  box-shadow: 0 12px 30px #0005;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.5;
-  text-align: left;
-}
-.home-connection p {
-  margin: 0 0 8px;
-}
-.home-connection p:last-child {
-  margin-bottom: 0;
+  text-align: center;
 }
 .home-app-link {
   color: var(--lime);
@@ -200,7 +170,6 @@
   background: #ffffff0c;
 }
 .home-hero button:focus-visible,
-.home-connection summary:focus-visible,
 .home-presence:focus-visible {
   outline: 2px solid var(--lime);
   outline-offset: 3px;

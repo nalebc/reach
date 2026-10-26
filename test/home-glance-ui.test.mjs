@@ -135,7 +135,7 @@ test("connection details distinguish lost access from reconnecting and never cal
     return home({ connections: { mac: { state } } });
   }
   const view = await dom.render(React.createElement(Host));
-  const summary = () => dom.document.querySelector(".home-connection summary").textContent;
+  const summary = () => dom.document.querySelector(".home-connection-line").textContent;
   assert.equal(summary(), "Connecting…");
   for (const [state, label] of [["connected", "Connected"], ["connecting", "Reconnecting…"], ["disconnected", "Connection lost"], ["denied", "Access needed"]]) {
     dom.update(() => update(state));

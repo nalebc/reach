@@ -106,7 +106,7 @@ async function workspace({ peers = [mac], routes: extra = {}, reachable = true }
   const toast = () => $(".toast")?.textContent || "";
   // Home's own word for the computer's live connection.
   // Home says it in its connection line: "Connected" (older Homes: "Online").
-  const online = () => /^Connected\b/.test($(".home-connection summary")?.textContent?.trim() || "") ||
+  const online = () => /^Connected\b/.test($(".home-connection-line")?.textContent?.trim() || "") ||
     /Online/.test($(".home-live, .main-content")?.textContent || "");
   const goOffline = () => {
     net.up = false;

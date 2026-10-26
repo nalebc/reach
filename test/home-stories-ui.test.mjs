@@ -76,7 +76,8 @@ for (const [platform, word] of [["darwin", "Mac"], ["win32", "Windows PC"]]) {
   });
 
   test(`${word}: Reach's own terminals and the computer's terminal windows, each opening where it lives`, async () => {
-    macTabs = [{ id: "w1", name: "zsh" }];
+    // Reach's own launcher windows are Reach, never a circle.
+    macTabs = [{ id: "w1", name: "zsh" }, { id: "r1", name: "start-in-terminal.command" }, { id: "r2", name: "start-at-login.command — 80×24" }, { id: "r3", name: "Reach" }];
     const { view, opened } = render(platform, {
       features: { ...features, desktopTerminals: true },
       terminals: [{ id: "t1", name: "Claude Code", status: "running", preview: ["thinking"] }, { id: "t2", name: "old", status: "exited" }],
@@ -84,6 +85,7 @@ for (const [platform, word] of [["darwin", "Mac"], ["win32", "Windows PC"]]) {
     const v = await view;
     await dom.waitFor(() => dom.document.querySelector('.story[aria-label^="zsh"]'));
     assert.deepEqual(names(), ["New", "Claude Code", "zsh"]);
+    assert.equal(dom.document.querySelector(".home-now"), null, "no latest-output line under the circles");
     const badge = dom.document.querySelector('.story[aria-label^="zsh"] .story-badge').textContent;
     assert.equal(badge, platform === "win32" ? "PC" : "Mac");
     dom.document.querySelector('.story[aria-label^="Claude Code"]').click();
@@ -102,9 +104,10 @@ test("nothing running: no row at all, Home stays quiet", async () => {
   await v.unmount();
 });
 
-test("the circles wrap instead of scrolling sideways, and stop turning for Reduce Motion", () => {
+test("the circles stay in one row that scrolls sideways, and stop turning for Reduce Motion", () => {
   const css = fs.readFileSync(new URL("../src/home-stories.css", import.meta.url), "utf8");
-  assert.match(css, /\.home-stories \{[^}]*flex-wrap: wrap;/);
-  assert.doesNotMatch(css, /overflow-x/);
+  assert.match(css, /\.home-stories \{[^}]*overflow-x: auto;/);
+  assert.doesNotMatch(css, /\.home-stories \{[^}]*flex-wrap: wrap/);
+  assert.match(css, /\.story \{[^}]*flex: 0 0 70px;/, "circles keep their size and never squeeze");
   assert.match(css, /prefers-reduced-motion: reduce\)[\s\S]*\.story-ring\.active::before[\s\S]*animation: none/);
 });

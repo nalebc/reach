@@ -78,7 +78,6 @@ export default function HomeLive({
   peer,
   active,
   connections,
-  connection,
   appLink,
   chats,
   terminals = [],
@@ -101,7 +100,8 @@ export default function HomeLive({
   peer: Peer;
   active: string;
   connections: FleetConnections;
-  connection: string;
+  // The route's name (Settings shows it now; Home says only how it is).
+  connection?: string;
   // Signed in from the browser: the Tailscale app, one tap away.
   appLink?: string;
   chats: Session[];
@@ -315,6 +315,8 @@ export default function HomeLive({
             liveScreen={live}
             className="home-scene"
           />
+          {/* The whole preview opens Screen (also in the bottom bar, so no
+              words here); only setting it up still says so. */}
           <button
             className="home-screen-launch"
             aria-label={
@@ -327,14 +329,12 @@ export default function HomeLive({
             disabled={!features.screen && !features.screenSetup}
             onClick={() => navigate(features.screen ? "screen" : "settings")}
           >
-            <span className="home-screen-open">
-              {features.screen
-                ? "Open screen"
-                : features.screenSetup
-                  ? "Set up screen"
-                  : "Screen unavailable"}
-              <ChevronRight size={17} aria-hidden="true" />
-            </span>
+            {!features.screen && features.screenSetup && (
+              <span className="home-screen-open">
+                Set up screen
+                <ChevronRight size={17} aria-hidden="true" />
+              </span>
+            )}
           </button>
         </div>
         {heroPill && (
@@ -348,10 +348,11 @@ export default function HomeLive({
             {heroPill}
           </button>
         )}
+        {/* One line under the computer: how it is, nothing to open. Its
+            name is already in the top bar. Offline, what to do says so. */}
         <div className="home-hero-text">
-          <h1>{device.name}</h1>
-          <details className="home-connection">
-            <summary aria-label={`Connection details: ${connectionStatus}`}>
+          <div className="home-connection" role="status" aria-label={`Connection: ${connectionStatus}`}>
+            <span className="home-connection-line">
               <i className={`status-dot ${online ? "" : "off"}`} />
               {connectionStatus}
               {(paused || (live && !heroPill)) && (
@@ -359,30 +360,20 @@ export default function HomeLive({
                   · {paused ? "Paused" : "Live preview"}
                 </span>
               )}
-            </summary>
-            <div className="home-connection-info">
-              <p>
-                {connectionStatus} · {connection}
-              </p>
-              {!online && (
-                <p>
-                  {state === "denied"
-                    ? "Restore this device’s access from your computer."
-                    : "Reach is trying to connect. Check that your computer is awake and Reach is running."}
-                </p>
-              )}
-              {appLink && (
-                <a
-                  className="home-app-link"
-                  href={appLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Tailscale app · optional, potentially faster
-                </a>
-              )}
-            </div>
-          </details>
+            </span>
+            {!online && (
+              <small className="home-connection-help">
+                {state === "denied"
+                  ? "Restore this device’s access from your computer."
+                  : "Check that your computer is awake and Reach is running."}
+              </small>
+            )}
+            {appLink && (
+              <a className="home-app-link" href={appLink} target="_blank" rel="noopener noreferrer">
+                Tailscale app · optional, potentially faster
+              </a>
+            )}
+          </div>
         </div>
       </section>
 

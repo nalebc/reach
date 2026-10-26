@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Asterisk, Check, ChevronRight, MessageSquare, Plus, Sparkles, Terminal } from "lucide-react";
+import { Asterisk, Check, MessageSquare, Plus, Sparkles, Terminal } from "lucide-react";
 import { request, type Device, type Peer, type Session } from "./api";
 import type { WorkspaceCapabilities } from "./capabilities";
 import type { MacTerminal } from "./DesktopTerminals";
@@ -30,6 +30,10 @@ type Story = {
   at: number;
   open: () => void;
 };
+// The windows Reach itself runs in (its launcher on a Mac, its own "Reach"
+// window on a PC) are Reach, not something you're running.
+export const reachOwnWindow = (name = "") =>
+  /^start-(in-terminal|at-login)(\.command)?\b/i.test(name.trim()) || name.trim() === "Reach";
 const kindOf = (name: string): Story["kind"] =>
   /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : /gemini/i.test(name) ? "gemini" : "shell";
 // Codex, Claude Code and terminals wear their real app icons (from the
@@ -49,10 +53,6 @@ const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }
   ) : (
     <Terminal size={22} />
   );
-};
-const ago = (at: number, now: number) => {
-  const s = Math.max(0, Math.round((now - at) / 1000));
-  return s < 5 ? "now" : s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
 };
 
 // The computer's own terminal windows and each one's last line. A computer
@@ -213,7 +213,7 @@ export default function HomeStories({
           open: () => openTerminal(t.id),
         };
       }),
-    ...mac.tabs.map((t): Story => {
+    ...mac.tabs.filter((t) => !reachOwnWindow(t.name)).map((t): Story => {
       const peek = mac.peeks[t.id];
       return {
         key: `mac:${t.id}`,
@@ -255,7 +255,6 @@ export default function HomeStories({
   // At most six agent sessions, chosen after ranking so attention is never cut.
   let agentShown = 0;
   const shown = stories.filter((s) => !s.key.startsWith("agent:") || ++agentShown <= 6);
-  const latest = shown.filter((s) => s.line && s.at).sort((a, b) => b.at - a.at)[0];
   // Nothing running: no row at all (Home stays quiet). Once something runs,
   // ＋ leads the row to start another.
   if (!shown.length) return null;
@@ -300,14 +299,6 @@ export default function HomeStories({
           </button>
         ))}
       </div>
-      {latest && (
-        <button className="home-now" onClick={latest.open}>
-          <ChevronRight size={15} />
-          <strong>{latest.name}</strong>
-          <code>{latest.line}</code>
-          <small>{ago(latest.at, now)}</small>
-        </button>
-      )}
     </section>
   );
 }

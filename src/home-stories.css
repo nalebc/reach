@@ -15,14 +15,24 @@
   color: var(--muted, #93a096);
 }
 
-/* Live on your computer: one circle per running thing, like stories.
-   They wrap onto a second line rather than scrolling sideways. */
+/* Live on your computer: one circle per running thing, like stories, in
+   one row that scrolls sideways (the owner's choice for this row). */
 .home-stories {
   display: flex;
-  flex-wrap: wrap;
   align-items: flex-start;
-  gap: 14px 12px;
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
   padding: 4px 2px 2px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.home-stories::-webkit-scrollbar {
+  display: none;
+}
+.home-stories > .story {
+  scroll-snap-align: start;
 }
 .story {
   flex: 0 0 70px;
@@ -123,46 +133,6 @@
   50% {
     box-shadow: 0 0 0 4px #fac77533;
   }
-}
-/* The latest output across everything running. */
-.home-now {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  margin-top: 12px;
-  padding: 10px 12px;
-  border: 1px solid #24302a;
-  border-radius: 12px;
-  background: #0f1714;
-  color: #e6ece7;
-  text-align: left;
-}
-.home-now > svg {
-  flex: 0 0 auto;
-  color: var(--lime, #b9efd4);
-}
-.home-now strong {
-  flex: 0 0 auto;
-  max-width: 34%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 13px;
-}
-.home-now code {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font: 12px "SFMono-Regular", Consolas, monospace;
-  color: #9fb5a4;
-}
-.home-now small {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--muted, #93a096);
 }
 
 /* Real app icons fill the round frame. */

@@ -14,7 +14,7 @@ test(`Home: a new phone signs in, and Home shows this ${word} by its name, onlin
   await page.skipIntro();
   const title = await page.see(() => document.querySelector(".workspace-computer")?.textContent, "the computer's card");
   assert.ok(title.includes(name), "the header names the computer as it names itself");
-  await page.see(() => document.querySelector(".home-connection summary")?.getAttribute("aria-label") === "Connection details: Connected", "the computer connected");
+  await page.see(() => document.querySelector(".home-connection")?.getAttribute("aria-label") === "Connection: Connected", "the computer connected");
   // Its screen, live inside the card, or why not, said on it.
   if (desktop)
     await page.see(

@@ -115,7 +115,15 @@ createRoot(document.getElementById("root")).render(<App/>);
     assert.equal(home.open, false, "setup starts collapsed");
     assert.ok(home.notice.y >= home.shortcuts.bottom, "setup follows the primary Home content");
     assert.ok(home.notice.height <= 96, "pending setup is a compact row");
-    assert.ok(home.notice.bottom < home.nav.top, "reminder and navigation don't overlap");
+    // Home may be taller than the screen (the circles of what's running sit
+    // above it): scrolled to, the reminder is never left behind the bar.
+    await tab.evaluate("document.scrollingElement.scrollTo({ top: document.scrollingElement.scrollHeight, behavior: 'instant' })");
+    await frame();
+    const shown = await tab.evaluate(`(() => {
+      const r = document.querySelector('.owner-connection-setup').getBoundingClientRect();
+      return { bottom: r.bottom, nav: document.querySelector('.mobile-nav').getBoundingClientRect().top, y: scrollY };
+    })()`);
+    assert.ok(shown.bottom <= shown.nav, `reminder and navigation don't overlap (${JSON.stringify({ ...shown, width })})`);
     assert.ok(home.width <= width, "Home fits the viewport");
     await shot(`home-${width}`);
     await click(`document.querySelector('.owner-connection-setup > summary')`);

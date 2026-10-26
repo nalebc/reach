@@ -191,7 +191,8 @@ test("Home's connection line links to the Tailscale app when signed in from the 
   const link = await dom.waitFor(() => dom.document.querySelector(".home-app-link"));
   assert.equal(link.textContent, "Tailscale app · optional, potentially faster");
   assert.equal(link.getAttribute("href"), "https://apps.apple.com/app/tailscale/id1470499037");
-  assert.match(link.closest("details").textContent, /Connected · Tailscale in browser/);
-  assert.equal(link.closest("details").open, false, "transport details are available on demand");
+  // No menu to open: the route is in Settings; Home says only how it is.
+  assert.equal(link.closest(".home-connection").querySelector(".home-connection-line").textContent.trim(), "Connected");
+  assert.equal(dom.document.querySelector(".home-connection details, .home-connection summary"), null);
   await view.unmount();
 });
