@@ -15,6 +15,8 @@ release notes, so date the heading before tagging.
   element, never another app's. A blank selection says to select text first
   instead of copying a blank line. The helper also reads the app in front
   afresh each time, not the one in front when screen control began.
+- Escape puts a dragged queued message back even when pressed the moment it
+  lifts.
 
 ## [0.4.2] — 2026-10-25
 
