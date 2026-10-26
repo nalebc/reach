@@ -1,5 +1,25 @@
 # Working on Reach (coding agents)
 
+## Public repository: no personal information (hard rule)
+
+This repository is public. Nothing that identifies the owner, their devices, accounts or data may reach it: not in files, commit messages, PR titles or bodies, issue or review comments, branch names, tags, release notes, CI logs or uploaded artifacts. These rules are not optional. When unsure, leave it out and ask.
+
+- **Never publish:**
+  - real names, usernames or the owner's account folder name;
+  - email addresses, phone numbers or Apple, Google or GitHub account details;
+  - computer, phone or device names and hostnames;
+  - tailnet names, `*.ts.net` addresses, IP addresses, Funnel or invite links;
+  - home-directory paths (`/Users/<name>`, `C:\Users\<name>`);
+  - Wi-Fi, location, calendar or contact data;
+  - anything read from the owner's screen, files, chats, mail, bank or other apps.
+- **Use placeholders:** names like `sam`, `Studio-Mac`, `mac.tail.ts.net` or `/Users/me` in code, comments, tests, fixtures, docs and examples. Never copy a real value from this machine, even into a test that "only" asserts a format.
+- **No real screens:** screenshots, screen recordings and journey reports from this machine are never committed or attached to a PR, issue or comment. Before capturing, a test that shows the live screen (Home's card, Screen) masks `canvas` and `video`. `reports/` stays untracked.
+- **Run the gate before every push:** `node scripts/check-release.mjs` must pass immediately before any `git push`, and the push must run only if it passed. Use `node scripts/check-release.mjs && git push …`; never chain a push after it with `;`. A failing gate means stop, fix, commit, re-run.
+- **The gate doesn't cover text it can't see.** It checks files and author lines against a private, untracked identifier list. It doesn't scan commit messages, PR or issue text, or branch names: read those yourself before publishing. Squash-merge with an explicit `--subject` and `--body` so individual commit messages aren't copied to main.
+- **Author identity:** commit with the GitHub noreply address configured for this repository, never a personal email.
+- **Private data stays private:** the identifier list (`.reach/private-identifiers`, `~/.reach/private-identifiers`), local state, logs, vaults, keys and `~/.reach-dev` are never committed, quoted or summarized in public text.
+- **If something leaks:** stop pushing, tell the owner exactly what and where, and fix it forward at once. Never rewrite or force-push shared history without the owner's explicit go-ahead.
+
 ## Product fundamentals
 
 Connection preference is a product requirement on every supported host and client, including iPhone, iPad and Android:
