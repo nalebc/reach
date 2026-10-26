@@ -1694,12 +1694,25 @@ export async function createReach(overrides = {}) {
   });
   // The browser's signing key proves its already-approved owner connection
   // on the other private node. Never accept a source bearer on that node.
-  app.post("/api/auth/owner-connection/challenge", async (req, res) => {
+  // Setup asks a few times; each verified node or device may ask 20 times a
+  // minute across these routes (CodeQL js/missing-rate-limiting).
+  const ownerConnectionLimit = rateLimit({
+    windowMs: 60_000, limit: 20, store: new MemoryStore(),
+    keyGenerator: req => {
+      const node = req.reachIdentity?.nodeId || req.client?.id;
+      if (!node) throw fail(403, "Connect this device to the owner's private network.");
+      return String(node);
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    identifier: "owner-connection",
+    message: { error: "Too many connection setup requests. Try again in one minute." },
+  });
+  app.post("/api/auth/owner-connection/challenge", ownerConnectionLimit, async (req, res) => {
     if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
       throw fail(403, "Set up this computer's own browser with its local approval.");
     res.json(ownerConnections.challenge(req.reachIdentity, req.body));
   });
-  app.post("/api/auth/owner-connection/join", async (req, res) => {
+  app.post("/api/auth/owner-connection/join", ownerConnectionLimit, async (req, res) => {
     if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
       throw fail(403, "Set up this computer's own browser with its local approval.");
     const joined = ownerConnections.join(req.reachIdentity, req.body);
@@ -2358,7 +2371,7 @@ export async function createReach(overrides = {}) {
     res.setHeader("Cache-Control", "no-store");
     res.json(auth.issueDoorKey(req.client.id));
   });
-  app.post("/api/device/owner-connection", (req, res) => {
+  app.post("/api/device/owner-connection", ownerConnectionLimit, (req, res) => {
     const client = req.reauthorize();
     res.json(auth.registerOwnerConnection(client.id, req.body?.publicKey, req.body?.role));
   });

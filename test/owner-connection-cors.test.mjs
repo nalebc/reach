@@ -74,18 +74,31 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   });
   await tab.send("Fetch.enable", { patterns: [{ urlPattern: `${ORIGIN}/*`, requestStage: "Request" }] });
   await tab.navigate(`${ORIGIN}/`); await tab.evaluate(bundle);
-  const setup = `OwnerFixture.ownerEnrollment(${JSON.stringify(peer)}, "browser", ${JSON.stringify(config)})`;
-  const joined = await tab.evaluate(`(async () => {
-    const [first, second] = await Promise.all([${setup}.join(new AbortController().signal), ${setup}.join(new AbortController().signal)]);
-    const pair = await OwnerFixture.browserOwnerKeys.pair(${JSON.stringify(peer.computerId || peer.id)});
+  // The page's own code, fixed; the peer and its config go in as arguments
+  // (DevTools' callFunctionOn), never spliced into code (CodeQL #358).
+  const call = async (fn, ...args) => {
+    const { result: page } = await tab.send("Runtime.evaluate", { expression: "globalThis" });
+    const { result, exceptionDetails } = await tab.send("Runtime.callFunctionOn", {
+      objectId: page.objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })),
+      awaitPromise: true, returnByValue: true,
+    });
+    if (exceptionDetails) throw Error(exceptionDetails.exception?.description || exceptionDetails.text);
+    return result.value;
+  };
+  const joined = await call(`async function (peer, config) {
+    const setup = () => OwnerFixture.ownerEnrollment(peer, "browser", config);
+    const [first, second] = await Promise.all([setup().join(new AbortController().signal), setup().join(new AbortController().signal)]);
+    const pair = await OwnerFixture.browserOwnerKeys.pair(peer.computerId || peer.id);
     return { first, second, extractable: pair.privateKey.extractable, saved: JSON.parse(localStorage.getItem("reach.devices")) };
-  })()`).catch(error => { t.diagnostic(JSON.stringify({ seen, problems: tab.problems })); throw error; });
+  }`, peer, config).catch(error => { t.diagnostic(JSON.stringify({ seen, problems: tab.problems })); throw error; });
   assert.equal(joined.first.token, joined.second.token);
   assert.equal(joined.extractable, false);
   assert.equal(joined.saved[0].token, joined.first.token);
   assert.notEqual(joined.first.token, grant.token);
   await tab.navigate(`${ORIGIN}/`); await tab.evaluate(bundle);
-  const restored = await tab.evaluate(`(async () => (${setup}.join(new AbortController().signal)))()`);
+  const restored = await call(`async function (peer, config) {
+    return OwnerFixture.ownerEnrollment(peer, "browser", config).join(new AbortController().signal);
+  }`, peer, config);
   assert.equal(restored.token, joined.first.token, "IndexedDB key and proposed credential survive reload");
   assert.equal(reach.auth.list().length, 2);
   assert.ok(seen.some(r => r.method === "OPTIONS" && r.site === "same-site"));
@@ -96,7 +109,7 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   publicRoute = true;
   const publicRead = route => new Promise((resolve, reject) => {
     https.get(`${privateOrigin}${route}`, { lookup: (_host, _options, cb) => cb(null, [{ address: "127.0.0.1", family: 4 }]),
-      rejectUnauthorized: false, headers: { Authorization: `Bearer ${joined.first.token}` } }, response => {
+      ca: certificate.cert, headers: { Authorization: `Bearer ${joined.first.token}` } }, response => {
       response.resume(); response.on("end", () => resolve(response.statusCode));
     }).on("error", reject);
   });

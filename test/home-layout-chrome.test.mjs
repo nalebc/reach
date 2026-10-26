@@ -153,8 +153,10 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       tab.evaluate(
         "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
       );
-    const click = async (selector) => {
-      const at = await tab.evaluate(`(() => { const b = document.querySelector(${JSON.stringify(selector)}); b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { x: r.x+r.width/2, y:r.y+r.height/2 }; })()`);
+    // Each target is a fixed element lookup written here, never a value
+    // spliced into page code (CodeQL #357).
+    const click = async (element) => {
+      const at = await tab.evaluate(`(() => { const b = ${element}; b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { x: r.x+r.width/2, y:r.y+r.height/2 }; })()`);
       await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
       await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       await frame();
@@ -213,7 +215,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       );
       assert.equal(await tab.evaluate("document.querySelectorAll('button button').length"), 0, "mascot and Screen have independent native buttons");
       const reducedPose = await pose();
-      await click('[aria-label="Say hello to Reach"]');
+      await click(`document.querySelector('[aria-label="Say hello to Reach"]')`);
       assert.equal(await tab.evaluate("window.__fixture.page"), "overview", "greeting never opens Screen");
       assert.equal(await tab.evaluate("document.querySelector('.reach-mascot-feedback').textContent"), "Reach says hello!");
       assert.equal(await tab.evaluate("document.querySelector('.reach-mascot-button').closest('[aria-hidden=true]') === null"), true, "the greeting is accessible");
@@ -222,12 +224,12 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.home-hero-scene'), '::before').animationName"), "none");
       const heartShot = await tab.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       fs.writeFileSync(path.join(report, `greeting-${width}.png`), Buffer.from(heartShot.data, "base64"));
-      await click('[aria-label="Edit shortcuts"]');
-      await click('[aria-label="Add Files to Shortcuts"]');
-      await click('[aria-label="Move Files earlier"]');
+      await click(`document.querySelector('[aria-label="Edit shortcuts"]')`);
+      await click(`document.querySelector('[aria-label="Add Files to Shortcuts"]')`);
+      await click(`document.querySelector('[aria-label="Move Files earlier"]')`);
       const editShot = await tab.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       fs.writeFileSync(path.join(report, `shortcuts-${width}.png`), Buffer.from(editShot.data, "base64"));
-      await click('[aria-label="Done editing shortcuts"]');
+      await click(`document.querySelector('[aria-label="Done editing shortcuts"]')`);
       assert.deepEqual(
         await tab.evaluate(
           'JSON.parse(localStorage.getItem("reach.pinnedTools"))',
@@ -239,7 +241,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       );
       await tab.evaluate('window.__fixture.show("screen")');
       await frame();
-      await click('[aria-label="Control"]');
+      await click(`document.querySelector('[aria-label="Control"]')`);
       await tab.evaluate("window.__fixture.frame()");
       await frame();
       const controls = await tab.evaluate(
@@ -311,7 +313,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
     await pause(180);
     assert.deepEqual(await pose(), pausedPose, "Reach's motion setting also stops the mascot");
     assert.equal(await tab.evaluate("getComputedStyle(document.querySelector('.home-hero-scene'), '::before').animationName"), "none");
-    await click('.home-screen-open');
+    await click(`document.querySelector('.home-screen-open')`);
     assert.equal(await tab.evaluate("window.__fixture.page"), "screen", "the original Open screen action still works");
     fs.writeFileSync(
       path.join(report, "layout.json"),
