@@ -152,13 +152,19 @@ test("the three bars share one height, one button and one title style", () => {
     ".chat-mobile-tools .notification-bell",
     ".chat-mobile-tools .usage-button",
     ".terminal-bar-icon",
+    ".topbar .topbar-right > .workspace-settings",
   ])
     assert.ok(round.includes(button), `${button} is one of the round buttons`);
+  // Settings stays in the phone's bar beside the bell: hiding the desktop's
+  // other icon buttons spares it (it was 0×0 there, Oct 26).
+  assert.match(css, /\.topbar-right > \.icon-button:not\(\.workspace-settings\),/);
   // One title style.
   assert.match(css, /\.chat-app-current \{[^}]*font-size: var\(--bar-title-size\)/);
   assert.match(css, /\.terminal-bar \.terminal-switch,[^{]*\{[^}]*font-size: var\(--bar-title-size\)/);
-  // The computers end one button and gap before the bell, from the same measures.
-  assert.match(css, /:has\(\.notification-bell\) \+ \.fleet-switcher \{\s*--bar-end: calc\(var\(--bar-inline\) \+ var\(--bar-button\) \+ var\(--bar-gap\)\)/);
+  // The computers end one button and gap before the bell or Settings, and
+  // two before both, from the same measures.
+  assert.match(css, /:is\(:has\(\.notification-bell\), :has\(\.workspace-settings\)\) \+ \.fleet-switcher \{\s*--bar-end: calc\(var\(--bar-inline\) \+ var\(--bar-button\) \+ var\(--bar-gap\)\)/);
+  assert.match(css, /:has\(\.notification-bell\):has\(\.workspace-settings\) \+ \.fleet-switcher \{\s*--bar-end: calc\(var\(--bar-inline\) \+ 2 \* \(var\(--bar-button\) \+ var\(--bar-gap\)\)\)/);
   assert.doesNotMatch(source("notifications.css"), /right: 64px/, "no second, hard-coded bell reserve");
   // Loaded after the shared look, so its measures win.
   const main = source("main.tsx");

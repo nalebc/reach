@@ -176,11 +176,14 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       [390, 844],
       [768, 1024],
     ]) {
+      // The phone's own orientation too: unset, Chrome reports this
+      // computer's landscape screen, and Screen reads a phone on its side.
       await tab.send("Emulation.setDeviceMetricsOverride", {
         width,
         height,
         deviceScaleFactor: 1,
         mobile: true,
+        screenOrientation: { type: "portraitPrimary", angle: 0 },
       });
       await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
       await frame();
@@ -269,7 +272,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
         );
       }
     }
-    await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenOrientation: { type: "portraitPrimary", angle: 0 } });
     await tab.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
     await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
     await frame();
