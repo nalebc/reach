@@ -10,6 +10,15 @@ release notes, so date the heading before tagging.
 
 ### Changed
 
+- One look across the phone's pages:
+  - Home, Chat and Terminal share one top bar (height, round buttons, title, the bell last).
+  - The Terminal tab keeps the bottom bar and has no back arrow at its list.
+  - With one computer, its name shows once: no top-bar pill, no Files caption, no Chat row.
+  - Files names the home folder as Finder and Explorer do.
+  - "…is within reach" shows only when it's news.
+  - Home's Pause reads Pause or Paused.
+  - Agents & people invites with the same "+ Invite" pill as Home.
+  - Settings says Face ID in one line, and Fallback as Set up or Ready.
 - Settings opens with how this phone reaches the computer, as a dot and a
   word: green for the Tailscale app, amber for Tailscale in the browser or
   the public link, grey when offline. Reach picks the route; nothing to
