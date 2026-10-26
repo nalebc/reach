@@ -50,13 +50,21 @@ test("actual built Reach cold-opens its original private origin through a comple
     const item = { kind, path: new URL(req.url, "https://fixture").pathname, method: req.method,
       realm, credential: !token ? "none" : token === nativeToken ? "native" : "browser-or-other" }; calls.push(item);
     if (kind !== "public" && !/^\/api\/(?:device(?:[/?]|$)|health(?:[/?]|$)|auth\/|files(?:[/?]|$))/.test(req.url)) { res.writeHead(503); return res.end(); }
-    const headers = { ...req.headers, host: new URL(frontOrigin).host, "X-Forwarded-Host": new URL(frontOrigin).host,
+    const headers = { ...req.headers, "accept-encoding": "identity", host: new URL(frontOrigin).host, "X-Forwarded-Host": new URL(frontOrigin).host,
       "X-Forwarded-For": kind === "native" ? "100.101.0.1" : kind === "browser" ? "100.101.0.2" : "203.0.113.5" };
     if (kind === "public") headers["Tailscale-Funnel-Request"] = "?1"; else headers["Tailscale-User-Login"] = "owner@example.test";
     const upstream = http.request({ host: "127.0.0.1", port: ingressPort, path: `/r-${ingressKey}${req.url}`, method: req.method, headers, agent: false }, response => {
       item.status = response.statusCode;
       const output = { ...response.headers }; if (kind === "browser" && !cors) delete output["access-control-allow-origin"];
-      res.writeHead(response.statusCode, output); response.pipe(res);
+      // This fixture retains the legacy private-port migration UI. Model its
+      // older host capability while keeping real device-bound authorization.
+      if (req.method === "GET" && req.url === "/api/device" && response.statusCode === 200) {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => {
+          const device = JSON.parse(Buffer.concat(chunks)); delete device.ownerConnection;
+          delete output["content-length"]; res.writeHead(response.statusCode, output); res.end(JSON.stringify(device));
+        });
+      } else { res.writeHead(response.statusCode, output); response.pipe(res); }
     });
     upstream.on("error", error => res.destroy(error)); req.pipe(upstream);
   };

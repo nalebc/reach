@@ -19,10 +19,11 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   assert.ok(chromeBinary, "Chrome is required in CI");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-owner-cors-"));
   const certificate = await testCertificate(root, hostname), seen = [], ingressKey = newIngressKey();
-  let reach, browser, ingressPort, publicRoute = false;
+  let reach, browser, ingressPort, publicRoute = false, sourceUnavailable = false;
   const tls = https.createServer(certificate, (req, res) => {
     seen.push({ method: req.method, path: req.url, origin: req.headers.origin, site: req.headers["sec-fetch-site"], bearer: !!req.headers.authorization });
     const source = req.url === "/api/device/owner-connection";
+    if (source && sourceUnavailable) return res.destroy();
     const proxy = http.request({ host: "127.0.0.1", port: ingressPort, path: `/r-${ingressKey}${req.url}`, method: req.method,
       headers: { ...req.headers, host: "localhost", "x-forwarded-host": req.headers.host,
         "x-forwarded-for": source ? "100.64.0.21" : "100.64.0.22", "tailscale-user-login": "owner@example.test",
@@ -95,11 +96,15 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   assert.equal(joined.extractable, false);
   assert.equal(joined.saved[0].token, joined.first.token);
   assert.notEqual(joined.first.token, grant.token);
+  sourceUnavailable = true;
+  const sourceRequests = seen.filter(r => r.path === '/api/device/owner-connection').length;
   await tab.navigate(`${ORIGIN}/`); await tab.evaluate(bundle);
   const restored = await call(`async function (peer, config) {
     return OwnerFixture.ownerEnrollment(peer, "browser", config).join(new AbortController().signal);
   }`, peer, config);
   assert.equal(restored.token, joined.first.token, "IndexedDB key and proposed credential survive reload");
+  assert.equal(seen.filter(r => r.path === '/api/device/owner-connection').length, sourceRequests, 'persisted proof resumes without the original route');
+  await assert.rejects(tab.evaluate(`OwnerFixture.ownerEnrollment(${JSON.stringify({ ...peer, token: 'DIFFERENT-GRANT' })}, "browser", ${JSON.stringify(config)}).prepare(new AbortController().signal, false)`), /not been prepared/);
   assert.equal(reach.auth.list().length, 2);
   assert.ok(seen.some(r => r.method === "OPTIONS" && r.site === "same-site"));
   assert.ok(seen.filter(r => r.path.startsWith("/api/auth/owner-connection/")).every(r => !r.bearer));

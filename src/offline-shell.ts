@@ -10,8 +10,8 @@ const hex = (value: ArrayBuffer) => Array.from(new Uint8Array(value), byte => by
 const hash = async (value: ArrayBuffer) => hex(await crypto.subtle.digest("SHA-256", value));
 const build = () => document.querySelector<HTMLMetaElement>('meta[name="reach-shell-build"]')?.content || "";
 export const offlineShellEnabled = () => { try { return localStorage.getItem(enabledKey) === "v1"; } catch { return false; } };
-const supported = () => !!location.port && location.protocol === "https:" && location.hostname.endsWith(".ts.net") &&
-  (location.pathname === "/" || /^\/files(?:\/|$)/.test(location.pathname)) && !guestPeers() && !!navigator.serviceWorker;
+const supported = () => location.protocol === "https:" && location.hostname.endsWith(".ts.net") &&
+  (location.pathname === "/" || /^\/(?:files|chats|screen|terminals|settings|tools)(?:\/[\w.-]*)*$/.test(location.pathname)) && !guestPeers() && !!navigator.serviceWorker;
 function command(worker: ServiceWorker, value: object, signal?: AbortSignal, transfer: Transferable[] = []): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const channel = new MessageChannel();
@@ -51,7 +51,9 @@ async function worker(register: boolean, signal?: AbortSignal) {
     // explicitly upgrade the old notification-only worker before any writes.
     // A browser-only private route cannot provide the browser's native worker
     // update fetch; it reuses its already installed capable worker instead.
-    const nativeSetup = register && privateWay() === "native";
+    // The permanent link serves the fixed worker publicly too. A browser-first
+    // owner can therefore prepare reopening without ever installing the app.
+    const nativeSetup = register && (privateWay() === "native" || !location.port);
     const registration = await bounded(nativeSetup ? navigator.serviceWorker.register("/sw.js", { scope: "/" }) : navigator.serviceWorker.getRegistration("/"));
     if (!registration) return null;
     if (nativeSetup) {
@@ -135,7 +137,7 @@ export async function prepareOfflineShell(config: StartConfig | null, {
   };
   const fetchPublic = async (path: string) => {
     sameRoute();
-    const input = new URL(path, location.origin);
+    const input = new URL(path, node && peer ? peer.url : location.origin);
     // Staging must read this manifest's bytes, not the older committed cohort
     // that serves ordinary module requests. This fixed query carries no state.
     if (path !== "/offline-shell.json" && path !== "/reach-start.json") input.searchParams.set("reach-static-save", "1");
@@ -152,7 +154,7 @@ export async function prepareOfflineShell(config: StartConfig | null, {
     if (mode === "browser") {
       const saved = readPrivatePeers("browser");
       peer = saved.find(value => value.id === (selected || saved[0]?.id));
-      if (!peer || peer.transport === "funnel" || new URL(peer.url).origin !== location.origin) return false;
+      if (!peer || peer.transport === "funnel" || new URL(peer.url).protocol !== "https:" || new URL(peer.url).hostname !== location.hostname) return false;
     }
     await authorize();
     active = await worker(true, deadline); if (!active) return false;

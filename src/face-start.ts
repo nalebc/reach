@@ -44,12 +44,12 @@ export function takeTicket() {
 // The computers this browser saved while signed in from the browser: each
 // credential is bound to this browser's Tailscale device, so a new device
 // (signing in again, any way) starts without them (src/api.ts, peersKey).
-export function forgetSaved() {
+export function forgetSaved({ keepInterface = false } = {}) {
   try {
     localStorage.removeItem("reach.browser.devices");
     localStorage.removeItem("reach.browser.active");
     localStorage.removeItem("reach.browser.identity-lineage");
-    retireOfflineShell();
+    if (!keepInterface) retireOfflineShell();
     // Saved before the two ways were kept apart (src/api.ts, separateWays):
     // at this address, that was only ever the browser way's.
     if (!location.port && location.hostname.endsWith(".ts.net") && !localStorage.getItem("reach.ways")) {

@@ -59,6 +59,7 @@ import {
   Device,
   Session,
   readPeers,
+  readPrivatePeers,
   guestPeers,
   savePeers,
   peersKey,
@@ -106,8 +107,9 @@ import WaitingComputerSheet, { type WaitingComputer } from "./WaitingComputer";
 import MobileNav from "./MobileNav";
 import NewSessionSheet from "./NewSessionSheet";
 import { MonitorPlay } from "lucide-react";
-import { homeOrigin } from "./home-origin";
-import { tailnetBrowser } from "./tailnet-transport";
+import { homeOrigin, setHomeOrigin } from "./home-origin";
+import { bindPrivatePeer, installTailnet, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
+import { tailnetSuffix, type StartConfig } from "./start-flow";
 import { watchPrivateRecovery } from "./app-watch";
 import { keepDoorKey } from "./door-key";
 import { connectionName, connectionWay, tailscaleAppLink } from "./connection";
@@ -188,6 +190,7 @@ function ReachWorkspace() {
       value: Device;
     } | null>(null),
     [error, setError] = useState(""),
+    [ownerSetupActive, setOwnerSetupActive] = useState(false),
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(""),
     [terminals, setTerminals] = useState<Session[]>([]),
@@ -228,6 +231,23 @@ function ReachWorkspace() {
   recoveryCurrent.current = peer && device ? { peer, device } : null;
   const recoverySelected = useRef(peer);
   recoverySelected.current = peer;
+  const beginBrowserApproval = (config: StartConfig, node: TailnetNode) => {
+    if (recoveryCurrent.current || guestPeers()) return;
+    connectionGeneration.current++;
+    deviceRequest.current?.abort();
+    // A legacy client without a registered owner proof needs ordinary
+    // browser approval. Keep the native credentials on their original route.
+    for (const saved of readPrivatePeers("native")) bindPrivatePeer(saved, "native");
+    installTailnet(node, tailnetSuffix(config.origin), "browser");
+    document.documentElement.dataset.connection = "browser";
+    setHomeOrigin(config.origin);
+    const saved = readPrivatePeers("browser");
+    setDeviceState(null);
+    setPeers(saved);
+    setActive(saved[0]?.id || "");
+    setError("");
+    setOwnerSetupActive(false);
+  };
   useEffect(() => {
     if (guestPeers() || peer?.transport === "funnel" || (device && (device.access?.kind !== "device" || !device.access.scopes.includes("admin")))) return;
     return watchPrivateRecovery({
@@ -980,7 +1000,6 @@ function ReachWorkspace() {
           onWaiting={setWaitingSheet}
         />
         <main ref={mainScroll} key={peer?.id} className={`main-content page-${page}`}>
-        {device && <OwnerConnection peer={peer} device={device} />}
           <ScreenBoundary
             key={`${peer?.id}:${page}`}
             onHome={() => navigate("overview")}
@@ -992,7 +1011,7 @@ function ReachWorkspace() {
               </>
             ) : error && !device ? (
               <>
-                {page === "overview" && (
+                {page === "overview" && !ownerSetupActive && (
                   <FleetMesh
                     peers={peers}
                     active={peer.id}
@@ -1001,7 +1020,9 @@ function ReachWorkspace() {
                   />
                 )}
                 <PageTitle title="Let’s reconnect" description={peer?.name} />
-                <section className="panel">
+                {!guestPeers() && <OwnerConnection peer={peer} device={null} visible reconnect
+                  onActive={setOwnerSetupActive} beginBrowser={beginBrowserApproval} />}
+                {!ownerSetupActive && <section className="panel">
                   <Empty
                     icon={Wifi}
                     title="Your computer is out of reach"
@@ -1028,7 +1049,7 @@ function ReachWorkspace() {
                     your computer awake with Reach and Tailscale running. The phone app is optional after owner setup.
                   </Empty>
                   <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
-                </section>
+                </section>}
               </>
             ) : device && peer && pageAccessible(page, features) ? (
               <>
@@ -1240,6 +1261,12 @@ function ReachWorkspace() {
               </>
             ) : null}
           </ScreenBoundary>
+          {device && <OwnerConnection
+            key={`${peer.id}:${peer.url}:${peer.token}`}
+            peer={peer}
+            device={device}
+            visible={features.owner && (page === "overview" || page === "settings")}
+          />}
         </main>
         <MobileNav
           items={mobilePages.map((p) => ({

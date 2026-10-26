@@ -21,7 +21,7 @@ function fixture(version = "one") {
     config: { product: "Reach", origin, home: "https://computer.fixture.ts.net", instance: "fixture", name: "Private computer name",
       faceId: true, token: "CACHE-MUST-NEVER-CONTAIN-THIS", tailnet: { wasm: runtime[0].path.slice(9), exec: runtime[1].path.slice(9) } } };
 }
-function worker({ buckets = new Map(), clients = [{ id: "a", url: origin + "/" }], fault = () => false,
+function worker({ address = origin, buckets = new Map(), clients = [{ id: "a", url: address + "/" }], fault = () => false,
   beforeMatch = () => {}, now = () => Date.now() } = {}) {
   const events = {}, puts = [], network = [];
   const caches = { open: async name => {
@@ -33,7 +33,7 @@ function worker({ buckets = new Map(), clients = [{ id: "a", url: origin + "/" }
         puts.push({ cache: name, key: key(value) }); data.set(key(value), response.clone());
       } };
   } };
-  const self = { location: { origin }, addEventListener(name, callback) { (events[name] ||= []).push(callback); },
+  const self = { location: { origin: address }, addEventListener(name, callback) { (events[name] ||= []).push(callback); },
     clients: { matchAll: async () => clients, claim: async () => {} }, skipWaiting() {}, registration: {} };
   vm.runInNewContext(fs.readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"),
     { self, caches, URL, Response, Request, Headers, ArrayBuffer, Uint8Array, TextDecoder, TextEncoder, atob, crypto: crypto.webcrypto, setTimeout, clearTimeout,
@@ -47,7 +47,7 @@ function worker({ buckets = new Map(), clients = [{ id: "a", url: origin + "/" }
   };
   const fetch = async (url, { mode = "navigate", method = "GET", token } = {}) => {
     let answer;
-    const request = { url: new URL(url, origin).href, mode, method, headers: new Headers(token ? { Authorization: token } : {}) };
+    const request = { url: new URL(url, address).href, mode, method, headers: new Headers(token ? { Authorization: token } : {}) };
     for (const callback of events.fetch) callback({ request, clientId: "a", resultingClientId: "cold", respondWith(value) { assert.equal(answer, undefined); answer = value; } });
     return answer ? await answer : null;
   };
@@ -79,6 +79,28 @@ test("a complete public cohort cold-loads query/deep links without caching or in
   assert.equal((await Promise.all(records.map(value => value.clone().text()))).join("\n").includes("CACHE-MUST-NEVER-CONTAIN-THIS"), false);
   const bootstrap = await w.message("bootstrap", { build: f.manifest.build });
   assert.deepEqual(JSON.parse(JSON.stringify(bootstrap.config)), { product: "Reach", origin, home: "https://computer.fixture.ts.net", instance: "fixture", name: "Reach", tailnet: f.config.tailnet });
+});
+
+test("an app-off navigation without saved code stays at its origin and receives a retry page", async () => {
+  for (const pathname of ["/", "/files/a?preview=1", "/chats", "/screen", "/terminals", "/settings", "/tools"]) {
+    const w = worker({ address: "https://computer.fixture.ts.net" });
+    const response = await w.fetch(pathname);
+    assert.equal(response.status, 503);
+    const page = await response.text();
+    assert.match(page, /Reconnecting to Reach/); assert.match(page, /http-equiv="refresh"/);
+    assert.doesNotMatch(page, /Turn Tailscale back on|<script/);
+    assert.deepEqual(w.network, [new URL(pathname, "https://computer.fixture.ts.net").href]);
+    assert.equal(await w.fetch("/api/auth/requests", { method: "POST" }), null);
+  }
+});
+
+test("the permanent owner link caches its startup flow before browser enrollment", async () => {
+  const w = worker({ address: "https://computer.fixture.ts.net" }), f = fixture();
+  f.manifest.entries.push(entry("/start.html", "<html><head></head><body>Browser sign-in</body></html>", "text/html"));
+  assert.equal((await w.save(f)).ok, true);
+  assert.match(await (await w.fetch("/screen?view=1")).text(), /Browser sign-in/);
+  assert.equal(w.network.length, 0);
+  assert.equal((await w.message("bootstrap", { build: f.manifest.build })).config.origin, origin);
 });
 
 test("incomplete, mismatched and invalid public-code preparations never promote an active cohort", async () => {
@@ -233,7 +255,7 @@ test("lost static bytes yield an inert reconnect explanation rather than a parti
   const w = worker(), f = fixture(); await w.save(f);
   const bytes = w.buckets.get("reach-static-bytes-v1");
   bytes.delete([...bytes.keys()].find(key => key.endsWith(f.runtime[0].sha256)));
-  assert.match(await (await w.fetch("/")).text(), /Turn Tailscale back on/);
+  assert.match(await (await w.fetch("/")).text(), /Reconnecting to Reach/);
 });
 
 test("the build manifest follows only the current dependency graph and refuses private/symlink entries", () => {
@@ -245,10 +267,15 @@ test("the build manifest follows only the current dependency graph and refuses p
     fs.writeFileSync(path.join(dir, "manifest.webmanifest"), '{"icons":[]}'); fs.writeFileSync(path.join(dir, "favicon.svg"), "<svg/>");
     fs.writeFileSync(path.join(dir, "assets/current.js"), "current"); fs.writeFileSync(path.join(dir, "assets/lazy.js"), "lazy");
     fs.writeFileSync(path.join(dir, "assets/stale.js"), "PRIVATE-CANARY");
-    const manifest = { "index.html": { file: "assets/current.js", dynamicImports: ["lazy"] }, lazy: { file: "assets/lazy.js" } };
+    fs.writeFileSync(path.join(dir, "start.html"), "<html><head></head><body>Sign in</body></html>");
+    fs.writeFileSync(path.join(dir, "assets/start.js"), "start");
+    const manifest = { "index.html": { file: "assets/current.js", dynamicImports: ["lazy"] }, lazy: { file: "assets/lazy.js" }, "start.html": { file: "assets/start.js" } };
     const write = () => fs.writeFileSync(path.join(dir, ".vite/manifest.json"), JSON.stringify(manifest)); write();
     const result = writeOfflineShell(dir);
     assert.ok(result.entries.some(entry => entry.path === "/assets/lazy.js"));
+    assert.ok(result.entries.some(entry => entry.path === "/assets/start.js"));
+    assert.ok(result.entries.some(entry => entry.path === "/start.html"));
+    assert.match(fs.readFileSync(path.join(dir, "start.html"), "utf8"), new RegExp(result.build));
     assert.equal(JSON.stringify(result).includes("stale"), false);
     assert.equal(writeOfflineShell(dir).build, result.build, "repeat generation is stable");
     manifest.lazy.file = "../private.json"; write(); assert.throws(() => writeOfflineShell(dir));
@@ -334,7 +361,7 @@ for (const replacement of [Buffer.from("a distinct longer build generation"), Bu
 // Real client/controller modules with a modeled worker command channel and
 // own private node. The separate Chrome test exercises real CacheStorage,
 // service workers, HTTP, device approval, CORS and closed-listener navigation.
-async function clientFixture(pathname = "") {
+async function clientFixture(pathname = "", address = origin) {
   const f = fixture(), calls = [], messages = [];
   const stateHex = value => Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString("hex");
   const state = { _machinekey: stateHex(`privkey:${"1".repeat(64)}`), _profiles: stateHex({ fixture: { Key: "profile", NodeID: "node" } }),
@@ -349,7 +376,7 @@ async function clientFixture(pathname = "") {
     "/reach-start.json": () => Response.json(f.config),
     ...Object.fromEntries(f.manifest.entries.map(entry => [entry.path, () => new Response(entry.body)])),
   };
-  const dom = await startDom({ url: origin + pathname, routes: Object.fromEntries(Object.entries(routes).map(([path, answer]) => [path, () => {
+  const dom = await startDom({ url: address + pathname, routes: Object.fromEntries(Object.entries(routes).map(([path, answer]) => [path, () => {
     value.nativeReads++; if (value.nativeUnavailable) throw TypeError("Native network unavailable"); return answer();
   }])) });
   const original = { Go: globalThis.Go, factory: globalThis.reachTailnet, instantiate: WebAssembly.instantiateStreaming };
@@ -419,6 +446,19 @@ test("browser code staging freshly authenticates only its exact saved own peer a
       const records = JSON.stringify(f.messages);
       assert.equal(records.includes("OWN-BROWSER"), false); assert.equal(records.includes("OWN-NATIVE"), false);
       assert.equal(records.includes('"scopes"'), false);
+    } finally { await f.close(); }
+  }
+});
+
+test("the permanent origin prepares startup code in native and browser mode, including a cross-port private peer", async () => {
+  for (const mode of ["native", "browser"]) {
+    const f = await clientFixture("/tools", "https://computer.fixture.ts.net");
+    try {
+      f.transport.usePrivateWay(mode);
+      assert.equal(await f.client.prepareOfflineShell(null), true, mode);
+      assert.equal(f.registrations, 1); assert.equal(f.commits, 1);
+      assert.equal(JSON.stringify(f.messages).includes("OWN-BROWSER"), false);
+      assert.equal(JSON.stringify(f.messages).includes("OWN-NATIVE"), false);
     } finally { await f.close(); }
   }
 });

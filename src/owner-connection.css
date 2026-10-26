@@ -1,9 +1,30 @@
 .owner-connection-setup {
-  margin: 12px 0;
-  padding: 16px;
+  max-width: 720px;
+  margin: 12px auto 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 14px;
   font-size: 14px;
 }
-.owner-connection-setup p { margin: 8px 0; line-height: 1.5; }
-.owner-connection-setup a { display: inline-flex; margin-top: 4px; }
+.owner-connection-setup > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 12px;
+  list-style: none;
+  cursor: pointer;
+  border-radius: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.owner-connection-setup > summary::-webkit-details-marker { display: none; }
+.owner-connection-setup > summary > svg { flex: none; color: var(--muted); }
+.owner-connection-setup > summary > span { flex: 1; min-width: 0; }
+.owner-connection-setup strong { display: block; font-size: 13px; font-weight: 500; }
+.owner-connection-setup small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.owner-connection-setup[open] > summary > svg:last-child { transform: rotate(180deg); }
+.owner-connection-setup > summary:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.owner-connection-setup > summary:active { background: #ffffff08; }
+.owner-connection-details { padding: 0 12px 12px; }
+.owner-connection-details p { margin: 0 0 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.owner-connection-details [role="status"] { color: var(--muted); font-size: 13px; }
+.owner-connection-details a { display: inline-flex; align-items: center; min-height: 44px; margin-top: 2px; text-decoration: none; }

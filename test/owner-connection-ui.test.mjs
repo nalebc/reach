@@ -33,8 +33,8 @@ async function fixture(source = "native") {
   const fetcher = role => async (url, init = {}) => {
     const route = new URL(url, origin).pathname, bearer = new Headers(init.headers).get("Authorization");
     calls.push({ role, route, bearer, method: init.method || "GET" });
-    if (!network[role]) return Response.json({}, { status: 404 }); // same URL now reaches the public start
     if (route === "/reach-start.json") return Response.json(network.metadata || config);
+    if (!network[role]) return Response.json({}, { status: 404 }); // public start keeps metadata, not private APIs
     const body = init.body ? JSON.parse(init.body) : {};
     try {
       if (route === "/api/auth/owner-connection/challenge") {
@@ -63,11 +63,14 @@ async function fixture(source = "native") {
   const transport = await dom.load("/src/tailnet-transport.ts");
   const { createPrivateRecovery } = await dom.load("/src/app-watch.ts");
   const pair = await crypto.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  const candidates = new Map();
+  const candidates = new Map(), registrations = new Map();
   const keys = { pair: async () => pair, candidate: async (key, connection, role) => {
     const id = [key, connection, role].join(":");
     if (!candidates.has(id)) candidates.set(id, crypto.randomBytes(32).toString("base64url"));
     return candidates.get(id);
+  }, registration: async (key, binding, value) => {
+    if (value) registrations.set(key + ':' + binding, value);
+    return registrations.get(key + ':' + binding);
   } };
   const enroll = () => ownerEnrollment(peer, source, config, { keys,
     sourceFetch: (p, route, init) => fetcher(source)(p.url + route, { ...init, headers: { ...init.headers, Authorization: `Bearer ${p.token}` } }),
@@ -189,6 +192,10 @@ for (const scenario of ["fresh", "copied-native", "replaced-identity"]) test(`au
     const module = await f.dom.load("/src/owner-connection.ts");
     // The DOM's key store is simulated; the Chrome test covers real IndexedDB.
     Object.assign(module.browserOwnerKeys, f.keys);
+    let shellAttempts = 0;
+    if (scenario === "fresh") Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
+      async register() { shellAttempts++; throw Error("Temporary worker update failure"); },
+    } });
     let servedConfig;
     const node = { status: () => ({ self: { state: "Running" } }), wake() {},
       fetch(request) {
@@ -217,6 +224,12 @@ for (const scenario of ["fresh", "copied-native", "replaced-identity"]) test(`au
       return;
     }
     assert.equal(states.at(-1)?.state, "ready", JSON.stringify(states));
+    assert.ok(shellAttempts >= 1);
+    const attempts = shellAttempts;
+    const enrollmentCalls = f.calls.filter(call => call.method === "POST").length;
+    window.dispatchEvent(new Event("online"));
+    await f.dom.waitFor(() => shellAttempts > attempts, 1000);
+    assert.equal(f.calls.filter(call => call.method === "POST").length, enrollmentCalls, "retrying startup preparation never repeats enrollment");
     const saved = JSON.parse(localStorage.getItem("reach.browser.devices"))[0];
     assert.match(saved.browserIdentity, /^[a-f0-9]{64}$/);
     assert.equal(await observed.module.browserPeerEligible(saved), true);
@@ -224,4 +237,83 @@ for (const scenario of ["fresh", "copied-native", "replaced-identity"]) test(`au
     await f.recovery.check(); assert.equal(f.changes.at(-1)?.mode, "browser");
     f.network.native = true; await f.recovery.check(); assert.equal(f.changes.at(-1)?.mode, "native");
   } finally { stop?.(); observed?.close(); await f.close(); }
+});
+
+for (const scenario of ['prepared', 'legacy-unprepared', 'cold-start', 'cold-start-concurrent']) test(`app-off owner sign-in resumes safely: ${scenario}`, async () => {
+  const f = await fixture(); let observed, stop, view;
+  let state = 'NeedsLogin', wakes = 0;
+  try {
+    const module = await f.dom.load('/src/owner-connection.ts');
+    Object.assign(module.browserOwnerKeys, f.keys);
+    const node = { status: () => ({ self: { state } }), wake() { wakes++; },
+      login() { observed.callbacks.authURL('https://login.tailscale.com/a/fixture'); },
+      fetch(request) {
+        let read = false;
+        const headers = Array.from({ length: request.headers.length / 2 }, (_, i) => request.headers.slice(i * 2, i * 2 + 2));
+        return { abort() {}, response: f.fetcher('browser')(request.url, { ...request, headers, body: request.body ? new TextDecoder().decode(request.body) : undefined }).then(async response => {
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          return { status: response.status, statusText: response.statusText, headers: [], read: async () => read ? null : (read = true, bytes), cancel() {} };
+        }) };
+      },
+    };
+    observed = await observedFixture(f.dom, node); observed.saveIdentity(); f.network.metadata = observed.settings;
+    f.transport.installTailnet(node, 't.ts.net', 'native');
+    globalThis.fetch = f.dom.window.fetch;
+    localStorage.setItem('reach.devices', JSON.stringify([f.peer]));
+    if (scenario !== 'legacy-unprepared') {
+      const states = [];
+      stop = module.watchOwnerEnrollment(f.peer, value => states.push(value));
+      await f.dom.waitFor(() => states.at(-1)?.state === 'signin');
+      assert.equal(f.calls.filter(c => c.route === '/api/device/owner-connection').length, 1, 'proof is registered before sign-in finishes');
+      stop(); stop = undefined;
+    }
+    const sourcePosts = f.calls.filter(c => c.role === 'native' && c.method === 'POST').length;
+    f.network.native = false;
+    let approval = null;
+    if (!scenario.startsWith('cold-start')) {
+      const { default: OwnerConnection } = await f.dom.load('/src/OwnerConnection.tsx');
+      view = await f.dom.render(f.dom.React.createElement(OwnerConnection, {
+        peer: f.peer, device: null, visible: true, reconnect: true,
+        beginBrowser: (config, browser) => { approval = { config, browser }; },
+      }));
+      await f.dom.waitFor(() => f.dom.document.querySelector('.owner-connection-details a'));
+      assert.equal(f.dom.document.querySelector('details').open, true, 'sign-in remains visible without a live device');
+      assert.match(f.dom.document.body.textContent, /Connect securely in this browser/);
+      window.dispatchEvent(new Event('online'));
+      assert.equal(wakes, 1, 'a changed network wakes the suspended relay');
+    }
+    state = 'Running'; observed.callbacks.state(state);
+    if (scenario === 'cold-start') await module.resumeOwnerConnection(observed.settings, node, new AbortController().signal);
+    if (scenario === 'cold-start-concurrent') await Promise.all([1, 2].map(() => module.resumeOwnerConnection(observed.settings, node, new AbortController().signal)));
+    if (scenario === 'legacy-unprepared') {
+      await f.dom.waitFor(() => approval);
+      assert.equal(approval.browser, node);
+      assert.equal(f.auth.list().length, 1, 'missing proof requires ordinary approval, not another node inheriting native credentials');
+      assert.equal(localStorage.getItem('reach.browser.devices'), null);
+    } else {
+      await f.dom.waitFor(() => localStorage.getItem('reach.browser.devices'));
+      const saved = JSON.parse(localStorage.getItem('reach.browser.devices'))[0];
+      assert.notEqual(saved.token, f.peer.token);
+      assert.equal(await observed.module.browserPeerEligible(saved), true);
+      f.saved.browser = [saved];
+      await f.recovery.check();
+      assert.equal(f.changes.at(-1)?.mode, 'browser');
+      f.network.native = true; await f.recovery.check();
+      assert.equal(f.changes.at(-1)?.mode, 'native');
+      assert.equal(f.auth.list().length, 2);
+    }
+    assert.equal(f.calls.filter(c => c.role === 'native' && c.method === 'POST').length, sourcePosts, 'source proof is not re-registered after native loss');
+    assert.equal(f.calls.some(c => c.role === 'browser' && c.bearer === `Bearer ${f.peer.token}`), false);
+    assert.equal(f.dom.window.location.origin, origin);
+  } finally { await view?.unmount(); stop?.(); observed?.close(); await f.close(); }
+});
+
+test('a persisted registration cannot enroll after its source approval is revoked', async () => {
+  const f = await fixture();
+  try {
+    await f.enroll().prepare(new AbortController().signal);
+    f.auth.revoke(f.grant.clientId); f.network.native = false;
+    await assert.rejects(f.enroll().join(new AbortController().signal), /no longer approved/);
+    assert.equal(f.saved.browser.length, 0);
+  } finally { await f.close(); }
 });

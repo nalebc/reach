@@ -1,9 +1,10 @@
-import { bindPrivatePeer, privatePeerWay, privateWay, tailnetFetch, nativeTailnetFetch, type PrivateWay } from "./tailnet-transport";
+import { bindPrivatePeer, privatePeerWay, privateWay, tailnetFetch, nativeTailnetFetch, tailnetNode, type PrivateWay, type TailnetNode } from "./tailnet-transport";
 import { ownerBrowserNode, browserApprovalIdentity, browserNodeIdentityCurrent, browserPeerEligible } from "./browser-node";
-import { peerFetch, readPrivatePeers, upsertPeer, type Peer } from "./api";
+import { compactPeers, peerFetch, readPrivatePeers, upsertPeer, type Peer } from "./api";
 import { parseStartConfig, type StartConfig } from "./start-flow";
+import { offlineBootstrap, prepareOfflineShell } from "./offline-shell";
 
-type Keys = { pair: CryptoKeyPair; candidates: Record<string, string> };
+type Keys = { pair: CryptoKeyPair; candidates: Record<string, string>; registrations?: Record<string, string> };
 export type OwnerSetup = { state: "preparing" | "signin" | "ready" | "error"; url?: string; message?: string };
 const encoded = (value: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 let database: Promise<IDBDatabase> | undefined;
@@ -44,6 +45,13 @@ export const browserOwnerKeys = {
       return { value, result: value.candidates[id] };
     });
   },
+  registration(key: string, binding: string, connection?: string) {
+    return updateKeys(key, value => {
+      if (!value) throw Error("Missing owner key");
+      if (connection) (value.registrations ||= {})[binding] = connection;
+      return { value, result: value.registrations?.[binding] };
+    });
+  },
 };
 type KeyStore = typeof browserOwnerKeys;
 const responseJSON = async (response: Response) => {
@@ -65,17 +73,25 @@ export function ownerEnrollment(peer: Peer, source: PrivateWay, config: StartCon
   let registration: Promise<{ connection: string; pair: CryptoKeyPair }> | undefined;
   const keyId = peer.computerId || peer.id;
   const target: PrivateWay = source === "native" ? "browser" : "native";
-  const register = (signal: AbortSignal) => registration ||= (async () => {
+  const register = (signal: AbortSignal, allowRegister = true) => registration ||= (async () => {
     const pair = await keys.pair(keyId);
     if (signal.aborted) throw signal.reason;
+    const binding = encoded(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([
+      source, peer.id, peer.computerId, peer.url, peer.token, config.origin,
+    ]))));
+    const saved = await keys.registration(keyId, binding);
+    if (saved) return { connection: saved, pair };
+    if (!allowRegister) throw Object.assign(Error("This browser's connection has not been prepared yet."), { code: "not-prepared" });
     const publicKey = await crypto.subtle.exportKey("jwk", pair.publicKey);
     const result = await sourceFetch(peer, "/api/device/owner-connection", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ publicKey, role: source }), signal,
     }).then(responseJSON);
     if (typeof result.connection !== "string" || !/^[a-f0-9-]{36}$/.test(result.connection)) throw Error("The computer did not confirm owner setup.");
+    await keys.registration(keyId, binding, result.connection);
     return { connection: result.connection, pair };
   })().catch(error => { registration = undefined; throw error; });
   return {
+    prepare: register,
     async join(signal: AbortSignal, fetcher = targetFetch) {
       const { connection, pair } = await register(signal);
       const post = (path: string, body: unknown) => fetcher(config.origin + path, {
@@ -108,13 +124,57 @@ export function ownerEnrollment(peer: Peer, source: PrivateWay, config: StartCon
   };
 }
 
-export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => void) {
+// Cold browser startup may finish a setup that began on the native path.
+// Only an already registered proof can do this; missing proof leaves the
+// normal first-client approval flow in charge.
+export async function resumeOwnerConnection(config: StartConfig, node: TailnetNode, signal: AbortSignal) {
+  const identity = browserApprovalIdentity();
+  if (!identity || !browserNodeIdentityCurrent(node)) return;
+  for (const peer of compactPeers(readPrivatePeers("native"))) {
+    try {
+      if (peer.transport === "funnel" || new URL(peer.url).hostname !== location.hostname ||
+          new URL(config.origin).hostname !== location.hostname) continue;
+    } catch { continue; }
+    if (readPrivatePeers("browser").some(saved => saved.id === peer.id)) return;
+    const before = localStorage.getItem("reach.browser.devices");
+    const enrollment = ownerEnrollment(peer, "native", config, {
+      async save(role, incoming) {
+        const binding = await identity.binding();
+        if (signal.aborted || !identity.current() || !browserNodeIdentityCurrent(node) ||
+            !readPrivatePeers("native").some(saved => saved.token === peer.token && saved.url === peer.url))
+          throw Error("Your saved connection changed. Reopen Reach to continue.");
+        const next = { ...incoming, browserIdentity: binding };
+        if (localStorage.getItem("reach.browser.devices") !== before) {
+          const same = readPrivatePeers("browser").find(saved => saved.id === next.id && saved.computerId === next.computerId &&
+            saved.url === next.url && saved.token === next.token && saved.browserIdentity === next.browserIdentity);
+          if (!same) throw Error("Your saved connection changed. Reopen Reach to continue.");
+          // Another tab collected this exact persisted candidate first.
+          bindPrivatePeer(same, role);
+          return;
+        }
+        const value = JSON.stringify(upsertPeer(readPrivatePeers("browser"), next));
+        localStorage.setItem("reach.browser.devices", value);
+        if (localStorage.getItem("reach.browser.devices") !== value) throw Error("Allow browser storage to save your connection.");
+        bindPrivatePeer(next, role);
+      },
+    });
+    try { await enrollment.prepare(signal, false); }
+    catch { if (signal.aborted) throw signal.reason; continue; }
+    await enrollment.join(signal, ((input, init) => tailnetFetch(node, input, init)) as typeof fetch);
+    return;
+  }
+}
+
+export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => void, {
+  resumeOnly = false, beginBrowser,
+}: { resumeOnly?: boolean; beginBrowser?: (config: StartConfig, node: TailnetNode) => void } = {}) {
   const lifetime = new AbortController(), source = privateWay();
   let config: StartConfig | null = null, enrollment: ReturnType<typeof ownerEnrollment> | undefined;
   let running = false, again = false, completed = false, retryAt = 0;
   let browserIdentity: ReturnType<typeof browserApprovalIdentity> = null;
   let browserCurrent = () => false;
   let baseline: string | null = null;
+  let shellPreparation: Promise<boolean> | undefined;
   const target = source === "native" ? "browser" : "native";
   const saved = () => readPrivatePeers(target).find(p => {
     try { return p.id === peer.id && p.transport !== "funnel" &&
@@ -122,7 +182,7 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
       new URL(p.url).hostname === new URL(peer.url).hostname; } catch { return false; }
   });
   const check = async () => {
-    if (lifetime.signal.aborted || completed || document.hidden || privateWay() !== source || Date.now() < retryAt) return;
+    if (lifetime.signal.aborted || (completed && shellPreparation) || document.hidden || privateWay() !== source || Date.now() < retryAt) return;
     if (running) { again = true; return; }
     running = true;
     try {
@@ -132,14 +192,24 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
         throw Error("This saved approval belongs to the other connection. Review its access before continuing.");
       // Recovery verifies an existing native approval when the optional app
       // becomes reachable. It does not need new enrollment.
-      if (previous && target === "native") { completed = true; report({ state: "ready" }); return; }
       const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(15000)]);
-      config ||= parseStartConfig(await nativeTailnetFetch("/reach-start.json", { signal, cache: "no-store", redirect: "error", credentials: "omit" }).then(responseJSON));
+      config ||= await offlineBootstrap() || parseStartConfig(await nativeTailnetFetch("/reach-start.json", { signal, cache: "no-store", redirect: "error", credentials: "omit" }).then(responseJSON));
       if (!config || new URL(config.origin).hostname !== location.hostname) throw Error("The computer's connection information is unavailable.");
+      // Save only public startup code while the current owner route is healthy,
+      // including before browser sign-in. App-off reopening must reach that
+      // sign-in flow too; it must not depend on already finishing enrollment.
+      shellPreparation ||= prepareOfflineShell(config, {
+        signal: lifetime.signal, current: () => !lifetime.signal.aborted && privateWay() === source,
+      }).then(ready => { if (!ready) shellPreparation = undefined; return ready; });
+      // A temporary cache failure must still retry after enrollment finishes,
+      // without issuing another approval or touching the current workspace.
+      if (completed) return;
+      if (previous && target === "native") { completed = true; report({ state: "ready" }); return; }
       enrollment ||= ownerEnrollment(peer, source, config, {
         async save(role, incoming) {
           const name = role === "browser" ? "reach.browser.devices" : "reach.devices";
           const current = () => !lifetime.signal.aborted && privateWay() === source &&
+            readPrivatePeers(source).some(saved => saved.token === peer.token && saved.url === peer.url && saved.id === peer.id) &&
             (role !== "browser" || !!browserIdentity?.current() && browserCurrent());
           if (!current()) throw Error("Your connection changed. Reopen Reach to finish setup.");
           if (role === "browser") incoming = { ...incoming, browserIdentity: await browserIdentity!.binding() };
@@ -151,6 +221,18 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
           bindPrivatePeer(incoming, role);
         },
       });
+      // Establish the proof while the source still works, before waiting for
+      // browser sign-in. Its persisted receipt can be used after native loss;
+      // no native bearer is ever sent through the browser node.
+      let prepared = true;
+      if (!previous) {
+        try { await enrollment.prepare(signal, !resumeOnly); }
+        catch (error) {
+          if (!resumeOnly || target !== "browser" || !beginBrowser || (error as { code?: string }).code !== "not-prepared") throw error;
+          prepared = false;
+        }
+      }
+      if (lifetime.signal.aborted || privateWay() !== source) return;
       let fetcher = nativeTailnetFetch;
       if (target === "browser") {
         report({ state: "preparing" });
@@ -165,6 +247,13 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
         browserIdentity = browserApprovalIdentity();
         browserCurrent = () => browserNodeIdentityCurrent(browser.node);
         if (!browserIdentity || !browserCurrent()) throw Error("The browser connection could not be saved. Allow site data and try again.");
+        if (!prepared) {
+          // An old app-only client has no proof to resume. Its browser must
+          // follow normal owner approval; no app credential is transferred.
+          completed = true;
+          beginBrowser!(config, browser.node);
+          return;
+        }
         if (previous && !await browserPeerEligible(previous)) throw Error("Your saved browser approval belongs to a different connection. Review its access before continuing.");
         fetcher = ((input, init) => tailnetFetch(browser.node, input, init)) as typeof fetch;
       }
@@ -194,16 +283,25 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
       if (again) { again = false; void check(); }
     }
   };
-  const wake = () => { retryAt = 0; void check(); };
+  const changed = () => { retryAt = 0; void check(); };
+  const wake = () => {
+    if (document.hidden) return;
+    // A phone can suspend the standby relay while its VPN or SSO changes.
+    // Wake on network/foreground events, never on ordinary state callbacks.
+    if (target === "browser" && !completed) tailnetNode()?.wake();
+    changed();
+  };
   const timer = setInterval(() => void check(), 5000);
-  for (const name of ["online", "reach-owner-browser-state"]) window.addEventListener(name, wake);
+  window.addEventListener("online", wake);
+  window.addEventListener("reach-owner-browser-state", changed);
   document.addEventListener("visibilitychange", wake);
   report({ state: source === "browser" ? "ready" : "preparing" });
   void check();
   return () => {
     lifetime.abort();
     clearInterval(timer);
-    for (const name of ["online", "reach-owner-browser-state"]) window.removeEventListener(name, wake);
+    window.removeEventListener("online", wake);
+    window.removeEventListener("reach-owner-browser-state", changed);
     document.removeEventListener("visibilitychange", wake);
   };
 }
