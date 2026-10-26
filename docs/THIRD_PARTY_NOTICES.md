@@ -88,7 +88,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## lucide-react 1.53.0
+## lucide-react 1.55.0
 
 ### LICENSE
 
@@ -192,7 +192,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-## @capacitor/core 8.5.2
+## @capacitor/core 8.5.3
 
 ### LICENSE
 
