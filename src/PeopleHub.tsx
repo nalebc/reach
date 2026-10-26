@@ -6,7 +6,6 @@ import {
   RotateCcwClock,
   Laptop,
   Link2,
-  Plus,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -49,14 +48,14 @@ import {
   type MadeLink,
 } from "./InviteSheet";
 import { guestLinkUrl } from "./start-flow";
-import { InviteChooser } from "./invite-menu";
+import { InviteButton, InviteChooser } from "./invite-menu";
 import "./settings-list.css";
 import "./invite-sheet.css";
 import "./people-hub.css";
 import { pushInPage } from "./nav-history";
 
 // Who can use this computer, as one short ChatGPT-style list: agents first,
-// then people, then your own devices. "+" invites; a row opens what that one
+// then people, then your own devices. Invite, top right, invites; a row opens what that one
 // may do, when it ends, its link and Remove; an agent's sheet also holds what
 // it's doing, its requests, Pause and its activity. Ended agents, saved
 // shortcuts and shared services are a row each, only when there are any. Every change is checked by the
@@ -824,9 +823,7 @@ export default function PeopleHub({
           <h1>Agents &amp; people</h1>
           <p>Who can use {device.name}</p>
         </div>
-        <button className="ppl-add" aria-label="Invite" onClick={() => setInviting("choose")}>
-          <Plus size={22} />
-        </button>
+        <InviteButton label="Invite" onClick={() => setInviting("choose")} />
       </header>
 
       <ErrorLine error={[...new Set(Object.values(loadErrors))].filter(Boolean).join(" ")} />
@@ -857,7 +854,7 @@ export default function PeopleHub({
         </Group>
       )}
 
-      {/* One way to invite on this screen: the + above. Empty lists say
+      {/* One way to invite on this screen: Invite above. Empty lists say
           so in a line, without another button. */}
       <Group title="Agents">
         {extras.waiting > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", `${extras.waiting} waiting`, true)}
