@@ -265,3 +265,75 @@ test("tablets and desktops keep their layout when turned", async () => {
     delete dom.window.screen.orientation;
   }
 });
+
+// Fullscreen as a video plays it: Android's browser can hide its own bars,
+// from a tap; iPhone and iPad keep the in-page one (their keyboards).
+const ANDROID = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36";
+const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
+async function asPhone(userAgent, run) {
+  const nav = dom.window.navigator;
+  const saved = Object.getOwnPropertyDescriptor(nav, "userAgent");
+  Object.defineProperty(nav, "userAgent", { configurable: true, get: () => userAgent });
+  Object.defineProperty(dom.document, "fullscreenEnabled", { configurable: true, get: () => true });
+  try {
+    await run();
+  } finally {
+    if (saved) Object.defineProperty(nav, "userAgent", saved);
+    else delete nav.userAgent;
+    delete dom.document.fullscreenEnabled;
+  }
+}
+test("Android: the fullscreen button hides the browser's bars too; tapped again, both go", async () => {
+  await asPhone(ANDROID, async () => {
+    await mount({ coarse: true });
+    toggle();
+    await dom.waitFor(() => state.fullscreen && native === viewer);
+    assert.equal(entered, 1, "the browser's own fullscreen, from the tap");
+    toggle();
+    await dom.waitFor(() => !state.fullscreen);
+    assert.equal(exited, 1);
+  });
+});
+test("Android turned sideways: in-page at once, and one tap on the button hides the browser's bars", async () => {
+  const turn = orientation("portrait-primary");
+  try {
+    await asPhone(ANDROID, async () => {
+      await mount({ coarse: true });
+      await turn("landscape-primary");
+      await dom.waitFor(() => state.fullscreen);
+      assert.equal(entered, 0, "turning is no tap: nothing asked of the browser");
+      assert.equal(state.nativeOffer, true, "the button stays to hide the bars");
+      toggle();
+      await dom.waitFor(() => native === viewer);
+      assert.equal(state.fullscreen, true);
+      assert.equal(state.nativeOffer, false);
+    });
+  } finally {
+    delete dom.window.screen.orientation;
+  }
+});
+test("Android refusing its fullscreen: the button stops offering it and still closes", async () => {
+  const turn = orientation("landscape-primary");
+  try {
+    await asPhone(ANDROID, async () => {
+      await mount({ coarse: true, reject: true });
+      await dom.waitFor(() => state.fullscreen);
+      toggle();
+      await dom.waitFor(() => !state.nativeOffer);
+      assert.equal(state.fullscreen, true, "the in-page fullscreen stays");
+      toggle();
+      await dom.waitFor(() => !state.fullscreen);
+    });
+  } finally {
+    delete dom.window.screen.orientation;
+  }
+});
+test("iPhone: fullscreen stays in-page, so the keyboard keeps working with it", async () => {
+  await asPhone(IPHONE, async () => {
+    await mount({ coarse: true });
+    toggle();
+    await dom.waitFor(() => state.fullscreen);
+    assert.equal(entered, 0);
+    assert.equal(state.nativeOffer, false);
+  });
+});
