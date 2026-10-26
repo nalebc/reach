@@ -418,15 +418,6 @@
   }
 }
 
-/* The mobile computer picker floats in the header. Reserve the Home bell's
-   44px tap target plus the header inset, instead of stacking it over Add. */
-@media (max-width: 1024px), (pointer: coarse) {
-  .app-shell .main-shell > .topbar:has(.notification-bell) + .fleet-switcher {
-    right: 64px;
-    max-width: calc(100% - 192px);
-    padding-right: 6px;
-  }
-}
 
 /* Notifications for this device (NotifySettings.tsx): a calm settings list.
    One switch, then pause and what to be told about once it's on. */

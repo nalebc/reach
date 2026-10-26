@@ -570,7 +570,7 @@ export function TerminalView({
     <div className={`terminal-page${atRoot ? " at-root" : ""}`} ref={page}>
       <header className="terminal-bar" {...swipeHandlers}>
         {!atRoot && (
-          <button className="terminal-bar-icon" aria-label="Leave terminal" onClick={onExit}>
+          <button className="terminal-bar-icon" aria-label="Leave terminal" title="Leave terminal" onClick={onExit}>
             <ChevronLeft size={20} />
           </button>
         )}
@@ -604,6 +604,7 @@ export function TerminalView({
         <button
           className="terminal-bar-icon"
           aria-label="New terminal"
+          title="New terminal"
           aria-haspopup="menu"
           aria-expanded={menu === "new"}
           disabled={starting}

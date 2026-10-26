@@ -155,6 +155,8 @@ import "./workspace.css";
 import "./identity.css";
 import "./workspace-pages.css";
 import "./app-style.css";
+// After the shared look: one top bar on every page (top-bar.css).
+import "./top-bar.css";
 export const appRoot = createRoot(document.getElementById("root")!);
 appRoot.render(
   <React.StrictMode>
