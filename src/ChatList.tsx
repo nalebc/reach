@@ -669,6 +669,7 @@ export default function ChatList({
   onArchived,
   workflows,
   projects: codexProjects = [],
+  computers = 1,
 }: {
   peer: Peer;
   sessions: AgentSession[] | null;
@@ -700,6 +701,9 @@ export default function ChatList({
   workflows?: WorkflowsEntry;
   // The Codex app's projects (its sidebar), this computer's.
   projects?: AgentProject[];
+  // How many computers you have: the strip naming this one shows only when
+  // there's another to tell it from.
+  computers?: number;
 }) {
   const [localAgent, setLocalAgent] = useState(
     agent || apps[0]?.agent || "codex",
@@ -944,7 +948,7 @@ export default function ChatList({
           </label>
         )}
       </div>
-      {!compact && <div className="chat-source-strip" aria-label="Chat source">
+      {!compact && computers > 1 && <div className="chat-source-strip" aria-label="Chat source">
         <span>All</span>
         <span className="chat-source-device"><span className="chat-source-dot" /><Laptop size={16} />{peer.name}</span>
       </div>}

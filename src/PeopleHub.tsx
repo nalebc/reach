@@ -821,7 +821,8 @@ export default function PeopleHub({
       <header className="ppl-head">
         <div>
           <h1>Agents &amp; people</h1>
-          <p>Who can use {device.name}</p>
+          {/* Which computer, only when there's more than one to mix up. */}
+          {peers.length > 1 && <p>Who can use {device.name}</p>}
         </div>
         <InviteButton label="Invite" onClick={() => setInviting("choose")} />
       </header>
