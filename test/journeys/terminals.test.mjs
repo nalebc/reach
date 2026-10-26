@@ -40,17 +40,11 @@ test(`Terminals: a terminal opened from the phone runs on this ${word} and answe
   await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
   await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
   await page.see(() => document.querySelector('[aria-label="Start a terminal"]'), "the ways to start a terminal");
-  // The list is the tab's own page: no back arrow, and the bottom bar is
-  // still there to tap (nothing painted over it).
-  const barOnTop = `(() => { const b = document.querySelector('nav.mobile-nav button[aria-label="Terminal"]'); if (!b) return false; const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && b.contains(hit); })()`;
-  await page.see({ js: `${barOnTop} && !document.querySelector('button[aria-label="Leave terminal"]')` }, "the bottom bar over the list, no back arrow");
+  // The list, opened from Tools: its arrow goes back there, and the bottom
+  // bar is still there to tap (nothing painted over it).
+  const barOnTop = `(() => { const b = document.querySelector('nav.mobile-nav button[aria-label="Tools"]'); if (!b) return false; const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && b.contains(hit); })()`;
+  await page.see({ js: `${barOnTop} && !!document.querySelector('button[aria-label="Leave terminal"]')` }, "the bottom bar over the list, its arrow back to Tools");
   await page.shot("terminal-list");
-  // The bar raised over the list never lands over a sheet: More opens on top
-  // of it, bar included.
-  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
-  await page.see({ js: `(() => { const b = document.querySelector('nav.mobile-nav button[aria-label="Terminal"]').getBoundingClientRect(); const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2); return !!hit && !!hit.closest("dialog[open]"); })()` }, "the More sheet over the bottom bar");
-  await page.tap({ selector: "dialog[open] .more-top button", text: "Close" }, "Close More");
-  await page.see({ js: barOnTop }, "the bottom bar back over the list");
   await page.tap({ selector: `[aria-label="Start a terminal"] button`, text: /^Terminal$/ }, "Terminal, to start one");
   // Its shell's prompt: the computer's own shell answered.
   await page.see(() => (document.querySelector(".terminal-screen .xterm-rows")?.innerText || "").trim().length > 0, "the shell's first words", 90000);

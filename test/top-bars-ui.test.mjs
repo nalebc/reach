@@ -122,13 +122,10 @@ test("Reach's header: Add a computer is named and titled", async () => {
   await view.unmount();
 });
 
-test("Reach's header puts the bell after its other buttons, as Chat does", () => {
+test("Reach's header has one bell, beside Settings", () => {
   const right = source("App.tsx").match(/<div className="topbar-right">([\s\S]*?)<\/div>/)[1];
-  assert.ok(
-    right.indexOf("<NotificationBell") > right.indexOf('aria-label="Refresh connection"'),
-    "the bell follows Refresh",
-  );
-  assert.ok(right.indexOf("<NotificationBell") < right.indexOf('className="avatar'), "only the avatar follows it");
+  assert.equal(right.split("<NotificationBell").length - 1, 1, "one bell in the header");
+  assert.ok(right.indexOf("<NotificationBell") < right.indexOf('aria-label="Settings"'), "the bell, then Settings");
 });
 
 test("the three bars share one height, one button and one title style", () => {

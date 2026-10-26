@@ -105,7 +105,9 @@ async function workspace({ peers = [mac], routes: extra = {}, reachable = true }
   const $ = (selector) => dom.document.querySelector(selector);
   const toast = () => $(".toast")?.textContent || "";
   // Home's own word for the computer's live connection.
-  const online = () => /Online/.test($(".home-live, .main-content")?.textContent || "");
+  // Home says it in its connection line: "Connected" (older Homes: "Online").
+  const online = () => /^Connected\b/.test($(".home-connection summary")?.textContent?.trim() || "") ||
+    /Online/.test($(".home-live, .main-content")?.textContent || "");
   const goOffline = () => {
     net.up = false;
     for (const s of [...net.sockets]) s.drop();
@@ -144,7 +146,7 @@ test("offline, then reconnected: one toast says the computer is back", async () 
     await settled();
     goOffline();
     // Home shows it lost, long enough to have been seen.
-    await dom.waitFor(() => /Connecting…/.test(dom.document.querySelector(".main-content").textContent));
+    await dom.waitFor(() => /Connecting…|Reconnecting…|Connection lost/.test(dom.document.querySelector(".main-content").textContent));
     await settle(1800);
     assert.equal(toast(), "", "nothing said while it's down");
     goOnline();
@@ -183,7 +185,7 @@ test("back in front after the background: a live connection that drops and takes
     // network takes a moment to wake: the retry opens slowly.
     net.openDelay = 1200;
     for (const s of [...net.sockets]) s.drop();
-    await dom.waitFor(() => /Connecting…/.test(dom.document.querySelector(".main-content").textContent));
+    await dom.waitFor(() => /Connecting…|Reconnecting…|Connection lost/.test(dom.document.querySelector(".main-content").textContent));
     await dom.waitFor(() => online());
     await settle(1800);
     assert.equal(toast(), "", "coming back in front is a normal open");

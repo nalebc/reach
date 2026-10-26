@@ -6,8 +6,8 @@ import type { FleetConnection } from "./useFleetConnections";
 // or moving between pages says nothing; the computer simply being there is
 // what the page already shows. It's said when the phone showed the computer
 // lost and then it came back: the "Let's reconnect" page, or its live
-// connection dropping while Reach was in front (Home says "Connecting…" and
-// Settings "Offline" then).
+// connection dropping while Reach was in front (Home says "Reconnecting…"
+// or "Connection lost", and Settings "Offline", then).
 //
 // What counts as seen: that state on screen for a moment while Reach is in
 // front. A blip shorter than that, or a drop while the phone was locked or

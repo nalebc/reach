@@ -263,9 +263,9 @@ export function TerminalView({
   const mounted = !!current;
   // No terminal open: the page is the list of every terminal.
   const listing = !current && !macTab;
-  // The Terminal tab's own page: no back arrow, and the bottom bar stays.
-  // A Mac window opened from Home counts as open while the list is still
-  // being fetched, so the bar and the arrow don't flash in and out.
+  // The list of terminals, opened from Tools: the bottom bar stays over it
+  // (its back arrow returns to Tools). A Mac window opened from Home counts
+  // as open while the list is still being fetched, so the bar doesn't flash.
   const atRoot =
     listing && !(macSelected && !macFresh && !macError);
   const showSwipeHint =
@@ -569,11 +569,9 @@ export function TerminalView({
   return (
     <div className={`terminal-page${atRoot ? " at-root" : ""}`} ref={page}>
       <header className="terminal-bar" {...swipeHandlers}>
-        {!atRoot && (
-          <button className="terminal-bar-icon" aria-label="Leave terminal" title="Leave terminal" onClick={onExit}>
-            <ChevronLeft size={20} />
-          </button>
-        )}
+        <button className="terminal-bar-icon" aria-label="Leave terminal" title="Leave terminal" onClick={onExit}>
+          <ChevronLeft size={20} />
+        </button>
         {listing ? (
           <h1 className="terminal-switch">Terminals</h1>
         ) : (

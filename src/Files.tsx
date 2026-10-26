@@ -296,7 +296,7 @@ export default function Files({
   const guest = device.access?.kind === "guest" && !features.mac;
   // Above the title: whose files a guest sees, or which computer when you
   // have several. With only one, its name is already on Home's card.
-  const host = guest ? `Shared by ${device.name}` : peers.length > 1 ? device.name : "";
+  const host = guest ? `Shared by ${device.name}` : (peers?.length ?? 0) > 1 ? device.name : "";
   const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   useEffect(() => {

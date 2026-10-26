@@ -3,10 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { startDom, settle } from "./dom/harness.mjs";
 
-// The Terminal tab's list is a main page, like Home and Chat: no back arrow,
-// and the bottom bar stays. Inside an open terminal (a level deeper) the
-// back arrow comes back and the terminal covers the bar. Same on a Mac and
-// on a Windows PC.
+// The list of terminals, opened from Tools: the bottom bar stays over it and
+// its back arrow returns to Tools. Inside an open terminal (a level deeper)
+// the terminal covers the bar. Same on a Mac and on a Windows PC.
 const tab = (id) => ({
   id,
   provider: "terminal",
@@ -75,13 +74,13 @@ for (const [platform, word] of [
     platform,
   };
 
-  test(`${word}: the list has no back arrow and keeps the bottom bar`, async () => {
+  test(`${word}: the list keeps the bottom bar and its back arrow to Tools`, async () => {
     tabs = [tab("a")];
     const view = await dom.render(page({ ...peer, id: `${platform}-list` }, "reach"));
     const root = view.container;
     await dom.waitFor(() => root.querySelector(".terminal-row-main"));
     assert.equal(root.querySelector("h1").textContent, "Terminals");
-    assert.equal(back(root), null, "no back arrow at the tab's root");
+    assert.ok(back(root), "the list was opened from Tools: its arrow goes back there");
     assert.ok(atRoot(root), "marked as the tab's root, so the bar stays");
     // New terminal is still at hand.
     assert.ok(root.querySelector('button[aria-label="New terminal"]'));
@@ -118,7 +117,7 @@ test("a Mac window opened from Home that's gone by the time the list comes falls
   const root = view.container;
   await dom.waitFor(() => root.querySelector(".terminal-list-note.center"));
   await dom.waitFor(() => atRoot(root));
-  assert.equal(back(root), null);
+  assert.ok(back(root), "the list, with its arrow back to Tools");
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });

@@ -18,7 +18,7 @@ const chat = {
 };
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 
-let dom, React, ComputerSwitcher, MoreSheet, Files, ChatList, PeopleHub;
+let dom, React, ComputerSwitcher, ComputerMenu, Files, ChatList, PeopleHub;
 before(async () => {
   dom = await startDom({
     mobile: true,
@@ -43,7 +43,7 @@ before(async () => {
   dom.window.HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close ??= function () { this.open = false; };
   ({ ComputerSwitcher } = await dom.load("/src/FleetMesh.tsx"));
-  ({ default: MoreSheet } = await dom.load("/src/MoreSheet.tsx"));
+  ({ default: ComputerMenu } = await dom.load("/src/ComputerMenu.tsx"));
   ({ default: Files } = await dom.load("/src/Files.tsx"));
   ({ default: ChatList } = await dom.load("/src/ChatList.tsx"));
   ({ default: PeopleHub } = await dom.load("/src/PeopleHub.tsx"));
@@ -92,17 +92,15 @@ test("one computer and another waiting to be linked: the pill shows, the waiting
   assert.ok(c.querySelector(".fleet-add"));
 });
 
-test("one computer: More still offers Add a computer", async () => {
+test("one computer: the top bar's computer menu still offers Add a computer", async () => {
   const added = [];
-  const c = await render(MoreSheet, {
-    peer: mac, device: device(mac), places: ["files"], current: "files", settings: true,
+  dom.window.HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
+  const c = await render(ComputerMenu, {
     peers: [mac], active: "mac", connections, waiting: [],
-    onNavigate() {}, onChoose() {}, onAdd: () => added.push(1), onClose() {},
+    onWaiting() {}, onChoose() {}, onAdd: () => added.push(1), onClose() {},
   });
-  c.querySelector(".more-computer").click();
-  await settle();
-  const add = [...c.querySelectorAll(".more-computers .more-row")].find((b) => b.textContent.includes("Add a computer"));
-  assert.ok(add, "Add a computer under the computer card");
+  const add = [...(c.ownerDocument || c).querySelectorAll("button")].find((b) => b.textContent.includes("Add a computer"));
+  assert.ok(add, "Add a computer in the computer menu");
   add.click();
   assert.deepEqual(added, [1]);
 });

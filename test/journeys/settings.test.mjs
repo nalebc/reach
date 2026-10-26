@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { startComputer, phone, skip } from "../helpers/journey.mjs";
 
-// Settings, as the owner's phone opens it from More: how the phone is
+// Settings, as the owner's phone opens it from the top bar: how the phone is
 // connected (a dot and a word, nothing to choose), then this computer, and
 // at the end which Reach it runs.
 test("Settings: the connection with its dot, and Reach's version", { skip, timeout: 240000 }, async (t) => {
@@ -10,10 +10,7 @@ test("Settings: the connection with its dot, and Reach's version", { skip, timeo
   const page = await phone(t, computer);
   await page.skipIntro();
   await page.see(() => document.querySelector(".home-hero-text h1")?.textContent, "Home");
-  await page.tap('button[aria-label="More workspace options"]', "More");
-  await page.see(() => document.querySelector(".more-sheet"), "More");
-  await page.shot("more");
-  await page.tap({ selector: "button.more-row", text: "Settings" }, "Settings");
+  await page.tap('button.workspace-settings[aria-label="Settings"]', "Settings, in the top bar");
   const route = await page.see(() => document.querySelector(".connection-row .conn-status")?.textContent, "the connection row");
   assert.equal(route, "Tailscale app", "the phone reaches it over Tailscale, said in words");
   const tone = await page.evaluate(`document.querySelector(".connection-row .conn-status").className`);
