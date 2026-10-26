@@ -22,7 +22,10 @@ test(`Home: a new phone signs in, and Home shows this ${word} by its name, onlin
       "the screen live on the card, or why not",
       90000,
     );
-  assert.equal(await page.evaluate(`!!document.querySelector(".home-section, .home-stories, .home-now")`), false, "Home has no chat activity section");
+  // What runs on the computer may show as circles under its card (none on a
+  // quiet computer; a CI Windows PC has its console). No other section.
+  const sections = await page.evaluate(`[...document.querySelectorAll(".home-section, .home-now")].map((s) => s.getAttribute("aria-label"))`);
+  assert.deepEqual(sections.filter((label) => label !== `Live on your ${word}`), [], "Home has no other activity section");
   assert.equal(await page.evaluate(`!!document.querySelector(".home-access, .home-presence")`), false, "alone, no access inventory on Home");
   // Its words never name the other platform.
   const other = word === "Mac" ? /\bWindows PC\b|\bPC\b/ : /\bMac\b/;

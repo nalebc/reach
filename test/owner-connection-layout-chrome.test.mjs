@@ -81,8 +81,11 @@ createRoot(document.getElementById("root")).render(<App/>);
   };
   // Each target is a fixed element lookup written here, never a value
   // spliced into page code (CodeQL js/bad-code-sanitization).
+  // A finger reaches only what's on top where it lands: wait, within the
+  // same budget, until the element itself is there (as the journeys' tap
+  // does), so a covered or still-moving button is never tapped blind.
   const click = async element => {
-    await waitFor(`!!(${element})`);
+    await waitFor(`(() => { const b = ${element}; if (!b) return false; b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && b.contains(hit); })()`);
     const at = await tab.evaluate(`(() => { const b = ${element}; b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { x: r.x+r.width/2, y:r.y+r.height/2 }; })()`);
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
     await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
