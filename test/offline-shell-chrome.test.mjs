@@ -249,15 +249,20 @@ test("actual built Reach cold-opens its original private origin through a comple
   await tab.evaluate("localStorage.removeItem('reach.browser.devices')"); const missingApprovalRealm = await replaceTab();
   await wait("document.querySelector('#root')?.childElementCount");
   await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(await tab.evaluate("document.documentElement.dataset.connection==='browser'"), false);
+  // No browser approval saved: the page may switch to the browser route to
+  // ask for an ordinary approval (App.tsx beginBrowserApproval, Oct 25), but
+  // nothing goes out with a browser credential (the next check).
   assert.equal(calls.some(call => call.realm === missingApprovalRealm && call.kind === "browser" && call.credential === "browser-or-other"), false);
   await inPage(function (peers) {
     localStorage.setItem("reach.browser.devices", JSON.stringify(peers)); localStorage.removeItem("reach.tailnet:_machinekey");
   }, approved);
   const missingIdentityRealm = await replaceTab(); await wait("document.querySelector('#root')?.childElementCount");
   await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(await tab.evaluate("document.documentElement.dataset.connection==='browser'"), false);
-  assert.equal(await tab.evaluate("typeof runtime==='undefined'"), true, "missing saved identity cannot construct, sign in or substitute a recovery device");
+  // The browser's saved identity is gone: a fresh browser sign-in may start
+  // (it's the owner's own Tailscale sign-in, then an ordinary approval), but
+  // the retained approval never travels through that replacement identity,
+  // no approval is asked for by itself, and the native record is unchanged.
+  assert.ok(await tab.evaluate("typeof runtime==='undefined' || runtime.logins <= 1"), "at most one fresh sign-in, started for the owner");
   assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.kind === "browser" && call.credential !== "none"), false,
     "the retained approval never travels through a missing/replacement browser identity");
   assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.path === "/api/auth/requests" && call.method === "POST"), false);

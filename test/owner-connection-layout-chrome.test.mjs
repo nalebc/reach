@@ -62,7 +62,8 @@ createRoot(document.getElementById("root")).render(<App/>);
     if (req.url === "/") return res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/entry.css"><div id="root"></div><script type="module" src="/entry.js"></script>');
     if (req.url !== "/entry.js" && req.url !== "/entry.css") return res.writeHead(404).end();
     res.writeHead(200, { "Content-Type": req.url.endsWith("css") ? "text/css" : "text/javascript" });
-    res.end(fs.readFileSync(path.join(dir, "page", req.url.slice(1))));
+    // Only these two built files, by fixed name (CodeQL js/path-injection).
+    res.end(fs.readFileSync(path.join(dir, "page", req.url === "/entry.js" ? "entry.js" : "entry.css")));
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
@@ -78,9 +79,11 @@ createRoot(document.getElementById("root")).render(<App/>);
     }
     assert.fail(`Timed out: ${expression}; ${JSON.stringify(tab.problems)}`);
   };
-  const click = async selector => {
-    await waitFor(`!!document.querySelector(${JSON.stringify(selector)})`);
-    const at = await tab.evaluate(`(() => { const b = document.querySelector(${JSON.stringify(selector)}); b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { x: r.x+r.width/2, y:r.y+r.height/2 }; })()`);
+  // Each target is a fixed element lookup written here, never a value
+  // spliced into page code (CodeQL js/bad-code-sanitization).
+  const click = async element => {
+    await waitFor(`!!(${element})`);
+    const at = await tab.evaluate(`(() => { const b = ${element}; b.scrollIntoView({ block: "nearest" }); const r = b.getBoundingClientRect(); return { x: r.x+r.width/2, y:r.y+r.height/2 }; })()`);
     await tab.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
     await tab.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await frame();
@@ -115,13 +118,13 @@ createRoot(document.getElementById("root")).render(<App/>);
     assert.ok(home.notice.bottom < home.nav.top, "reminder and navigation don't overlap");
     assert.ok(home.width <= width, "Home fits the viewport");
     await shot(`home-${width}`);
-    await click('.owner-connection-setup > summary');
+    await click(`document.querySelector('.owner-connection-setup > summary')`);
     assert.equal(await tab.evaluate("document.querySelector('.owner-connection-setup').open"), true);
     assert.equal(await tab.evaluate("document.querySelector('.owner-connection-details a').href"), "https://login.tailscale.com/a/fixture");
     await shot(`setup-open-${width}`);
-    await click('.mobile-nav [aria-label="Tools"]');
+    await click(`document.querySelector('.mobile-nav [aria-label="Tools"]')`);
     await waitFor("!!document.querySelector('.tools-page')");
-    await click('.tool-open[aria-label="Chat"]');
+    await click(`document.querySelector('.tool-open[aria-label="Chat"]')`);
     await waitFor("!!document.querySelector('.chat-library')");
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "no setup notice above the chat header");
     const chat = await tab.evaluate(`(() => {
@@ -139,13 +142,13 @@ createRoot(document.getElementById("root")).render(<App/>);
     await tab.evaluate("__ownerSetup.update({state:'error', message:'Sign-in needs attention.'})");
     await frame();
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "setup errors don't interrupt Chat");
-    await click('.mobile-nav [aria-label="Screen"]');
+    await click(`document.querySelector('.mobile-nav [aria-label="Screen"]')`);
     await waitFor("!!document.querySelector('.page-screen')");
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "Screen remains clear of setup");
-    await click('.mobile-nav [aria-label="Home"]');
+    await click(`document.querySelector('.mobile-nav [aria-label="Home"]')`);
     await waitFor("!!document.querySelector('.home-live')");
     assert.match(await tab.evaluate("document.querySelector('.owner-connection-setup summary').textContent"), /needs attention/);
-    await click('.workspace-settings');
+    await click(`document.querySelector('.workspace-settings')`);
     await waitFor("!!document.querySelector('.settings-workspace')");
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), true, "setup is also reachable from Settings");
     await tab.evaluate("__ownerSetup.update({state:'ready'})");

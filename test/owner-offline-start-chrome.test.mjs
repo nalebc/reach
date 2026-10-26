@@ -6,6 +6,7 @@ import os from 'node:os';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import express from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { build } from 'esbuild';
 import { findChrome, launchChrome, openTab, testCertificate } from './helpers/headless-chrome.mjs';
 
@@ -17,6 +18,8 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-owner-offline-'));
   const host = 'owner.offline.ts.net', origin = `https://${host}`, dist = path.resolve('dist');
   const cert = await testCertificate(dir, host), app = express(), calls = [];
+  // A generous limit: this fixture reads files per request (CodeQL js/missing-rate-limiting).
+  app.use(rateLimit({ windowMs: 60_000, limit: 10_000, standardHeaders: false, legacyHeaders: false }));
   let browser, tab, offline = false, seed = true, workspace = false;
   const server = https.createServer(cert, (req, res) => {
     calls.push({ path: new URL(req.url, origin).pathname, method: req.method, bearer: !!req.headers.authorization });
@@ -80,13 +83,23 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
     }
     tab = await openTab(browser); await tab.send('Network.enable');
   };
-  const wait = (expression, timeout = 15000) => tab.evaluate(`new Promise((resolve,reject)=>{const until=Date.now()+${timeout};const check=()=>{if(${expression})return resolve(true);if(Date.now()>until)return reject(Error('Missing state: '+${JSON.stringify(expression)}));setTimeout(check,25)};check()})`);
+  // Each expression is fixed test code; it's named on this side if it never holds.
+  const wait = (expression, timeout = 15000) => tab.evaluate(`new Promise((resolve,reject)=>{const until=Date.now()+${timeout};const check=()=>{if(${expression})return resolve(true);if(Date.now()>until)return reject(Error('Missing state'));setTimeout(check,25)};check()})`)
+    .catch(error => { throw Error(`${error.message}: ${expression}`); });
+  // Values go to fixed page code as DevTools call arguments, never spliced in.
+  const call = async (fn, ...args) => {
+    const { result: page } = await tab.send('Runtime.evaluate', { expression: 'globalThis' });
+    const { result, exceptionDetails } = await tab.send('Runtime.callFunctionOn', {
+      objectId: page.objectId, functionDeclaration: fn, arguments: args.map(value => ({ value })), awaitPromise: true, returnByValue: true });
+    if (exceptionDetails) throw Error(exceptionDetails.exception?.description || exceptionDetails.text);
+    return result.value;
+  };
   await fresh(); await tab.navigate(origin + '/');
   const peer = { id: 'fixture', computerId: 'computer', name: 'Mac', platform: process.platform, url: origin, token: 'FIXTURE-NATIVE-ONLY' };
-  await tab.evaluate(`(() => {
-    localStorage.setItem('reach.ways','1');localStorage.setItem('reach.devices',${JSON.stringify(JSON.stringify([peer]))});localStorage.setItem('reach.active','fixture');
-    globalThis.setupStates=[];globalThis.stopSetup=Fixture.watchOwnerEnrollment(${JSON.stringify(peer)},s=>setupStates.push(s));
-  })()`);
+  await call(`function (peer) {
+    localStorage.setItem('reach.ways','1');localStorage.setItem('reach.devices',JSON.stringify([peer]));localStorage.setItem('reach.active','fixture');
+    globalThis.setupStates=[];globalThis.stopSetup=Fixture.watchOwnerEnrollment(peer,s=>setupStates.push(s));
+  }`, peer);
   await wait('setupStates.at(-1)?.state === "signin"');
   await wait('localStorage.getItem("reach.offline-shell.enabled") === "v1"');
   assert.equal(await tab.evaluate('localStorage.getItem("reach.browser.devices")'), null, 'cache readiness does not pretend browser approval is finished');
@@ -146,7 +159,7 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   assert.equal(calls.filter(call => call.method !== 'GET').length, posts, 'a cold workspace resumes its saved proof without source access');
   // Legacy app-only clients also get the initial browser approval flow inside
   // this workspace, with no native bearer sent through the new browser node.
-  await tab.evaluate(`localStorage.setItem('reach.devices',${JSON.stringify(JSON.stringify([{ ...peer, token: 'FIXTURE-LEGACY-ONLY' }]))})`);
+  await call(`function (peers) { localStorage.setItem('reach.devices', JSON.stringify(peers)); }`, [{ ...peer, token: 'FIXTURE-LEGACY-ONLY' }]);
   await fresh(); await tab.send('Page.navigate', { url: workspaceAddress });
   await wait('!!document.querySelector(".owner-connection-setup[open] a")');
   await tab.evaluate('fixtureCompleteSignIn()');
