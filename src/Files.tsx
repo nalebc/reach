@@ -288,6 +288,9 @@ export default function Files({
   const canExtract = features.mac && canWrite;
   // A person with full access gets the folder actions too.
   const guest = device.access?.kind === "guest" && !features.mac;
+  // Above the title: whose files a guest sees, or which computer when you
+  // have several. With only one, its name is already on Home's card.
+  const host = guest ? `Shared by ${device.name}` : peers.length > 1 ? device.name : "";
   const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const searchField = useRef<HTMLInputElement>(null);
@@ -673,8 +676,8 @@ export default function Files({
       }}
     >
       <header className="files-header">
-        <nav className="files-crumbs" aria-label="Folder path">
-          <span>{guest ? `Shared by ${device.name}` : device.name}</span>
+        {(host || parts.length > 0) && <nav className="files-crumbs" aria-label="Folder path">
+          {host && <span>{host}</span>}
           {parts.length > 0 && (
             <button onClick={() => go("")}>{rootName}</button>
           )}
@@ -683,7 +686,7 @@ export default function Files({
               {part}
             </button>
           ))}
-        </nav>
+        </nav>}
         <div className="files-titlebar">
           {parts.length > 0 && (
             <button
