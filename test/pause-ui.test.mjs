@@ -302,6 +302,36 @@ test("right after resume, an app on its way back says it's opening, never 'back 
   await view.unmount();
 });
 
+test("the pause pill says Pause, or Paused when on, and names the computer it pauses", async () => {
+  const pill = (platform, paused) =>
+    dom.render(React.createElement(PauseButton, { peer, paused, platform }));
+  // On: an icon and the word, not pressed.
+  let view = await pill("darwin", false);
+  let on = dom.document.querySelector("button.pause-button");
+  assert.equal(on.getAttribute("aria-label"), "Pause Reach on your Mac");
+  assert.equal(on.getAttribute("aria-pressed"), "false");
+  assert.equal(on.textContent.trim(), "Pause");
+  assert.ok(on.querySelector("svg"), "an icon beside the word");
+  assert.equal(on.classList.contains("is-paused"), false);
+  await view.unmount();
+  // Paused: the same name, pressed, lit, and the word says so.
+  view = await pill("darwin", true);
+  on = dom.document.querySelector("button.pause-button");
+  assert.equal(on.getAttribute("aria-label"), "Pause Reach on your Mac");
+  assert.equal(on.getAttribute("aria-pressed"), "true");
+  assert.equal(on.textContent.trim(), "Paused");
+  assert.equal(on.classList.contains("is-paused"), true);
+  assert.equal(on.getAttribute("title"), "Resume Reach on your Mac");
+  await view.unmount();
+  // A Windows host is named as such.
+  view = await pill("win32", true);
+  on = dom.document.querySelector("button.pause-button");
+  assert.equal(on.getAttribute("aria-label"), "Pause Reach on your Windows PC");
+  assert.equal(on.textContent.trim(), "Paused");
+  assert.deepEqual(dom.errors, []);
+  await view.unmount();
+});
+
 test("the pause button switches at once and asks the computer; a refusal puts it back", async () => {
   const toasts = [];
   const view = await dom.render(
@@ -315,11 +345,10 @@ test("the pause button switches at once and asks the computer; a refusal puts it
   const pause = button("Pause Reach on your Mac");
   assert.equal(pause.getAttribute("aria-pressed"), "false");
   pause.click();
-  await dom.waitFor(() => button("Resume Reach on your Mac"));
-  assert.equal(
-    button("Resume Reach on your Mac").getAttribute("aria-pressed"),
-    "true",
+  await dom.waitFor(
+    () => button("Pause Reach on your Mac")?.getAttribute("aria-pressed") === "true",
   );
+  assert.equal(button("Pause Reach on your Mac").textContent.trim(), "Paused");
   assert.deepEqual(asked, [["pause", true]]);
   await view.unmount();
 
@@ -336,7 +365,8 @@ test("the pause button switches at once and asks the computer; a refusal puts it
   button("Pause Reach on your Windows PC").click();
   await dom.waitFor(() => toasts.length === 1);
   await settle(30);
-  assert.ok(button("Pause Reach on your Windows PC"));
+  assert.equal(button("Pause Reach on your Windows PC").getAttribute("aria-pressed"), "false");
+  assert.equal(button("Pause Reach on your Windows PC").textContent.trim(), "Pause");
   assert.deepEqual(toasts, ["Only the owner can pause Reach."]);
   assert.deepEqual(dom.errors, []);
   await shown.unmount();
