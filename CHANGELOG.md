@@ -8,6 +8,31 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- One permanent owner link per computer. The same link works whether the
+  phone's Tailscale app is on, off, absent or on another tailnet; Reach picks
+  the best authorized connection itself and returns to the app's when it comes
+  back, keeping open work and never replaying an action of unknown result.
+- Owner setup prepares and verifies the phone browser's private connection as
+  well, including for owners who start with the phone app; existing app-only
+  owners are offered the same setup once. The browser registers its own
+  non-exportable key, and Reach issues that connection its own credential with
+  the same access; guests, restricted devices and agents can't use this.
+- A Tools page, with any tool pinned to Home as a shortcut you can reorder,
+  and a menu of your computers.
+
+### Changed
+
+- The public start page and its fixed files stay available at the owner link
+  without a pairing window, so the bookmark always opens; owner APIs and
+  WebSockets remain private. Setup shows the phone QR only once that link is
+  verified (public DNS, HTTPS and the browser client); a phone already on this
+  tailnet can still ask for the private QR by typing `private`.
+- Bottom navigation is Home, Screen and Tools; Files, Terminals, Chat and the
+  rest open from Tools, and the More sheet is gone. Each open tab remembers
+  its views for the session, never requests, results or credentials.
+
 ### Fixed
 
 - On a Mac, Copy selected text works on pages in Chrome and other apps that
