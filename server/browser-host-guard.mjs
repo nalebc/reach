@@ -75,7 +75,8 @@ function apiPath(req) {
  *
  * A different node ID alone does not mean a different physical device: a host
  * browser can run its own Tailscale/WASM node. Only the specifically pinned
- * native Tailscale issuer(s) can reach owner APIs during the session. People
+ * native Tailscale issuer(s), and their cryptographically enrolled alternate
+ * owner paths, can reach owner APIs during the session. People
  * have a separate node-bound grant; embedded/browser nodes need explicit
  * owner approval for coexistence. OS is
  * enrollment metadata, not hardware attestation; this assumes an agent cannot
@@ -83,6 +84,7 @@ function apiPath(req) {
  */
 export function createBrowserHostGuard({
   clients = () => [],
+  ownerConnectionIncludes = () => false,
   lookup = () => tailscaleJson(["status", "--json"]),
   trusted = trustedRequest,
   now = Date.now,
@@ -216,6 +218,25 @@ export function createBrowserHostGuard({
   };
   const pinnedRemote = (req, current) => nativeRemote(req) && current.approvers.some((approver) =>
     approver.nodeId === req.reachIdentity.nodeId && approver.userId === req.reachIdentity.userId);
+  const ownerRemote = (req) => trusted(req) === true && !onHost(req) &&
+    req.reachIdentity?.tagged === false && typeof req.reachIdentity.userId === "string" &&
+    !!req.reachIdentity.userId && Number.isFinite(req.reachIdentity.validUntil) && req.reachIdentity.validUntil > now();
+  const linkedApprover = (clientId, current) => {
+    try { return current.approvers.some(approver => ownerConnectionIncludes(clientId, approver.clientId) === true); }
+    catch { return false; }
+  };
+  const linkedRemote = (req, client, current) => ownerRemote(req) && client?.kind === "device" &&
+    client.scopes?.includes("admin") && expires(client) > now() &&
+    client.tailscale?.nodeId === req.reachIdentity.nodeId && client.tailscale?.userId === req.reachIdentity.userId &&
+    linkedApprover(client.id, current);
+  // Only the proof handlers use this exception, before issuing a challenge
+  // and again at redemption. They still verify the non-exportable key and
+  // mint a separate node-bound credential. No ordinary owner admission opens.
+  const assertOwnerConnection = (req, connection) => {
+    const current = state();
+    if (current.active && !(ownerRemote(req) && linkedApprover(connection, current)))
+      throw fail(403, browserHostGuardMessage);
+  };
   const signedAgentRoute = (req, client, current) => {
     if (client?.kind !== "agent" || client.policy?.browser !== true ||
         !Number.isFinite(client.expiresAt) || client.expiresAt <= now() ||
@@ -260,7 +281,7 @@ export function createBrowserHostGuard({
   const allows = (req, verifiedClient = null) => {
     const current = state();
     return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current) ||
-      personIn(req, verifiedClient);
+      linkedRemote(req, verifiedClient, current) || personIn(req, verifiedClient);
   };
   // A live connection, before its credential arrives in its first message:
   // let through a device a person's access is bound to; the credential is
@@ -271,8 +292,9 @@ export function createBrowserHostGuard({
     if (typeof node !== "string" || !node || onHost(req)) return false;
     try {
       const all = clients();
+      const current = state();
       return Array.isArray(all) && all.some((client) => client?.tailscale?.nodeId === node &&
-        personIn(req, client));
+        (linkedRemote(req, client, current) || personIn(req, client)));
     } catch { return false; }
   };
   const assertRequest = (req, verifiedClient = null) => {
@@ -303,5 +325,5 @@ export function createBrowserHostGuard({
       return release;
     } catch (error) { release(); throw error; }
   };
-  return { isActive, fresh, refresh, invalidate, stop, allows, allowsConnection, onHost, needsPersonApproval, assertRequest, beginInvitation };
+  return { isActive, fresh, refresh, invalidate, stop, allows, allowsConnection, onHost, needsPersonApproval, assertRequest, assertOwnerConnection, beginInvitation };
 }

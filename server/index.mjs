@@ -245,7 +245,9 @@ export async function createReach(overrides = {}) {
   } catch {
     /* an unreadable access store stays locked (503) as before */
   }
-  const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
+  const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(),
+    ownerConnectionIncludes: (clientId, approverId) => auth.ownerConnectionIncludes(clientId, approverId),
+    ...overrides.browserHostGuard });
   // Any process on this Mac can claim one of your devices' Tailscale
   // identities on Reach's private socket, so an identity alone never approves
   // a device: your approval, Face ID, or a ticket a linked computer issued to
@@ -1669,7 +1671,11 @@ export async function createReach(overrides = {}) {
     if (agentsActive()) {
       await browserHostGuard.refresh();
       const client = verified();
-      if (!auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
+      // These two handlers check the pinned owner relationship themselves
+      // and require a signed, identity-bound proof. Ordinary sign-in and
+      // owner APIs remain guarded before a credential has been issued.
+      const ownerProof = req.method === "POST" && ["/api/auth/owner-connection/challenge", "/api/auth/owner-connection/join"].includes(route);
+      if (!ownerProof && !auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
         // A person opening their invitation comes in beside the agent, and
         // waits for your Allow (the redeem route holds them). Not on this
         // Mac itself: the agent drives it.
@@ -1710,12 +1716,12 @@ export async function createReach(overrides = {}) {
   app.post("/api/auth/owner-connection/challenge", ownerConnectionLimit, async (req, res) => {
     if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
       throw fail(403, "Set up this computer's own browser with its local approval.");
-    res.json(ownerConnections.challenge(req.reachIdentity, req.body));
+    res.json(ownerConnections.challenge(req.reachIdentity, req.body, connection => browserHostGuard.assertOwnerConnection(req, connection)));
   });
   app.post("/api/auth/owner-connection/join", ownerConnectionLimit, async (req, res) => {
     if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
       throw fail(403, "Set up this computer's own browser with its local approval.");
-    const joined = ownerConnections.join(req.reachIdentity, req.body);
+    const joined = ownerConnections.join(req.reachIdentity, req.body, connection => browserHostGuard.assertOwnerConnection(req, connection));
     res.json({ ...joined, device: { id: device.id, computerId: device.computerId, name: config.name, platform: hostPlatform } });
   });
   app.post("/api/auth/requests", async (req, res) => {

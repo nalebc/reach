@@ -5,6 +5,8 @@ import http from "node:http";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import { once } from "node:events";
+import { WebSocket } from "ws";
 import { build } from "esbuild";
 import { createReach } from "../server/index.mjs";
 import { newIngressKey } from "../server/tailscale-auth.mjs";
@@ -13,7 +15,7 @@ import { findChrome, launchChrome, openTab, testCertificate } from "./helpers/he
 
 const ORIGIN = "https://owner.fixture.ts.net", hostname = new URL(ORIGIN).hostname;
 const chromeBinary = findChrome();
-test("real Chrome enrolls a separate owner path across ports with persisted non-exportable keys and normal CORS", {
+for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sourceRole}-first across ports${sourceRole === "native" ? " while an app agent is active" : ""} with persisted keys and normal CORS`, {
   skip: !process.env.CI && !chromeBinary && "Chrome/Chromium is not installed", timeout: 30000,
 }, async t => {
   assert.ok(chromeBinary, "Chrome is required in CI");
@@ -45,9 +47,11 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
     agentPolicyFile: path.join(root, "policy.json"), sweepScreenHelpers() {},
     tailscaleOwner: owner, tailscaleStatus: async () => ({ Self: { TailscaleIPs: ["100.64.0.99"] } }),
     tailscaleIdentity: { lookup: async ip => ({
-      Node: { StableID: ip === "100.64.0.21" ? "source-browser" : "target-app", User: 42, Name: "phone.fixture.ts.net.", KeyExpiry: "0001-01-01T00:00:00Z" },
+      Node: { StableID: ip === "100.64.0.21" ? "source" : "target", User: 42, Name: "phone.fixture.ts.net.", KeyExpiry: "0001-01-01T00:00:00Z" },
       UserProfile: { ID: 42, LoginName: owner.login },
     }) },
+    browserHostGuard: { lookup: async () => ({ BackendState: "Running", Self: { ID: "host" },
+      Peer: { phone: { ID: sourceRole === "native" ? "source" : "target", OS: "iOS", UserID: 42 } } }) },
   });
   await new Promise(resolve => reach.server.listen(0, "127.0.0.1", resolve));
   const dist = path.join(root, "dist"); fs.mkdirSync(dist);
@@ -55,7 +59,9 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   ingressPort = await reach.listenKeyed({ key: ingressKey, peerCheck: { check: async () => true },
     publicApp: publicStartHandler({ dist, privateOrigin, home: ORIGIN, name: "Fixture", instance: reach.instance }),
   });
-  const grant = reach.auth.issue("Owner browser", ["admin"], "device", { tailscale: { userId: "42", nodeId: "source-browser" } });
+  const grant = reach.auth.issue("Owner phone", ["admin"], "device", { tailscale: { userId: "42", nodeId: "source" } });
+  if (sourceRole === "native") reach.auth.inviteBrowser({ name: "Active app agent", ttlSeconds: 600, screen: "apps", appAccess: [] },
+    { nodeId: "source", userId: "42", clientId: grant.clientId });
   const device = JSON.parse(fs.readFileSync(path.join(dataDir, "device.json")));
   const peer = { ...device, name: "Fixture", url: privateOrigin, token: grant.token };
   const config = { product: "Reach", origin: privateOrigin, home: ORIGIN, instance: reach.instance, name: "Fixture", tailnet: null };
@@ -86,12 +92,13 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
     if (exceptionDetails) throw Error(exceptionDetails.exception?.description || exceptionDetails.text);
     return result.value;
   };
-  const joined = await call(`async function (peer, config) {
-    const setup = () => OwnerFixture.ownerEnrollment(peer, "browser", config);
+  const joined = await call(`async function (peer, config, sourceRole) {
+    const setup = () => OwnerFixture.ownerEnrollment(peer, sourceRole, config);
     const [first, second] = await Promise.all([setup().join(new AbortController().signal), setup().join(new AbortController().signal)]);
     const pair = await OwnerFixture.browserOwnerKeys.pair(peer.computerId || peer.id);
-    return { first, second, extractable: pair.privateKey.extractable, saved: JSON.parse(localStorage.getItem("reach.devices")) };
-  }`, peer, config).catch(error => { t.diagnostic(JSON.stringify({ seen, problems: tab.problems })); throw error; });
+    return { first, second, extractable: pair.privateKey.extractable,
+      saved: JSON.parse(localStorage.getItem(sourceRole === "native" ? "reach.browser.devices" : "reach.devices")) };
+  }`, peer, config, sourceRole).catch(error => { t.diagnostic(JSON.stringify({ seen, problems: tab.problems })); throw error; });
   assert.equal(joined.first.token, joined.second.token);
   assert.equal(joined.extractable, false);
   assert.equal(joined.saved[0].token, joined.first.token);
@@ -99,16 +106,40 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   sourceUnavailable = true;
   const sourceRequests = seen.filter(r => r.path === '/api/device/owner-connection').length;
   await tab.navigate(`${ORIGIN}/`); await tab.evaluate(bundle);
-  const restored = await call(`async function (peer, config) {
-    return OwnerFixture.ownerEnrollment(peer, "browser", config).join(new AbortController().signal);
-  }`, peer, config);
+  const restored = await call(`async function (peer, config, sourceRole) {
+    return OwnerFixture.ownerEnrollment(peer, sourceRole, config).join(new AbortController().signal);
+  }`, peer, config, sourceRole);
   assert.equal(restored.token, joined.first.token, "IndexedDB key and proposed credential survive reload");
   assert.equal(seen.filter(r => r.path === '/api/device/owner-connection').length, sourceRequests, 'persisted proof resumes without the original route');
-  await assert.rejects(tab.evaluate(`OwnerFixture.ownerEnrollment(${JSON.stringify({ ...peer, token: 'DIFFERENT-GRANT' })}, "browser", ${JSON.stringify(config)}).prepare(new AbortController().signal, false)`), /not been prepared/);
-  assert.equal(reach.auth.list().length, 2);
+  await assert.rejects(call(`async function (peer, config, sourceRole) {
+    return OwnerFixture.ownerEnrollment(peer, sourceRole, config).prepare(new AbortController().signal, false);
+  }`, { ...peer, token: "DIFFERENT-GRANT" }, config, sourceRole), /not been prepared/);
+  assert.equal(reach.auth.list().filter(c => c.kind === "device").length, 2);
   assert.ok(seen.some(r => r.method === "OPTIONS" && r.site === "same-site"));
   assert.ok(seen.filter(r => r.path.startsWith("/api/auth/owner-connection/")).every(r => !r.bearer));
   assert.equal(await tab.evaluate("location.origin"), ORIGIN);
+  // Real upgrade and first-message authentication through private ingress.
+  // A browser node is eligible only after its own approval has been issued;
+  // the native bearer remains unusable there.
+  const socket = new WebSocket(`ws://127.0.0.1:${ingressPort}/r-${ingressKey}/ws/presence`, { headers: {
+    Origin: ORIGIN, "X-Forwarded-For": "100.64.0.22", "Tailscale-User-Login": owner.login,
+  } });
+  t.after(() => socket.terminate());
+  await once(socket, "open");
+  const presence = once(socket, "message");
+  socket.send(JSON.stringify({ type: "auth", token: joined.first.token, kind: "phone" }));
+  assert.equal(JSON.parse((await presence)[0].toString()).devices[0].access[0].kind, "paired");
+  socket.close(); await once(socket, "close");
+  if (sourceRole === "native") {
+    const refused = await call(`async function (origin, token) {
+      return (await fetch(origin + "/api/device", { headers: { Authorization: "Bearer " + token } })).status;
+    }`, privateOrigin, grant.token);
+    assert.equal(refused, 403, "copying a native bearer does not authorize the browser node");
+    const admission = await call(`async function (origin) {
+      return (await fetch(origin + "/api/auth/requests", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status;
+    }`, privateOrigin);
+    assert.equal(admission, 403, "ordinary browser admission stays blocked while the agent is active");
+  }
   // The public ingress serves fixed bootstrap without an invitation or cookie.
   // An owner credential does not open APIs through Funnel.
   publicRoute = true;
@@ -122,5 +153,5 @@ test("real Chrome enrolls a separate owner path across ports with persisted non-
   for (const route of ["/", "/files", "/screen", "/reach-start.json"]) assert.equal(await publicRead(route), 200, route);
   for (const route of ["/api/device", "/api/auth/owner-connection/join", "/ws/presence"]) assert.equal(await publicRead(route), 404, route);
   t.diagnostic(JSON.stringify({ chrome: version.product, hostPlatform: process.platform,
-    real: "Chrome, IndexedDB, WebCrypto, TLS, cross-port CORS, keyed ingress, owner authentication", simulated: "Tailscale identities, DNS, source browser transport, loopback network permission" }));
+    real: "Chrome, IndexedDB, WebCrypto, TLS, cross-port CORS, keyed ingress, owner HTTP/WS authentication, app host guard", simulated: "Tailscale identities, DNS, browser transport, loopback network permission" }));
 });

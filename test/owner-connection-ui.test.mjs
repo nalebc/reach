@@ -7,6 +7,7 @@ import path from "node:path";
 import { startDom } from "./dom/harness.mjs";
 import { createAuth, getConfig, ALL_SCOPES } from "../server/core.mjs";
 import { createOwnerConnections } from "../server/owner-connections.mjs";
+import { createBrowserHostGuard } from "../server/browser-host-guard.mjs";
 
 // Real enrollment, signatures, authorization and recovery; simulated browser
 // and private transports. Physical VPN and mobile network changes are separate.
@@ -19,13 +20,20 @@ const browserState = { _machinekey: hex(`privkey:${"1".repeat(64)}`), "_current-
 const owner = { userId: "42", login: "owner@example.test" };
 const identity = nodeId => ({ ...owner, nodeId, tagged: false, validUntil: Date.now() + 3600000 });
 const device = { id: "mac", computerId: "computer-1", name: "Mac", platform: "darwin" };
-async function fixture(source = "native") {
+async function fixture(source = "native", appAgent = false) {
   const dom = await startDom({ url: origin + "/files" });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-owner-ui-"));
   for (const [key, value] of Object.entries(browserState)) localStorage.setItem("reach.tailnet:" + key, value);
   const auth = createAuth(getConfig({ dataDir: dir, tailscaleOwner: owner }));
   const service = createOwnerConnections({ auth, owner });
   const grant = auth.issue("Phone", ALL_SCOPES, "device", { tailscale: identity(source) });
+  const guard = createBrowserHostGuard({ clients: () => [...auth.list(), ...(appAgent ? [{
+    id: "active-agent", kind: "agent", policy: { browser: true, screen: "apps" }, expiresAt: Date.now() + 3600000,
+    browserAppApprover: { clientId: grant.clientId, nodeId: source, userId: owner.userId },
+  }] : [])], ownerConnectionIncludes: (...args) => auth.ownerConnectionIncludes(...args), trusted: () => true,
+    lookup: async () => ({ BackendState: "Running", Self: { ID: "host" }, Peer: { phone: { ID: "native", OS: "iOS", UserID: 42 } } }),
+  });
+  await guard.refresh();
   const peer = { ...device, url: origin, token: grant.token };
   const saved = { native: [], browser: [] }; saved[source].push(peer);
   const network = { native: true, browser: true, loseReply: false, revoked: false };
@@ -36,20 +44,23 @@ async function fixture(source = "native") {
     if (route === "/reach-start.json") return Response.json(network.metadata || config);
     if (!network[role]) return Response.json({}, { status: 404 }); // public start keeps metadata, not private APIs
     const body = init.body ? JSON.parse(init.body) : {};
+    const request = { reachIdentity: identity(role), headers: {}, method: init.method || "GET", originalUrl: route };
+    const authorize = connection => guard.assertOwnerConnection(request, connection);
     try {
       if (route === "/api/auth/owner-connection/challenge") {
         assert.equal(bearer, null, "the source credential never crosses identities");
-        return Response.json(service.challenge(identity(role), body));
+        return Response.json(service.challenge(identity(role), body, authorize));
       }
       if (route === "/api/auth/owner-connection/join") {
         assert.equal(bearer, null);
-        const joined = service.join(identity(role), body);
+        const joined = service.join(identity(role), body, authorize);
         if (network.loseReply) { network.loseReply = false; throw TypeError("Reply lost after enrollment committed"); }
         return Response.json({ ...joined, device });
       }
       if (route === "/api/health") return Response.json({ product: "Reach", instance: "i1" });
       const client = auth.verify(bearer?.slice(7), identity(role));
       if (!client) return Response.json({}, { status: 401 });
+      guard.assertRequest(request, client);
       if (route === "/api/device/owner-connection") return Response.json(auth.registerOwnerConnection(client.id, body.publicKey, body.role));
       if (route === "/api/device") return Response.json({ ...device, access: { kind: client.kind, scopes: client.scopes } });
       assert.fail("Unexpected endpoint " + route);
@@ -86,10 +97,10 @@ async function fixture(source = "native") {
     handoff(change) { changes.push(change); current = { peer: change.peer, device: change.device }; },
   });
   return { dom, auth, peer, grant, network, calls, saved, enroll, recovery, changes, keys, fetcher, transport, current: () => current,
-    close: async () => { recovery.stop(); fs.rmSync(dir, { recursive: true, force: true }); await dom.close(); } };
+    close: async () => { recovery.stop(); guard.stop(); fs.rmSync(dir, { recursive: true, force: true }); await dom.close(); } };
 }
-for (const platform of ["iPhone", "iPad", "Android"]) test(`${platform} app-first setup with no previous browser approval switches native → browser → native at the same URL`, async () => {
-  const f = await fixture();
+for (const platform of ["iPhone", "iPad", "Android"]) test(`${platform} app-first setup with an active app agent switches native → browser → native at the same URL`, async () => {
+  const f = await fixture("native", true);
   try {
     Object.defineProperty(f.dom.window.navigator, "userAgent", { configurable: true, value: platform === "Android" ?
       "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/142.0 Mobile Safari/537.36" :

@@ -2098,6 +2098,23 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       throw fail(403, "This owner connection is no longer approved.");
     return root.ownerConnection;
   }
+  // Internal host-guard check: derive the relationship from the current
+  // approval store, never from a request, device group, name or account.
+  // A prepared source can finish enrollment; an existing pair must still
+  // have both reciprocal approvals, original scopes and bounded expiry.
+  function ownerConnectionIncludes(clientId, approverId) {
+    const latest = loadJson(file, []);
+    const client = latest.find(c => c.id === clientId);
+    if (!ownerClient(client) || !ownerConnectionLive(client, latest)) return false;
+    const root = client.ownerConnection?.root ? latest.find(c => c.id === client.ownerConnection.root) : client;
+    if (!ownerClient(root) || !root.ownerConnection?.key || root.ownerConnection.root ||
+        !["native", "browser"].includes(root.ownerConnection.role)) return false;
+    const other = latest.find(c => c.id === root.ownerConnection.other);
+    if (root.ownerConnection.other && (!ownerClient(other) || !ownerConnectionLive(other, latest) ||
+        other.ownerConnection?.root !== root.id ||
+        other.ownerConnection.role !== (root.ownerConnection.role === "native" ? "browser" : "native"))) return false;
+    return root.id === approverId || other?.id === approverId;
+  }
   function registerOwnerConnection(clientId, publicKey, role) {
     if (!["native", "browser"].includes(role) || publicKey?.kty !== "EC" || publicKey.crv !== "P-256" ||
         publicKey.d !== undefined || !/^[A-Za-z0-9_-]{43}$/.test(publicKey.x || "") || !/^[A-Za-z0-9_-]{43}$/.test(publicKey.y || ""))
@@ -2193,6 +2210,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     issue,
     registerOwnerConnection,
     ownerConnection,
+    ownerConnectionIncludes,
     joinOwnerConnection,
     // Agents and people listed before mascots draw theirs (at start).
     dressMascots() {
