@@ -73,7 +73,12 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
   const config = { product: "Reach", origin: privateOrigin, home: ORIGIN, instance: reach.instance, name: "Fixture", tailnet: null };
   const bundle = (await build({ stdin: { contents: 'export { ownerEnrollment, browserOwnerKeys } from "./src/owner-connection.ts";', resolveDir: process.cwd() },
     bundle: true, write: false, format: "iife", globalName: "OwnerFixture", platform: "browser", target: "es2022" })).outputFiles[0].text;
-  browser = await launchChrome(t, { binary: chromeBinary, hosts: [hostname], spki: certificate.spki });
+  // Chrome's own network log beside the test's reports, for a failure on a
+  // runner (fixture hosts and test credentials only).
+  const netLog = path.join(process.cwd(), "reports", `owner-cors-${sourceRole}-netlog.json`);
+  fs.mkdirSync(path.dirname(netLog), { recursive: true });
+  browser = await launchChrome(t, { binary: chromeBinary, hosts: [hostname], spki: certificate.spki,
+    args: [`--log-net-log=${netLog}`, "--net-log-capture-mode=IncludeSensitive"] });
   const version = await browser.send("Browser.getVersion");
   for (const name of ["local-network-access", "local-network", "loopback-network"]) {
     try { await browser.send("Browser.setPermission", { permission: { name }, setting: "granted", origin: ORIGIN }); }
@@ -82,8 +87,20 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
   const tab = await openTab(browser);
   // Chrome's own reason when a request fails (a CORS refusal names itself).
   await tab.send("Network.enable");
+  const sent = new Map();
+  browser.on("Network.requestWillBeSent", (event, session) => {
+    if (session === tab.sessionId) sent.set(event.requestId, `${event.request.method} ${new URL(event.request.url).pathname} (${event.initiator?.type})`);
+  });
   browser.on("Network.loadingFailed", (event, session) => {
-    if (session === tab.sessionId) trace.push({ chromeFailed: event.errorText, cors: event.corsErrorStatus || null, blocked: event.blockedReason || null, type: event.type });
+    if (session === tab.sessionId) trace.push({ chromeFailed: event.errorText, canceled: event.canceled ?? null, request: sent.get(event.requestId) || event.requestId,
+      cors: event.corsErrorStatus || null, blocked: event.blockedReason || null, type: event.type, at: Math.round(performance.now()) });
+  });
+  await tab.send("Page.enable");
+  browser.on("Page.frameNavigated", (event, session) => {
+    if (session === tab.sessionId) trace.push({ navigated: event.frame.url, parent: event.frame.parentId || null, at: Math.round(performance.now()) });
+  });
+  browser.on("Runtime.executionContextDestroyed", (event, session) => {
+    if (session === tab.sessionId) trace.push({ contextDestroyed: event.executionContextId, at: Math.round(performance.now()) });
   });
   browser.on("Fetch.requestPaused", (event, session) => {
     if (session === tab.sessionId) void tab.send("Fetch.fulfillRequest", { requestId: event.requestId,
