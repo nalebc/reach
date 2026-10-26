@@ -56,14 +56,14 @@ const hosts = [
   {
     platform: "darwin",
     roots: [
-      { id: 0, name: "Home", path: "/Users/nassim" },
+      { id: 0, name: "Home", path: "/Users/sam" },
       { id: 1, name: "Computer", path: "/" },
     ],
   },
   {
     platform: "win32",
     roots: [
-      { id: 0, name: "Home", path: "C:\\Users\\nassim" },
+      { id: 0, name: "Home", path: "C:\\Users\\sam" },
       { id: 1, name: "Drive C:\\", path: "C:\\" },
     ],
   },
@@ -73,7 +73,7 @@ for (const { platform, roots } of hosts)
   test(`Files names the home folder by its own name with a house, never "Home" (${platform})`, async () => {
     const view = await show(platform, roots);
     const title = view.container.querySelector(".files-title h1");
-    assert.equal(title.textContent.trim(), "nassim");
+    assert.equal(title.textContent.trim(), "sam");
     assert.ok(title.querySelector("svg.files-title-icon"), "a house beside the name");
     assert.doesNotMatch(
       view.container.querySelector(".files-header").textContent,
@@ -85,7 +85,7 @@ for (const { platform, roots } of hosts)
     const chips = [...view.container.querySelectorAll('[aria-label="Locations"] button')];
     assert.deepEqual(
       chips.map((b) => b.textContent.trim()),
-      ["nassim", roots[1].name],
+      ["sam", roots[1].name],
     );
     assert.ok(chips[0].querySelector("svg.lucide-house"), "the home chip's house");
     assert.ok(!chips[1].querySelector("svg.lucide-house"), "the drive keeps its folder");
@@ -99,17 +99,17 @@ for (const { platform, roots } of hosts)
     assert.equal(title.textContent.trim(), "Projects");
     assert.ok(!title.querySelector("svg.files-title-icon"), "no house on a subfolder");
     const crumbs = [...view.container.querySelectorAll(".files-crumbs button")];
-    assert.deepEqual(crumbs.map((b) => b.textContent.trim()), ["nassim"]);
-    assert.ok(view.container.querySelector('[aria-label="Back to nassim"]'));
+    assert.deepEqual(crumbs.map((b) => b.textContent.trim()), ["sam"]);
+    assert.ok(view.container.querySelector('[aria-label="Back to sam"]'));
     await view.unmount();
   });
 
 test("the home folder's name: either separator, a trailing one, and the fallbacks", () => {
   const home = (path) => rootLabel({ name: "Home", path });
-  assert.equal(home("/Users/nassim"), "nassim");
-  assert.equal(home("/Users/nassim/"), "nassim");
-  assert.equal(home("C:\\Users\\nassim"), "nassim");
-  assert.equal(home("C:\\Users\\nassim\\"), "nassim");
+  assert.equal(home("/Users/sam"), "sam");
+  assert.equal(home("/Users/sam/"), "sam");
+  assert.equal(home("C:\\Users\\sam"), "sam");
+  assert.equal(home("C:\\Users\\sam\\"), "sam");
   assert.equal(home("D:/Profiles/Jean Dupont"), "Jean Dupont");
   // Nothing to read, or a folder really called "Home": still not the tab's word alone.
   assert.equal(home(""), "Home folder");
