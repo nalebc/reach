@@ -8,6 +8,13 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Changed
+
+- Settings opens with how this phone reaches the computer, as a dot and a
+  word: green for the Tailscale app, amber for Tailscale in the browser or
+  the public link, grey when offline. Reach picks the route; nothing to
+  switch. About shows the version Reach runs beside "Up to date".
+
 ### Fixed
 
 - On a Mac, Copy selected text works on pages in Chrome and other apps that
@@ -17,6 +24,7 @@ release notes, so date the heading before tagging.
   afresh each time, not the one in front when screen control began.
 - Escape puts a dragged queued message back even when pressed the moment it
   lifts.
+- More and Home no longer call a guest's public link "Tailscale".
 
 ## [0.4.2] — 2026-10-25
 

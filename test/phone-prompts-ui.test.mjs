@@ -237,7 +237,7 @@ test("private browsing (storage blocked): Not now holds for this visit, nothing 
 
 // N3, N6: the way in, said the same in Home, More and Settings; signed in
 // from the browser, "faster with the app" is a link to it.
-test("More names the connection as Home does: Tailscale, or Tailscale in browser", async () => {
+test("More names the connection as Home does: Tailscale app, or Tailscale in browser", async () => {
   const { default: MoreSheet } = await dom.load("/src/MoreSheet.tsx");
   dom.window.HTMLDialogElement.prototype.showModal ??= function () {
     this.open = true;
@@ -262,7 +262,7 @@ test("More names the connection as Home does: Tailscale, or Tailscale in browser
     );
   phone();
   let view = await more();
-  assert.match(view.container.querySelector(".more-computer small").textContent, /Tailscale$/);
+  assert.match(view.container.querySelector(".more-computer small").textContent, /Tailscale app$/);
   await view.unmount();
   phone({ browserNode: true });
   view = await more();

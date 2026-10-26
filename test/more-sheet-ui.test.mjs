@@ -286,3 +286,12 @@ test("opening the sheet focuses the sheet, not its close button (no ring on iPho
   assert.notEqual(dom.window.document.activeElement, dialog.querySelector(".glass-button"));
   await view.unmount();
 });
+
+test("a guest over the public link: said as the public link, in amber, never as Tailscale", async () => {
+  const funnel = { ...peer, transport: "funnel" };
+  const { view, root } = await sheet({ peer: funnel, peers: [funnel] });
+  const route = root.querySelector(".more-computer .more-route");
+  assert.equal(route.textContent, "Public link");
+  assert.match(route.className, /\bfallback\b/);
+  await view.unmount();
+});

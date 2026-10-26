@@ -228,3 +228,9 @@
   color: #8fa69f;
   font-size: 12px;
 }
+
+/* A fallback route (Tailscale in the browser, the public link) in amber;
+   Settings → Connection says the same with its dot. */
+.more-route.fallback {
+  color: #f2c879;
+}

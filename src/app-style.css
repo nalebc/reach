@@ -104,6 +104,31 @@
 .status-text.on::before {
   background: var(--lime);
 }
+/* How the phone reaches the computer (connection.ts): a dot and a word.
+   Green on the preferred private route, amber on a fallback, grey when
+   it isn't connected; the word says it without the colour. */
+.conn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.conn-status::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6d7a71;
+}
+.conn-status.best { color: #cfeec0; }
+.conn-status.best::before { background: var(--lime); box-shadow: 0 0 0 3px color-mix(in srgb, var(--lime) 18%, transparent); }
+.conn-status.fallback { color: #f2c879; }
+.conn-status.fallback::before { background: #f2c46b; box-shadow: 0 0 0 3px rgb(242 196 107 / 0.16); }
+.conn-status.waiting::before { background: #9aa79e; animation: conn-pulse 1.2s ease-in-out infinite; }
+@keyframes conn-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .conn-status.waiting::before { animation: none; }
+}
 
 /* Settings, in the same language: a computer card, then sections as
    headings over grouped rows, each row with its app-style icon. */

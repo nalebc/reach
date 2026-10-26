@@ -30,8 +30,9 @@ export type MacUpdate = {
 };
 const PENDING = ["available", "manual", "installing", "restarting", "installed", "failed"];
 
-// One row in Settings' list. For the owner it also carries Reach's own
-// version on the computer: "Update to 0.2.0", then one tap more installs it
+// One row in Settings' list: Reach, the version the computer runs, and
+// whether it's up to date. For the owner it also carries Reach's own
+// update on the computer: "Update to 0.2.0", then one tap more installs it
 // and Reach starts again (phones and agents follow by themselves).
 // Otherwise it's the phone interface's state; tap to check now. Interface
 // updates install on their own when Reach is idle.
@@ -40,6 +41,17 @@ export default function InterfaceUpdates({ peer, owner = false }: { peer?: Peer;
   const [mac, setMac] = useState<MacUpdate | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  // Anyone's phone may see which Reach this is (/api/health says it to
+  // every caller); only the owner's also hears about updates.
+  const [running, setRunning] = useState<string | null>(null);
+  useEffect(() => {
+    if (!peer || owner) return;
+    let live = true;
+    request<{ version?: string }>(peer, "/api/health")
+      .then((health) => live && setRunning(typeof health.version === "string" ? health.version : null))
+      .catch(() => { /* offline: the row says so without a version */ });
+    return () => { live = false; };
+  }, [peer, owner]);
   const load = useCallback(async (fresh = false) => {
     if (!peer || !owner) return;
     try {
@@ -90,6 +102,7 @@ export default function InterfaceUpdates({ peer, owner = false }: { peer?: Peer;
     ? working
     : state === "checking" || state === "reloading" || state === "waiting";
   const Icon = working ? LoaderCircle : pending ? CircleArrowUp : RefreshCw;
+  const version = mac?.version || running;
   return (
     <>
       <button
@@ -103,7 +116,10 @@ export default function InterfaceUpdates({ peer, owner = false }: { peer?: Peer;
         }}
       >
         <Icon size={21} className={working || (!pending && state === "checking") ? "spin" : ""} />
-        <span className="gs-label">Reach updates</span>
+        <span className="gs-label">
+          Reach
+          {version && <small className="reach-version">Version {version}</small>}
+        </span>
         <span className={`gs-value ${mac?.state === "available" ? "update-ready" : ""}`} role="status" aria-live="polite">
           {value}
         </span>

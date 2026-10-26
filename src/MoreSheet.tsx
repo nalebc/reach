@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 import ScreenPopup from "./ScreenPopup";
-import { connectionName } from "./connection";
+import { useConnectionStatus } from "./connection";
 import { BrandCourier } from "./ReachIdentity";
 import { AppIcon, ComputerIcon } from "./AppIcon";
 import { platform, type Device, type Peer } from "./api";
@@ -66,7 +66,7 @@ export default function MoreSheet({
 }) {
   const [switching, setSwitching] = useState(false);
   const online = connections[peer.id]?.state === "connected";
-  const host = connectionName(peer.url);
+  const route = useConnectionStatus(peer);
   // Rows come in one after another, quickly.
   let order = 0;
   const step = () => ({ "--i": order++ }) as CSSProperties;
@@ -104,7 +104,7 @@ export default function MoreSheet({
                 {online ? "Online" : "Offline"}
               </span>
               <span>{platform(device?.platform || peer.platform || "")}</span>
-              {host && <span>{host}</span>}
+              <span className={`more-route ${route.tone}`}>{route.label}</span>
             </small>
           </span>
           <ChevronDown className="more-chevron" size={18} />
