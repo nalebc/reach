@@ -193,7 +193,7 @@ export class EphemeralFunnel {
         throw Error("The public Funnel route could not be verified. Agent access stays closed.");
       this.live = true;
       this.lastError = "";
-      this.report("Public link on: the internet gets nothing until an invitation or agent session is live.");
+      this.report("Public link on: fixed start page only; computer access requires approval.");
     } catch (error) {
       this.live = false;
       this.warn(error.message);

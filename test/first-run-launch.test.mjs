@@ -27,7 +27,10 @@ const start = (t, scenario, env) => {
   return startCleanReach(t, {
     args: { local: false, stayAwake: false },
     pair: false,
-    ready: /Approve new devices here/,
+    ready: /Approve new devices here|Preparing your permanent phone link/,
+    // Public DNS/TLS readiness has its own browser-link contract tests.
+    // This disposable launcher never contacts the host's real public network.
+    launchCode: 'browserCheck: async () => process.env.FAKE_DNS === "missing" ? { ready: false, reason: "Tailscale is still publishing this computer’s public address." } : { ready: true }',
     prepare: async (root, home) => {
       const prepared = await prepare(root, home);
       fake = prepared.fake;
@@ -43,7 +46,7 @@ test("someone at the terminal: the one address, its QR, both ways in, and a pair
   const text = reach.output();
   assert.ok(text.includes(`Open on your phone: https://${HOST}\n`), text);
   assert.match(text, /With the Tailscale app on your phone, it opens straight away/);
-  assert.match(text, /No Tailscale app\? Sign in to Tailscale in the phone's browser in the next 15 minutes/);
+  assert.match(text, /No Tailscale app\? Sign in to Tailscale in the phone's browser to finish owner setup/);
   assert.match(text, /▄|█/, "a QR");
   assert.equal(await exists(windowFile(reach.root)), true, "the start page answers for now");
   const state = await reach.fake.read();
@@ -60,19 +63,19 @@ test("someone at the terminal: the one address, its QR, both ways in, and a pair
 
 test("nobody at the terminal (piped, or the background service): no window by itself", mac, async (t) => {
   const reach = await start(t, {});
-  assert.match(reach.output(), /No Tailscale app on the phone\? Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  assert.match(reach.output(), /same link reconnects automatically with the phone app on or off/);
   assert.equal(await exists(windowFile(reach.root)), false);
 });
 
-test("Funnel not allowed by the tailnet: the private link, and the phone needs the Tailscale app", mac, async (t) => {
+test("Funnel not allowed: keep the permanent owner link and explain the required host setup", mac, async (t) => {
   const reach = await start(t, { funnelDenied: true }, { FAKE_TTY: "1" });
   const text = reach.output();
-  assert.ok(text.includes(`Open on your phone: https://${HOST}:8443\n`), text);
-  assert.match(text, /Your phone needs the Tailscale app/);
+  assert.ok(text.includes(`Preparing your permanent phone link: https://${HOST}\n`), text);
+  assert.doesNotMatch(text, /Your phone needs the Tailscale app|▄|█/);
   // Tailscale's own words and the page that allows it; no internal paths.
-  assert.match(text, /isn't available: Funnel is not enabled on your tailnet\./);
+  assert.match(text, /Funnel is not enabled on your tailnet\./);
   assert.match(text, /Reach: finish Tailscale setup: https:\/\/login\.tailscale\.com\/f\/funnel\?node=nMac/);
-  const why = text.split("\n").find((line) => line.includes("isn't available"));
+  const why = text.split("\n").find((line) => line.includes("Funnel is not enabled"));
   assert.doesNotMatch(why, /Command failed|tailscale funnel|unix:/);
   assert.equal(await exists(windowFile(reach.root)), true, "startup records its bounded pairing window while Funnel is unavailable");
 });
@@ -83,9 +86,9 @@ test("Funnel enabled later: an unattended start updates its link without opening
   const deadline = Date.now() + 8000;
   // Recovery prints a heading, QR and instructions in separate writes. Wait
   // for the final instruction, not an earlier stdout chunk.
-  while (!/Run \.\/reach pair: browser sign-in then opens for 15 minutes/.test(reach.output()) && Date.now() < deadline) await sleep(30);
-  assert.match(reach.output(), /browser sign-in is now available/);
-  assert.match(reach.output(), /Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  while (!/same link reconnects automatically with the phone app on or off/.test(reach.output()) && Date.now() < deadline) await sleep(30);
+  assert.match(reach.output(), /browser connection is ready/);
+  assert.match(reach.output(), /same link reconnects automatically with the phone app on or off/);
   const status = JSON.parse(await fs.readFile(path.join(reach.root, ".reach", "host-status.json"), "utf8"));
   assert.equal(status.link, `https://${HOST}`);
   assert.equal(await exists(windowFile(reach.root)), false, "no automatic window on unattended recovery");
@@ -97,16 +100,17 @@ test("Funnel enabled after the original pairing window expires does not renew it
   await fs.writeFile(windowFile(reach.root), JSON.stringify(expired));
   await reach.fake.setStatus({ funnelDenied: false });
   const deadline = Date.now() + 8000;
-  while (!/Run \.\/reach pair: browser sign-in then opens for 15 minutes/.test(reach.output()) && Date.now() < deadline) await sleep(30);
-  assert.match(reach.output(), /browser sign-in is now available/);
-  assert.match(reach.output(), /Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  while (!/same link reconnects automatically with the phone app on or off/.test(reach.output()) && Date.now() < deadline) await sleep(30);
+  assert.match(reach.output(), /browser connection is ready/);
+  assert.match(reach.output(), /same link reconnects automatically with the phone app on or off/);
   assert.deepEqual(JSON.parse(await fs.readFile(windowFile(reach.root), "utf8")), expired);
 });
 
-test("port 443 used by another service: left alone, and the phone needs the Tailscale app", mac, async (t) => {
+test("port 443 used by another service: left alone while permanent owner setup waits", mac, async (t) => {
   const other = { TCP: { 443: { HTTPS: true } }, Web: { [`${HOST}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:3000" } } } } };
   const reach = await start(t, { serve: other }, { FAKE_TTY: "1" });
-  assert.match(reach.output(), /Your phone needs the Tailscale app/);
+  assert.match(reach.output(), /Preparing your permanent phone link/);
+  assert.doesNotMatch(reach.output(), /▄|█/);
   assert.match(reach.output(), /used by another service/);
   const state = await reach.fake.read();
   assert.equal(state.serve.Web[`${HOST}:443`].Handlers["/"].Proxy, "http://127.0.0.1:3000", "never replaced");
@@ -115,7 +119,7 @@ test("port 443 used by another service: left alone, and the phone needs the Tail
 
 test("a Terminal window Reach opened by itself (a restart from the phone) opens no window", mac, async (t) => {
   const reach = await start(t, {}, { FAKE_TTY: "1", REACH_OPENED_BY: "restart" });
-  assert.match(reach.output(), /Run \.\/reach pair: browser sign-in then opens for 15 minutes/);
+  assert.match(reach.output(), /same link reconnects automatically with the phone app on or off/);
   assert.equal(await exists(windowFile(reach.root)), false);
 });
 
@@ -137,8 +141,8 @@ test("Tailscale's command line and daemon at different versions: said at start",
 test("the public name not published yet: said next to the link", mac, async (t) => {
   const reach = await start(t, {}, { FAKE_TTY: "1", FAKE_DNS: "missing" });
   const deadline = Date.now() + 5000;
-  while (!/hasn't published this address/.test(reach.output()) && Date.now() < deadline) await sleep(50);
-  assert.match(reach.output(), /Tailscale hasn't published this address on the internet yet\. Phones with the Tailscale app are fine/);
+  while (!/still publishing this computer/.test(reach.output()) && Date.now() < deadline) await sleep(50);
+  assert.match(reach.output(), /Tailscale is still publishing this computer/);
 });
 
 test("the public name published (or unknown): nothing is said", mac, async (t) => {

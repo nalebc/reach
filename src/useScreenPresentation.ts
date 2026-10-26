@@ -19,6 +19,18 @@ export function phoneLandscape(): boolean {
   return sideways && Math.min(screen.width, screen.height) <= 500;
 }
 
+// A touch browser that can really go fullscreen, hiding its own address bar
+// as a video does: Android's. iPhone Safari has no such call for a page
+// element (only the Home Screen app is edge to edge there), and iPad Safari
+// leaves element fullscreen once its keyboard types, so both stay in-page.
+export function nativeTouchFullscreen(): boolean {
+  if (typeof document === "undefined" || !document.fullscreenEnabled) return false;
+  const apple =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  return !apple && typeof HTMLElement.prototype.requestFullscreen === "function";
+}
+
 // Keep the desktop and native keyboard in the same visible viewport. Safari's keyboard
 // changes visualViewport without necessarily resizing the layout viewport.
 export function useScreenPresentation(
@@ -108,24 +120,42 @@ export function useScreenPresentation(
     };
   }, [viewer]);
   useViewportBox(viewer, expanded, "screen");
+  const [native, setNative] = useState(false);
+  useLayoutEffect(() => {
+    const changed = () => setNative(!!viewer.current && document.fullscreenElement === viewer.current);
+    document.addEventListener("fullscreenchange", changed);
+    return () => document.removeEventListener("fullscreenchange", changed);
+  }, [viewer]);
+  // The browser's own fullscreen, from a tap (it needs one): desktop
+  // browsers, and Android's, where it hides the address bar. iPhone and
+  // iPad keep the in-page one, so their keyboard keeps working with it.
+  const [refused, setRefused] = useState(false);
+  const goNative = useCallback(async () => {
+    if (mobile && !nativeTouchFullscreen()) return;
+    try {
+      await viewer.current?.requestFullscreen?.({ navigationUI: "hide" });
+    } catch {
+      // The viewport fallback remains usable when the API is denied; the
+      // button stops offering what the browser won't give.
+      if (mobile) setRefused(true);
+    }
+  }, [mobile, viewer]);
+  // Turned on its side, Android's fullscreen is still in-page (turning is
+  // no tap): the button stays, to hide the browser's bars too. Upright the
+  // button goes in and out as before.
+  const nativeOffer = fullscreen && landscape && !native && !refused && mobile && nativeTouchFullscreen();
   const toggleFullscreen = useCallback(async () => {
     turned.current = false;
-    if (fullscreen) {
+    if (nativeOffer) {
+      await goNative();
+    } else if (fullscreen) {
       if (document.fullscreenElement === viewer.current)
         await document.exitFullscreen().catch(() => {});
       setFullscreen(false);
     } else {
       setFullscreen(true);
-      // Use an in-page fullscreen on touch devices so the native keyboard can
-      // coexist with the desktop. Desktop browsers still get native fullscreen.
-      if (!mobile) {
-        try {
-          await viewer.current?.requestFullscreen?.();
-        } catch {
-          /* The viewport fallback remains usable when the API is denied. */
-        }
-      }
+      await goNative();
     }
-  }, [fullscreen, mobile, viewer]);
-  return { fullscreen, expanded, mobile, landscape, toggleFullscreen };
+  }, [fullscreen, nativeOffer, goNative, viewer]);
+  return { fullscreen, expanded, mobile, landscape, nativeOffer, toggleFullscreen };
 }

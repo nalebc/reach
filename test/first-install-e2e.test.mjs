@@ -72,14 +72,38 @@ for (const desktop of desktops) test(`fresh install: desktop ${desktop.name}, ev
   });
   for (const [index, phone] of ["no Tailscale app", "app switched off", "app signed out", "app on another tailnet"].entries())
     await t.test(`phone ${phone}: public start, browser sign-in, local approval, files`, async () => {
-      // The prior phone closed the window. The actual CLI reopens it for a
-      // new phone; browser joining itself is represented by its node identity.
-      assert.equal((await reach.request("/reach-start.json", { public: true })).status, 404);
-      assert.match(await reach.cli(["pair"]), /15 minutes/);
+      // The prior phone closed the window. Owner bootstrap stays available;
+      // browser joining itself is represented by its separate node identity.
+      assert.equal((await reach.request("/reach-start.json", { public: true })).status, 200);
       assert.equal((await reach.request("/", { public: true })).status, 200);
       assert.equal((await reach.request("/api/files", { public: true })).status, 404);
       await approvePhone(reach, `100.64.0.${31 + index}`);
     });
+  // The owner link's door is open to the internet with no pairing window
+  // (docs/CONNECTION_POLICY.md): it answers only the fixed start page and
+  // its files. Owner APIs and WebSockets stay private, under any path.
+  await t.test("the always-open owner link gives the internet only the start page", async () => {
+    const page = await reach.request("/files/notes", { public: true });
+    assert.equal(page.status, 200);
+    assert.match(page.headers["content-type"], /text\/html/);
+    const start = await reach.request("/", { public: true });
+    assert.equal(page.text, start.text, "an owner page path is the start page, no data");
+    for (const route of ["/api/files", "/api/auth/method", "/api/sessions", "/api/settings", "/api/screen"])
+      assert.equal((await reach.request(route, { public: true })).status, 404, route);
+    // A page path that names an API is still the start page, never the API.
+    const dodge = await reach.request("/files/../api/files", { public: true });
+    assert.ok(dodge.status === 404 || dodge.text === start.text, `${dodge.status} ${dodge.text.slice(0, 80)}`);
+    assert.equal(dodge.json, undefined, "no API answer");
+    assert.equal((await reach.request("/", { public: true, method: "POST", body: {} })).status, 404);
+    assert.equal((await reach.request("/api/auth/requests", { public: true, body: { name: "Stranger" } })).status, 404);
+    // Refused outright: answered with an error, or the connection dropped
+    // unanswered (how Reach turns away an upgrade it won't take).
+    const upgrade = await reach.request("/api/desktop", { public: true, headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" } })
+      .catch((error) => (/socket hang up|ECONNRESET/.test(error.message) ? { status: "dropped" } : Promise.reject(error)));
+    assert.ok(upgrade.status === "dropped" || upgrade.status >= 400, `no WebSocket from the internet: ${upgrade.status}`);
+    const config = await reach.request("/reach-start.json", { public: true });
+    assert.deepEqual(Object.keys(config.json).filter((key) => !["product", "origin", "home", "faceId", "name", "instance", "since", "tailnet"].includes(key)), [], "only the start page's own fields");
+  });
   await t.test("different account cannot request approval or browse files", async () => {
     const ip = "100.64.0.23";
     assert.equal((await reach.request("/api/auth/method", { ip })).json.eligible, false);
@@ -126,7 +150,7 @@ test("first install resumes after Tailscale signed out while HTTPS setup was pau
   assert.equal((await reach.read("onboarding.json")).done, true);
   await approvePhone(reach, "100.64.0.21");
   // Setup's step 3 ends with the phone in, said by the launcher.
-  await reach.until(/✔ 3\. Your phone {2}— {2}connected\. Setup is done/);
+  await reach.until(/✔ 3\. Your phone {2}— {2}approved\. Finish browser connection setup in Reach/);
 });
 
 test("a returning setup detects a different desktop Tailscale account before offering a broken phone link", options, async t => {
@@ -149,14 +173,14 @@ test("a returning setup detects a different desktop Tailscale account before off
 test("fresh install without Funnel: connected phone works, phone without Tailscale gets explicit setup instructions", options, async t => {
   const reach = await firstInstall(t, { funnelDenied: true });
   await finishFirstSetup(reach);
-  assert.match(reach.output(), /Open on your phone: https:\/\/mac.example.ts.net:8443/);
-  assert.match(reach.output(), /Your phone needs the Tailscale app/);
+  assert.match(reach.output(), /Preparing your permanent phone link: https:\/\/mac.example.ts.net/);
+  assert.doesNotMatch(reach.output(), /Your phone needs the Tailscale app/);
   assert.match(reach.output(), /finish Tailscale setup: https:\/\/login.tailscale.com\/f\/funnel\?node=nMac/);
   assert.equal((await reach.fake.read()).serve.AllowFunnel?.[`${HOST}:443`], undefined);
   await approvePhone(reach, "100.64.0.21");
   await reach.fake.setStatus({ funnelDenied: false });
   await reach.until(/Public link on:/, 8000);
-  assert.equal((await reach.request("/reach-start.json", { public: true, port: 443 })).status, 404, "enabling Funnel must not reopen a window closed by the first approval");
+  assert.equal((await reach.request("/reach-start.json", { public: true, port: 443 })).status, 200, "owner bootstrap is independent of the closed pairing window");
   assert.match(await reach.cli(["pair"]), /15 minutes/);
   assert.equal((await reach.request("/reach-start.json", { public: true, port: 443 })).status, 200);
 });
@@ -184,7 +208,7 @@ test("fresh install from nothing: enabling Funnel after setup opens browser pair
     await reach.until(/Turn on HTTPS certificates/);
     await reach.fake.setStatus({ CertDomains: [HOST] });
   } });
-  assert.match(reach.output(), /Your phone needs the Tailscale app/);
+  assert.match(reach.output(), /Preparing your permanent phone link/);
   await reach.fake.setStatus({ funnelDenied: false });
   await reach.until(/Public link on:/, 8000);
   assert.equal((await reach.read("host-status.json")).link, `https://${HOST}`, "the running host advertises the recovered public link");

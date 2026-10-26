@@ -353,7 +353,9 @@ export async function startComputer(t) {
     // stays off. Wait for the input prompt before requesting the private
     // fallback; no automatic QR is allowed on this unavailable ingress path.
     await reach.until(/Press Enter for a new pairing code\. Type pause to pause\. Ctrl\+C stops sharing and Reach\./, 120000);
-    assert.match(reach.output(), /The private QR needs the Tailscale app on this computer's network/);
+    // One permanent owner link (docs/CONNECTION_POLICY.md): no QR stands in
+    // for it; a phone already on the tailnet asks for the private one.
+    assert.match(reach.output(), /Type private for its private QR/);
     assert.doesNotMatch(reach.output(), /Pairing code:/);
     reach.answer("private");
   }
@@ -484,12 +486,12 @@ async function signIn(page, computer) {
     await page.tap("Connect computer");
   }
   // Leaving Connect can precede the first authenticated /api/device response.
-  // These journeys approve an owner: Chat appears only once those details are
+  // These journeys approve an owner: Screen appears only once those details are
   // loaded. Measure navigation after that, so the bar cannot expand between
   // measuring a button and dispatching touchStart to its old coordinate.
   // MobileNav's separate native-touch test exercises changes during a press.
   await page.see(() => !document.querySelector(".connect-flow, .welcome, input.pair-code") &&
-    document.querySelector('nav.mobile-nav button[aria-label="Chat"]'), "signed in, with the approved computer's details", 60000);
+    document.querySelector('nav.mobile-nav button[aria-label="Screen"]'), "signed in, with the approved computer's details", 60000);
 }
 
 // The colour a PNG shows at its middle: { r, g, b } (8-bit RGB or RGBA,

@@ -42,8 +42,8 @@ test("the pill names the cause in a few words, and says nothing while live or st
 
 test("the hero shows the pill beside the scene, dims the held picture, and a tap reconnects", async () => {
   const home = await fs.readFile(new URL("../src/HomeLive.tsx", import.meta.url), "utf8");
-  // Its own button, not inside the scene's (nested buttons aren't allowed).
-  assert.match(home, /<\/button>\s*\{heroPill && \(\s*\/\/[^\n]*\n\s*<button\s+className="home-hero-status"/);
+  // Its own button, beside the scene container (nested buttons aren't allowed).
+  assert.match(home, /<\/div>\s*\{heroPill && \(\s*\/\/[^\n]*\n\s*<button\s+className="home-hero-status"/);
   assert.match(home, /onClick=\{\(\) => setHeroRetry\(\(n\) => n \+ 1\)\}/);
   assert.match(home, /"preview",\s*heroRetry,/);
   assert.match(home, /live && heroPill \? "is-held" : ""/);

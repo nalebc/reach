@@ -38,6 +38,10 @@ export function ComputerSwitcher({
   waiting?: { origin: string; name: string }[];
   onWaiting?: (computer: { origin: string; name: string }) => void;
 }) {
+  // One computer and nothing waiting: there's nothing to pick, and its name
+  // is already on Home's card. Adding another stays in More (and the
+  // sidebar on wide screens).
+  if (peers.length < 2 && !waiting.length) return null;
   return (
     <nav className="fleet-switcher" aria-label="Your computers">
       {peers.map((p) => (
@@ -64,7 +68,7 @@ export function ComputerSwitcher({
           <span>{c.name}</span>
         </button>
       ))}
-      <button className="fleet-add" aria-label="Add a computer" onClick={pair}>
+      <button className="fleet-add" aria-label="Add a computer" title="Add a computer" onClick={pair}>
         <Plus size={17} />
       </button>
     </nav>

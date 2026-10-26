@@ -1101,7 +1101,8 @@ for (const path of ["/", "/files/smoke-deep-link"]) test(`mounted phone composer
   try {
     const { default: App } = await dom.load("/src/App.tsx");
     view = await dom.render(dom.React.createElement(App));
-    (await dom.waitFor(() => dom.document.querySelector('.mobile-nav [aria-label="Chat"]'))).click();
+    (await dom.waitFor(() => dom.document.querySelector('.mobile-nav [aria-label="Tools"]'))).click();
+    (await dom.waitFor(() => dom.document.querySelector('.tools-page [aria-label="Chat"]'))).click();
     (await dom.waitFor(() => [...dom.document.querySelectorAll(".chat-card")].find(card => /Keep this draft/.test(card.textContent)))).click();
     const input = await dom.waitFor(() => dom.document.querySelector('textarea[aria-label="Message"]'));
     await typeInto(input, "Send once even if its answer is late");

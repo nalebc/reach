@@ -527,15 +527,16 @@ export default function Screen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input.ready, typingTarget?.rejoin]);
   const typing = !!typingTarget && typingAllowed && !panel;
-  const { fullscreen, expanded, mobile, landscape, toggleFullscreen } =
+  const { fullscreen, expanded, mobile, landscape, nativeOffer, toggleFullscreen } =
     useScreenPresentation(viewer, typing);
-  // Landscape fills the viewport with floating controls. Portrait keeps
-  // the controls outside the picture; typing uses the keyboard's layout.
+  // Fullscreen fills the viewport with floating controls, upright or on
+  // its side; typing uses the keyboard's layout.
   if (stream.width > 0 && stream.height > 0)
     aspect.current = stream.width / stream.height;
   const chrome = useScreenChrome(viewer, fullscreen && !typing, aspect.current);
-  // Turning a phone back closes its automatic fullscreen.
-  const turnToLeave = chrome?.placement === "overlay" && landscape;
+  // Turning a phone back closes its automatic fullscreen. Android can
+  // still hide its browser's bars with a tap, so the button stays there.
+  const turnToLeave = chrome?.placement === "overlay" && landscape && !nativeOffer;
   // Fullscreen hides the bars until the screen is touched; they stay while
   // something needs attention.
   const chromeShown = useImmersiveChrome(
@@ -1202,11 +1203,12 @@ export default function Screen({
                   aria-label={control ? "Stop" : holder?.canTakeOver ? "Take over" : "Control"}
                   title={control ? "Stop controlling" : holder?.canTakeOver ? "Take over" : "Control your computer"}
                   aria-pressed={control}
+                  aria-busy={busy || undefined}
                   // Stop stays available through a reconnect.
                   disabled={busy || (!control && (!stream.ready || !live))}
                   onClick={() => void toggleControl()}
                 >
-                  <MousePointer2 size={19} />
+                  {busy ? <RefreshCw size={19} className="spin" /> : <MousePointer2 size={19} />}
                 </button>
               )}
               {control && (
@@ -1233,10 +1235,17 @@ export default function Screen({
               {control && (
                 <button
                   aria-label="Paste from your phone"
+                  className="screen-bar-secondary"
                   disabled={!usable || clipboardBusy}
                   onClick={() => void pastePhone()}
                 >
                   <ClipboardPaste size={18} />
+                </button>
+              )}
+              {control && !typing && (
+                <button className="screen-pointer-mode" aria-label={`Pointer mode: ${mode === "direct" ? "Direct touch" : mode === "pan" ? "Pan and zoom" : "Trackpad"}`}
+                  title="Change touch and mouse controls" onClick={() => setPanel("touch")}>
+                  {mode === "direct" ? "Direct" : mode === "pan" ? "Pan/zoom" : "Trackpad"}
                 </button>
               )}
               {/* Desktops, as the keys menu sends them: previous, all
@@ -1262,7 +1271,7 @@ export default function Screen({
                   title={`${sound.on ? "Stop hearing" : "Hear"} the ${computerWord(device.platform)}`}
                   aria-pressed={sound.on}
                   aria-busy={sound.state === "starting" || undefined}
-                  className={sound.state === "starting" ? "screen-bar-pending" : undefined}
+                  className={`screen-bar-secondary${sound.state === "starting" ? " screen-bar-pending" : ""}`}
                   onClick={() => (sound.on ? sound.stop() : sound.start())}
                 >
                   {sound.on ? <Volume2 size={18} /> : <VolumeX size={18} />}
@@ -1270,11 +1279,11 @@ export default function Screen({
               )}
               {!turnToLeave && (
                 <button
-                  aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                  aria-pressed={fullscreen}
+                  aria-label={fullscreen && !nativeOffer ? "Exit fullscreen" : "Enter fullscreen"}
+                  aria-pressed={fullscreen && !nativeOffer}
                   onClick={() => void toggleFullscreen()}
                 >
-                  {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+                  {fullscreen && !nativeOffer ? <Minimize size={18} /> : <Maximize size={18} />}
                 </button>
               )}
               <button
@@ -1315,10 +1324,21 @@ export default function Screen({
                   <ChevronRight size={18} /> Back
                 </button>
               )}
-              {/* One menu, as ChatGPT lays one out: the keys and commands
-                  first, then short grouped lists, little text. */}
+              {/* Secondary controls and commands share one options panel. */}
               {panel === "more" && (
                 <>
+                  {(control || (hears && !paused)) && <div className="gs-group">
+                    {control && <button className="gs-row" disabled={!usable || clipboardBusy}
+                      onClick={() => { setPanel(null); void pastePhone(); }}>
+                      <ClipboardPaste /><span className="gs-label">Paste from your phone</span>
+                    </button>}
+                    {hears && !paused && <button className="gs-row" aria-pressed={sound.on}
+                      aria-busy={sound.state === "starting" || undefined}
+                      onClick={() => sound.on ? sound.stop() : sound.start()}>
+                      {sound.on ? <Volume2 /> : <VolumeX />}<span className="gs-label">Sound</span>
+                      <span className="gs-value">{sound.state === "starting" ? "Starting…" : sound.on ? "On" : "Off"}</span>
+                    </button>}
+                  </div>}
                   {control && appContext.app && (
                     <AppCommandList
                       app={appContext.app}

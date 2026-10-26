@@ -13,7 +13,11 @@ const swift = await read("../scripts/native/desktop-input.swift");
 const ps1 = await read("../scripts/native/desktop-input.ps1");
 
 // What each native helper can actually send for a {type: "key"} action.
-const swiftKeyBlock = swift.slice(swift.indexOf('type == "key"'));
+// The helper's key map, in press() (one key with its modifiers; the phone's
+// key action and Copy selected text's ⌘C both press through it). The key
+// action must still hand its key there.
+assert.match(swift, /type == "key", let key = p\["key"\] as\? String \{\s*try press\(key, flags\(p\)\)/);
+const swiftKeyBlock = swift.slice(swift.indexOf("func press(_ key: String"));
 const helperKeys = {
   darwin: new Set(
     [...swiftKeyBlock.matchAll(/"([a-z0-9]+)": \d+/g)].map((m) => m[1]),

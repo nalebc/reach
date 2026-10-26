@@ -50,13 +50,21 @@ test("actual built Reach cold-opens its original private origin through a comple
     const item = { kind, path: new URL(req.url, "https://fixture").pathname, method: req.method,
       realm, credential: !token ? "none" : token === nativeToken ? "native" : "browser-or-other" }; calls.push(item);
     if (kind !== "public" && !/^\/api\/(?:device(?:[/?]|$)|health(?:[/?]|$)|auth\/|files(?:[/?]|$))/.test(req.url)) { res.writeHead(503); return res.end(); }
-    const headers = { ...req.headers, host: new URL(frontOrigin).host, "X-Forwarded-Host": new URL(frontOrigin).host,
+    const headers = { ...req.headers, "accept-encoding": "identity", host: new URL(frontOrigin).host, "X-Forwarded-Host": new URL(frontOrigin).host,
       "X-Forwarded-For": kind === "native" ? "100.101.0.1" : kind === "browser" ? "100.101.0.2" : "203.0.113.5" };
     if (kind === "public") headers["Tailscale-Funnel-Request"] = "?1"; else headers["Tailscale-User-Login"] = "owner@example.test";
     const upstream = http.request({ host: "127.0.0.1", port: ingressPort, path: `/r-${ingressKey}${req.url}`, method: req.method, headers, agent: false }, response => {
       item.status = response.statusCode;
       const output = { ...response.headers }; if (kind === "browser" && !cors) delete output["access-control-allow-origin"];
-      res.writeHead(response.statusCode, output); response.pipe(res);
+      // This fixture retains the legacy private-port migration UI. Model its
+      // older host capability while keeping real device-bound authorization.
+      if (req.method === "GET" && req.url === "/api/device" && response.statusCode === 200) {
+        const chunks = []; response.on("data", chunk => chunks.push(chunk));
+        response.on("end", () => {
+          const device = JSON.parse(Buffer.concat(chunks)); delete device.ownerConnection;
+          delete output["content-length"]; res.writeHead(response.statusCode, output); res.end(JSON.stringify(device));
+        });
+      } else { res.writeHead(response.statusCode, output); response.pipe(res); }
     });
     upstream.on("error", error => res.destroy(error)); req.pipe(upstream);
   };
@@ -166,8 +174,8 @@ test("actual built Reach cold-opens its original private origin through a comple
     "no approval request precedes the first approved App launch");
   await tab.navigate(frontOrigin);
   await wait("document.querySelector('.settings-nav')"); await tab.evaluate("document.querySelector('.settings-nav').click()");
-  await wait("[...document.querySelectorAll('button')].some(b=>b.textContent.includes('Set up fallback'))");
-  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Set up fallback')).click()");
+  await wait("[...document.querySelectorAll('button')].some(b=>b.querySelector('.gs-label')?.textContent==='Fallback')");
+  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.querySelector('.gs-label')?.textContent==='Fallback').click()");
   await wait("document.querySelector('a[href^=\"https://login.tailscale.com/\"]')");
   cors = false;
   await inPage(function (value) { globalThis.fixtureIdentity = value; runtime.completeSignIn(); }, identity);
@@ -175,7 +183,7 @@ test("actual built Reach cold-opens its original private origin through a comple
   assert.equal(reach.approvals.list().length, 0, "real cross-port CORS refusal cannot submit a request");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.offline-shell.enabled')"), null);
   await tab.evaluate("[...document.querySelectorAll('dialog button')].find(b=>b.textContent==='Close setup').click()"); cors = true;
-  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Set up fallback')).click()");
+  await tab.evaluate("[...document.querySelectorAll('button')].find(b=>b.querySelector('.gs-label')?.textContent==='Fallback').click()");
   await wait("document.querySelector('.approval-code')");
   const request = reach.approvals.list()[0]; assert.equal(request.identity.nodeId, "browser-node");
   reach.approvals.decide(request.id, "approve", "separate disposable fixture owner");
@@ -241,15 +249,20 @@ test("actual built Reach cold-opens its original private origin through a comple
   await tab.evaluate("localStorage.removeItem('reach.browser.devices')"); const missingApprovalRealm = await replaceTab();
   await wait("document.querySelector('#root')?.childElementCount");
   await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(await tab.evaluate("document.documentElement.dataset.connection==='browser'"), false);
+  // No browser approval saved: the page may switch to the browser route to
+  // ask for an ordinary approval (App.tsx beginBrowserApproval, Oct 25), but
+  // nothing goes out with a browser credential (the next check).
   assert.equal(calls.some(call => call.realm === missingApprovalRealm && call.kind === "browser" && call.credential === "browser-or-other"), false);
   await inPage(function (peers) {
     localStorage.setItem("reach.browser.devices", JSON.stringify(peers)); localStorage.removeItem("reach.tailnet:_machinekey");
   }, approved);
   const missingIdentityRealm = await replaceTab(); await wait("document.querySelector('#root')?.childElementCount");
   await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(await tab.evaluate("document.documentElement.dataset.connection==='browser'"), false);
-  assert.equal(await tab.evaluate("typeof runtime==='undefined'"), true, "missing saved identity cannot construct, sign in or substitute a recovery device");
+  // The browser's saved identity is gone: a fresh browser sign-in may start
+  // (it's the owner's own Tailscale sign-in, then an ordinary approval), but
+  // the retained approval never travels through that replacement identity,
+  // no approval is asked for by itself, and the native record is unchanged.
+  assert.ok(await tab.evaluate("typeof runtime==='undefined' || runtime.logins <= 1"), "at most one fresh sign-in, started for the owner");
   assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.kind === "browser" && call.credential !== "none"), false,
     "the retained approval never travels through a missing/replacement browser identity");
   assert.equal(calls.some(call => call.realm === missingIdentityRealm && call.path === "/api/auth/requests" && call.method === "POST"), false);

@@ -84,6 +84,14 @@ const clients = [
   ["Mac", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 Version/26.0 Safari/605.1.15"],
   ["Windows", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/142.0 Safari/537.36"],
 ];
+for (const path of ["/files", "/screen", "/tools"]) test(`owner bootstrap restores a native approval at the same ${path} deep link`, async () => {
+  const f = await page({ path });
+  try {
+    await f.dom.waitFor(() => f.boots.length, 500);
+    assert.equal(f.boots[0].url, ORIGIN + path);
+    assert.equal(f.boots[0].selected.token, "NATIVE");
+  } finally { await f.close(); }
+});
 for (const [client, userAgent] of clients) test(`${client}: a public owner start prefers its existing native approval inline before constructing a browser node`, async () => {
   const f = await page({ userAgent, device: { ...DEVICE, platform: client === "Windows" ? "win32" : "darwin" } });
   try {

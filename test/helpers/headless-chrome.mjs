@@ -126,6 +126,19 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
     for (const call of waiting.values()) call.reject(error);
     waiting.clear();
   };
+  // A tab whose renderer crashed, or that DevTools let go of, never answers
+  // what was sent to it: its calls fail at once, saying which, instead of
+  // reading as a slow Chrome 20 s later.
+  const gone = new Map();
+  const failSession = (sessionId, why) => {
+    if (!sessionId || gone.has(sessionId)) return;
+    gone.set(sessionId, why);
+    for (const [id, call] of waiting)
+      if (call.sessionId === sessionId) {
+        waiting.delete(id);
+        call.reject(Error(`${call.method}: ${why}`));
+      }
+  };
   child.on("error", failPending);
   exited.then(() => failPending(Error(`Chrome exited: ${stderr.slice(-400)}`)));
   toChrome.on("error", failPending);
@@ -141,24 +154,51 @@ export async function launchChrome(t, { binary = findChrome(), hosts = [], spki,
         waiting.delete(message.id);
         if (message.error) reject(Error(`${method}: ${message.error.message}`));
         else resolve(message.result);
-      } else if (message.method)
+      } else if (message.method) {
+        if (message.method === "Inspector.targetCrashed") failSession(message.sessionId, "the tab's renderer crashed");
+        else if (message.method === "Inspector.detached") failSession(message.sessionId, `DevTools let go of the tab (${message.params?.reason || "no reason given"})`);
+        else if (message.method === "Target.detachedFromTarget") failSession(message.params?.sessionId, "DevTools let go of the tab");
         for (const listener of listeners.get(message.method) || []) listener(message.params, message.sessionId);
+      }
     }
   });
+  // A tab that doesn't answer: whether the browser itself still does, and
+  // which processes it has, so a renderer that never came up reads apart
+  // from a browser that stalled.
+  const tabStall = async () => {
+    const asked = performance.now();
+    try { await send("Browser.getVersion", {}, undefined, 2000); }
+    catch (error) { return /Chrome exited|Chrome closed/.test(error.message) ? "; the browser had stopped" : "; the browser itself didn't answer in 2 s either"; }
+    const answered = Math.round(performance.now() - asked);
+    let processes = "";
+    try {
+      const { processInfo } = await send("SystemInfo.getProcessInfo", {}, undefined, 2000);
+      const kinds = {};
+      for (const { type } of processInfo) kinds[type] = (kinds[type] || 0) + 1;
+      processes = `, its processes ${JSON.stringify(kinds)}`;
+    } catch {}
+    return `; the browser answered in ${answered} ms, reported no crash and no detach for this tab${processes}`;
+  };
   // Page calls keep their 20 s bound. The first browser handshake also
   // includes cold profile/sandbox startup on a shared runner.
   const send = (method, params = {}, sessionId, timeoutMs = 20000) =>
     new Promise((resolve, reject) => {
       if (hasClosed || child.exitCode !== null || child.signalCode !== null) return reject(Error(`Chrome exited: ${stderr.slice(-400)}`));
+      if (sessionId && gone.has(sessionId)) return reject(Error(`${method}: ${gone.get(sessionId)}`));
       const id = next++;
-      const timer = setTimeout(() => {
+      const timer = setTimeout(async () => {
         waiting.delete(id);
-        reject(Error(`${method}: no answer from Chrome in ${timeoutMs / 1000} s${stderr.trim() ? `: ${stderr.trim().slice(-1000)}` : " (no stderr)"}`));
+        const why = sessionId ? await tabStall() : "";
+        if (sessionId && gone.has(sessionId)) return reject(Error(`${method}: ${gone.get(sessionId)}, after ${timeoutMs / 1000} s without an answer`));
+        // Chrome's own last lines; on a Mac they always hold display-link
+        // and sandbox complaints, which healthy runs print too.
+        reject(Error(`${method}: no answer from Chrome in ${timeoutMs / 1000} s${why}${stderr.trim() ? `; its stderr ends: ${stderr.trim().slice(-1000)}` : " (no stderr)"}`));
       }, timeoutMs);
       waiting.set(id, {
         resolve: (v) => (clearTimeout(timer), resolve(v)),
         reject: (e) => (clearTimeout(timer), reject(e)),
         method,
+        sessionId,
       });
       toChrome.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
     });

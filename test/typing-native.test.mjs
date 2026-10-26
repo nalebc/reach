@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -149,5 +150,18 @@ test("Copy selected text reads what's selected in a native text view and on a pa
     return answer.error === "Select some text on your laptop first." ? answer : null;
   }, { timeoutMs: 10000, intervalMs: 300, label: "a blank selection refused" });
   assert.equal(blank.text, undefined);
+
+  // An app that doesn't say what's selected but copies on ⌘C (as Numbers):
+  // Reach copies it as you would, and the Mac's clipboard is as it was.
+  const clipboard = async () => crypto.createHash("sha256").update((await exec("/usr/bin/pbpaste")).stdout).digest("hex");
+  const before = await clipboard();
+  fixture.stdin.write("copyonly\n");
+  assert.equal((await lines.next()).value, "copyonly");
+  const copied = await eventually(async () => {
+    const answer = await read();
+    return answer.text === "copied by the app" ? answer : null;
+  }, { timeoutMs: 10000, intervalMs: 300, label: "the app's own copy" });
+  assert.equal(copied.text, "copied by the app");
+  assert.equal(await clipboard(), before, "the Mac's clipboard is put back");
   fixture.stdin.end();
 });

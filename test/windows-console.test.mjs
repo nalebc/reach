@@ -236,7 +236,7 @@ test("Windows console, first run: every Tailscale state, its menus by arrow keys
   // a phone already on the tailnet can explicitly request the private one.
   await reach.waitFor("▸ 3. Your phone", "the phone step");
   await reach.waitFor("Press Enter for a new pairing code. Type pause to pause. Ctrl+C stops sharing and Reach.", "the private fallback's input prompt", { ms: 180000 });
-  assert.match(reach.text(), /The private QR needs the Tailscale app on this computer's network/);
+  assert.match(reach.text(), /Type private for its private QR/);
   assert.doesNotMatch(reach.text(), /Pairing code:/, "a private pairing QR is not an automatic browser handoff");
   reach.write(`private${ENTER}`);
   const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the requested private pairing code", { ms: 30000 });
@@ -322,7 +322,7 @@ test("Windows console, npm install: npm's reach.cmd runs the first run to the pa
   reach.write(ENTER);
   await reach.waitFor(`✔ 2. Your private link — ${HOST}`, "the link step done");
   await reach.waitFor("Press Enter for a new pairing code. Type pause to pause. Ctrl+C stops sharing and Reach.", "the installed CLI's private fallback input prompt", { ms: 180000 });
-  assert.match(reach.text(), /The private QR needs the Tailscale app on this computer's network/);
+  assert.match(reach.text(), /Type private for its private QR/);
   assert.doesNotMatch(reach.text(), /Pairing code:/, "an installed CLI also gates its browser QR");
   reach.write(`private${ENTER}`);
   const phone = await reach.waitFor(/Pairing code: ?\d{4} ?\d{4}/, "the requested private pairing code", { ms: 30000 });

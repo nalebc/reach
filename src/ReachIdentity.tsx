@@ -2,6 +2,7 @@ import reachMascot from "./assets/reach-mascot.svg";
 import {
   memo,
   useContext,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -76,7 +77,11 @@ export function Computer({
           fill="#71867b"
           fillRule="evenodd"
         />
-        <path d="M9 7H163V105H9ZM15 13V99H157V13Z" fill="#101b18" fillRule="evenodd" />
+        <path
+          d="M9 7H163V105H9ZM15 13V99H157V13Z"
+          fill="#101b18"
+          fillRule="evenodd"
+        />
         <path d="M3 112H169L189 130V135H-17V130Z" fill="#97a697" />
         <path d="M15 116H157L169 126H3Z" fill="#496153" />
         <path d="M65 127H106V131H65Z" fill="#c4d0bd" />
@@ -121,10 +126,13 @@ export const ReachScene = memo(function ReachScene({
   className = "",
   connected = false,
   liveScreen = false,
+  interactive = false,
 }: {
   connected?: boolean;
   /** A live view of the computer is placed under the laptop's display. */
   liveScreen?: boolean;
+  /** Home gives the mascot a separate, keyboard-accessible greeting button. */
+  interactive?: boolean;
   mode?: "journey" | "computer" | "loading";
   companion?: boolean;
   className?: string;
@@ -132,6 +140,33 @@ export const ReachScene = memo(function ReachScene({
   const motion = useContext(MotionContext);
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(true);
+  const mascot = useRef<HTMLButtonElement>(null);
+  const [reaction, setReaction] = useState(0);
+  const [showHeart, setShowHeart] = useState(false);
+  const [held, setHeld] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const releasePress = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const clearHeart = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(
+    () => () => {
+      clearTimeout(releasePress.current);
+      clearTimeout(clearHeart.current);
+    },
+    [],
+  );
+  const placeMascot = useCallback(({ x, y }: { x: number; y: number }) => {
+    if (!mascot.current) return;
+    mascot.current.style.left = `${x / 4}%`;
+    mascot.current.style.top = `${(y + 40) / 2.75}%`;
+  }, []);
+  const sayHello = () => {
+    clearTimeout(releasePress.current);
+    clearTimeout(clearHeart.current);
+    setHeld(false);
+    setReaction((n) => n + 1);
+    setShowHeart(true);
+    clearHeart.current = setTimeout(() => setShowHeart(false), 1800);
+  };
   const [finishFrom, setFinishFrom] = useState<string | null>(null);
   useLayoutEffect(() => {
     if (!connected) {
@@ -163,9 +198,13 @@ export const ReachScene = memo(function ReachScene({
       style={
         { "--finish-from": finishFrom || "translateX(106px)" } as CSSProperties
       }
-      aria-hidden="true"
+      aria-hidden={interactive ? undefined : true}
     >
-      <svg viewBox={single ? "0 -40 400 275" : "0 0 480 265"} fill="none">
+      <svg
+        aria-hidden="true"
+        viewBox={single ? "0 -40 400 275" : "0 0 480 265"}
+        fill="none"
+      >
         <g className="scene-specks" fill="currentColor">
           {Array.from({ length: liveScreen ? 0 : 24 }, (_, i) => (
             <rect
@@ -190,7 +229,15 @@ export const ReachScene = memo(function ReachScene({
               <path d="M97 185H331V190H97ZM115 190H121V212H115ZM305 190H311V212H305Z" />
             </g>
             <Computer x={119} y={32} scale={1.1} open={liveScreen} />
-            {companion && <CourierActor playing={playing} />}
+            {companion && (
+              <CourierActor
+                playing={playing}
+                welcome={interactive}
+                reaction={reaction}
+                held={held || focused}
+                onPosition={interactive ? placeMascot : undefined}
+              />
+            )}
           </>
         ) : (
           <>
@@ -248,6 +295,49 @@ export const ReachScene = memo(function ReachScene({
           </>
         )}
       </svg>
+      {single && companion && interactive && (
+        <>
+          <button
+            ref={mascot}
+            type="button"
+            className="reach-mascot-button"
+            aria-label="Say hello to Reach"
+            title="Say hello to Reach"
+            onPointerDown={(event) => {
+              if (!event.isPrimary || event.button !== 0) return;
+              clearTimeout(releasePress.current);
+              setHeld(true);
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerUp={() => {
+              releasePress.current = setTimeout(() => setHeld(false), 300);
+            }}
+            onPointerCancel={() => {
+              clearTimeout(releasePress.current);
+              setHeld(false);
+            }}
+            onFocus={(event) =>
+              setFocused(event.currentTarget.matches(":focus-visible"))
+            }
+            onBlur={() => setFocused(false)}
+            onClick={sayHello}
+          >
+            {showHeart && (
+              <span key={reaction} className="reach-mascot-heart" aria-hidden="true">
+                <svg viewBox="0 0 16 16">
+                  <path
+                    d="M2 3h4v2h4V3h4v2h2v5h-2v2h-2v2h-2v2H6v-2H4v-2H2v-2H0V5h2Z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </span>
+            )}
+          </button>
+          <span className="reach-mascot-feedback" role="status">
+            {showHeart ? "Reach says hello!" : ""}
+          </span>
+        </>
+      )}
     </div>
   );
 });

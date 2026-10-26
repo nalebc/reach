@@ -13,6 +13,8 @@ import {
   type ReactNode,
 } from "react";
 import { isNative, saveBlob } from "./native";
+import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
+import { isHomeRoot, rootLabel } from "./file-root-label";
 import {
   Archive,
   Check,
@@ -32,6 +34,7 @@ import {
   FilePlay,
   FolderOpen,
   FolderPlus,
+  House,
   Image,
   LayoutGrid,
   List as ListIcon,
@@ -258,13 +261,10 @@ export default function Files({
 }) {
   const [root, setRoot] = useState(initialLocation?.root || 0),
     [dir, setDir] = useState(initialLocation?.dir || ""),
-    [hidden, setHidden] = useState(false),
     [revision, setRevision] = useState(0),
     [entries, setEntries] = useState<FileEntry[]>([]),
     [busyLoading, setLoading] = useState(true),
     [error, setError] = useState(""),
-    [query, setQuery] = useState(""),
-    [searching, setSearching] = useState(false),
     [sort, setSort] = useState<Sort>(savedSort),
     [view, setView] = useState<View>(savedView),
     [panel, setPanel] = useState<"" | "options" | "add" | "locations">(""),
@@ -282,22 +282,28 @@ export default function Files({
     [missing, setMissing] = useState<{ name: string; shared?: boolean } | null>(
       null,
     );
+  const scope = viewScope(peer, "files");
+  const folderScope = JSON.stringify([scope, root, dir]);
+  const [hidden, setHidden] = useViewState(scope, "hidden", false);
+  const [query, setQuery] = useViewState(folderScope, "query", "");
+  const [searching, setSearching] = useViewState(folderScope, "search", false);
+  const { field: searchField, requestFocus } = useSearchFocus<HTMLInputElement>(searching);
   const features = suppliedFeatures || workspaceCapabilities(device);
   const sharer = useFileShare(peer, root, toast, (file) => gone(file));
   const canWrite = features.writeFiles;
   const canExtract = features.mac && canWrite;
   // A person with full access gets the folder actions too.
   const guest = device.access?.kind === "guest" && !features.mac;
+  // Above the title: whose files a guest sees, or which computer when you
+  // have several. With only one, its name is already on Home's card.
+  const host = guest ? `Shared by ${device.name}` : (peers?.length ?? 0) > 1 ? device.name : "";
   const freshListing = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
-  const searchField = useRef<HTMLInputElement>(null);
   useEffect(() => {
     onLocationChange?.({ root, dir });
   }, [root, dir]);
-  // A new folder starts clean: no search, no open menus.
+  // A new folder closes transient menus and selections.
   useEffect(() => {
-    setQuery("");
-    setSearching(false);
     setExpanded("");
     setCreating(false);
     setPicked([]);
@@ -432,7 +438,8 @@ export default function Files({
   };
 
   // Typing stays instant; the list catches up a moment later.
-  const needle = useDeferredValue(query.trim().toLowerCase());
+  const filter = query.trim().toLowerCase();
+  const needle = useDeferredValue(filter);
   const shown = useMemo(
     () =>
       entries
@@ -449,8 +456,9 @@ export default function Files({
         }),
     [entries, needle, sort],
   );
-  const [limit, setLimit] = useState(PAGE);
-  useEffect(() => setLimit(PAGE), [root, dir, needle, sort, view]);
+  const listScope = JSON.stringify([folderScope, filter, sort, view, hidden]);
+  const [limit, setLimit] = useViewState(listScope, "limit", PAGE);
+  const scroll = useViewScroll<HTMLDivElement>(listScope, true, !busyLoading && needle === filter);
   const drawn = shown.length > limit ? shown.slice(0, limit) : shown;
   const more = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -467,10 +475,14 @@ export default function Files({
   const types = useMemo(() => entries.map(iconType), [entries]);
   const iconFor = useFileTypeIcons(peer, types);
   const nativeIcon = (file: FileEntry) => iconFor(iconType(file));
-  const rootName =
-    device.roots.find((r) => r.id === root)?.name || "Shared folder";
+  const currentRoot = device.roots.find((r) => r.id === root);
+  const rootName = rootLabel(currentRoot);
+  // The home folder's title carries a house, as Finder's sidebar shows it.
+  const house = !dir && isHomeRoot(currentRoot) && (
+    <House className="files-title-icon" size={24} aria-label="Home folder" />
+  );
   // Agents run on this computer, so they get the file's own path.
-  const rootPath = device.roots.find((r) => r.id === root)?.path || "";
+  const rootPath = currentRoot?.path || "";
   const separator = device.platform === "win32" ? "\\" : "/";
   const fullPath = (file: FileEntry) =>
     [rootPath.replace(/[\\/]+$/, ""), ...file.path.split("/")].join(separator);
@@ -656,6 +668,7 @@ export default function Files({
   return (
     <div
       className={`files-view ${dragging ? "is-dropping" : ""}`}
+      ref={scroll}
       onDragOver={(e) => {
         if (!canWrite || !e.dataTransfer.types.includes("Files")) return;
         e.preventDefault();
@@ -673,8 +686,8 @@ export default function Files({
       }}
     >
       <header className="files-header">
-        <nav className="files-crumbs" aria-label="Folder path">
-          <span>{guest ? `Shared by ${device.name}` : device.name}</span>
+        {(host || parts.length > 0) && <nav className="files-crumbs" aria-label="Folder path">
+          {host && <span>{host}</span>}
           {parts.length > 0 && (
             <button onClick={() => go("")}>{rootName}</button>
           )}
@@ -683,7 +696,7 @@ export default function Files({
               {part}
             </button>
           ))}
-        </nav>
+        </nav>}
         <div className="files-titlebar">
           {parts.length > 0 && (
             <button
@@ -700,11 +713,17 @@ export default function Files({
               aria-expanded={panel === "locations"}
               onClick={() => toggle("locations")}
             >
-              <h1>{title}</h1>
+              <h1>
+                {house}
+                {title}
+              </h1>
               <ChevronDown size={20} />
             </button>
           ) : (
-            <h1 className="files-title">{title}</h1>
+            <h1 className="files-title">
+              {house}
+              {title}
+            </h1>
           )}
           <div className="files-tools">
             {selecting ? (
@@ -748,6 +767,7 @@ export default function Files({
                   aria-label="Search this folder"
                   aria-pressed={searching}
                   onClick={() => {
+                    if (!searching) requestFocus();
                     setSearching((s) => !s);
                     setQuery("");
                   }}
@@ -782,7 +802,6 @@ export default function Files({
             <Search size={17} />
             <input
               ref={searchField}
-              autoFocus
               type="search"
               aria-label={`Search ${title}`}
               placeholder={`Search ${title}`}
@@ -824,8 +843,8 @@ export default function Files({
                   setPanel("");
                 }}
               >
-                <FolderOpen size={16} />
-                {r.name}
+                {isHomeRoot(r) ? <House size={16} /> : <FolderOpen size={16} />}
+                {rootLabel(r)}
                 {root === r.id && <Check size={15} />}
               </button>
             ))}

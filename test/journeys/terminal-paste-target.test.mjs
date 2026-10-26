@@ -84,7 +84,8 @@ test(`Terminals: a delayed clipboard read stays with its original target on this
   await page.skipIntro();
   const stale = marker("wrong-terminal"), fresh = marker("current-terminal"), fence = marker("paste-fence");
   await heldClipboard(page, stale, fresh);
-  await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar");
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal");
   await page.see(() => document.querySelector('[aria-label="Start a terminal"]'), "the ways to start a terminal");
   await page.tap({ selector: '[aria-label="Start a terminal"] button', text: /^Terminal$/ }, "Terminal, to start one");
   const ready = () => document.querySelector(".terminal-switch .status-dot:not(.off)")

@@ -1,5 +1,5 @@
 /* Agents & people (PeopleHub.tsx): Settings' grouped lists (settings-list.css)
-   with an avatar per row, a title with "+" on top, Reach's dark green. */
+   with an avatar per row, a title with Invite on top, Reach's dark green. */
 .ppl,
 .ppl-sheet,
 .ppl-invite,
@@ -18,6 +18,9 @@
   gap: 12px;
   margin: 6px 4px 0;
 }
+.ppl-head > div {
+  min-width: 0;
+}
 .ppl-head h1 {
   margin: 0;
   font: 650 26px/1.15 system-ui, -apple-system, sans-serif;
@@ -28,20 +31,6 @@
   margin: 4px 0 0;
   font-size: 13.5px;
   color: var(--muted, #93a096);
-}
-.ppl-add {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 50%;
-  background: #ededed;
-  color: #111;
-}
-.ppl-add:active {
-  background: #fff;
 }
 /* A row: an avatar where Settings has a line icon. */
 .ppl .gs-row .gs-label strong {

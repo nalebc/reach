@@ -756,6 +756,88 @@ final class Input: @unchecked Sendable {
     typingFrame = now
     return true
   }
+  // One key with its modifiers, as on the Mac's own keyboard. Taken by
+  // action() (the phone's keys) and by Copy selected text (⌘C) inside it:
+  // it takes no lock of its own.
+  func press(_ key: String, _ modifiers: CGEventFlags) throws {
+    let keys: [String: CGKeyCode] = [
+      "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
+      "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
+      "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35,
+      "l": 37, "j": 38, "k": 40, "n": 45, "m": 46, "enter": 36, "tab": 48, "space": 49,
+      "backspace": 51, "escape": 53, "home": 115, "pageup": 116, "delete": 117, "end": 119,
+      "pagedown": 121, "left": 123, "right": 124, "down": 125, "up": 126, "f1": 122, "f2": 120,
+      "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109,
+      "f11": 103, "f12": 111,
+    ]
+    guard var code = keys[key] else { throw NSError(domain: "Unsupported key", code: 1) }
+    var flags = modifiers
+    // The key that types this letter or digit on the Mac's own layout.
+    if let typed = layout.key(key, flags, us: code) {
+      code = typed.0
+      if typed.1 { flags.insert(.maskShift) }
+    }
+    // Press modifiers as real keys: system shortcuts (⌘Tab, Mission Control,
+    // switching desktops) ignore modifiers carried only as event flags.
+    var active: CGEventFlags = []
+    var pressed: [(CGKeyCode, CGEventFlags)] = []
+    for (modifier, flag) in Input.modifierKeys where flags.contains(flag) {
+      active.insert(flag)
+      let e = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: true)
+      e?.flags = active
+      e?.post(tap: .cghidEventTap)
+      pressed.append((modifier, flag))
+    }
+    for down in [true, false] {
+      let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+      e?.flags = flags.union(Input.keyFlags(code))
+      e?.post(tap: .cghidEventTap)
+    }
+    for (modifier, flag) in pressed.reversed() {
+      active.remove(flag)
+      let e = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: false)
+      e?.flags = active
+      e?.post(tap: .cghidEventTap)
+    }
+  }
+  // ⌘C in the app in front, as on the Mac's own keyboard (its layout's C).
+  // The clipboard is as it was afterwards; only what was copied is read.
+  func copySelection(owner: Bool) throws -> String {
+    let board = NSPasteboard.general
+    let saved: [NSPasteboardItem] = (board.pasteboardItems ?? []).map { item in
+      let copy = NSPasteboardItem()
+      for kind in item.types { if let data = item.data(forType: kind) { copy.setData(data, forType: kind) } }
+      return copy
+    }
+    let before = board.changeCount
+    release()
+    try press("c", .maskCommand)
+    let until = Date().addingTimeInterval(1.0)
+    while board.changeCount == before, Date() < until {
+      CFRunLoopRunInMode(.defaultMode, 0.02, false)
+    }
+    guard board.changeCount != before else {
+      throw NSError(domain: "Select some text on your laptop first.", code: 1)
+    }
+    defer {
+      board.clearContents()
+      if !saved.isEmpty { board.writeObjects(saved) }
+    }
+    // A password manager marks what it copies as concealed: only the owner
+    // takes that off the Mac (as clipboard-read).
+    let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    if board.types?.contains(concealed) == true, !owner {
+      throw NSError(domain: "That's a hidden password; only the owner can copy it.", code: 1)
+    }
+    let text = board.string(forType: .string) ?? ""
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw NSError(domain: "Select some text on your laptop first.", code: 1)
+    }
+    guard text.utf8.count <= 16384 else {
+      throw NSError(domain: "Selected text exceeds 16 KiB.", code: 1)
+    }
+    return text
+  }
   func keyPress(_ code: CGKeyCode) {
     for down in [true, false] {
       let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
@@ -946,24 +1028,22 @@ final class Input: @unchecked Sendable {
       ]
     }
     if type == "selection-read" {
-      guard let element = focusedInFront(),
-        attribute(element, kAXSubroleAttribute) as? String != "AXSecureTextField"
-      else { throw NSError(domain: "Select non-password text on your laptop first.", code: 1) }
-      guard let text = attribute(element, kAXSelectedTextAttribute) as? String, !text.isEmpty else {
-        throw NSError(
-          domain:
-            "This app does not expose selected text. Use Command+C on the laptop, then open Clipboard in Screen options.",
-          code: 1)
+      let element = focusedInFront()
+      if let element, attribute(element, kAXSubroleAttribute) as? String == "AXSecureTextField" {
+        throw NSError(domain: "Select non-password text on your laptop first.", code: 1)
       }
-      // Chrome's page answers a line break with nothing selected: blank is
-      // nothing to copy, never a blank line on the phone.
-      guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-        throw NSError(domain: "Select some text on your laptop first.", code: 1)
+      if let element, let text = attribute(element, kAXSelectedTextAttribute) as? String,
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      {
+        guard text.utf8.count <= 16384 else {
+          throw NSError(domain: "Selected text exceeds 16 KiB.", code: 1)
+        }
+        return ["text": text]
       }
-      guard text.utf8.count <= 16384 else {
-        throw NSError(domain: "Selected text exceeds 16 KiB.", code: 1)
-      }
-      return ["text": text]
+      // The app doesn't say what's selected (Numbers, some Electron apps; a
+      // Chrome page answers a line break): copy it as you would, with ⌘C,
+      // read what it put on the clipboard, and put your clipboard back.
+      return ["text": try copySelection(owner: p["owner"] as? Bool == true)]
     }
     if type == "clipboard-read" {
       // A password manager marks what it copies as concealed: only the owner
@@ -1053,45 +1133,7 @@ final class Input: @unchecked Sendable {
     } else if type == "text", let text = p["text"] as? String {
       insertText(text)
     } else if type == "key", let key = p["key"] as? String {
-      let keys: [String: CGKeyCode] = [
-        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
-        "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
-        "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35,
-        "l": 37, "j": 38, "k": 40, "n": 45, "m": 46, "enter": 36, "tab": 48, "space": 49,
-        "backspace": 51, "escape": 53, "home": 115, "pageup": 116, "delete": 117, "end": 119,
-        "pagedown": 121, "left": 123, "right": 124, "down": 125, "up": 126, "f1": 122, "f2": 120,
-        "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100, "f9": 101, "f10": 109,
-        "f11": 103, "f12": 111,
-      ]
-      guard var code = keys[key] else { throw NSError(domain: "Unsupported key", code: 1) }
-      var flags = flags(p)
-      // The key that types this letter or digit on the Mac's own layout.
-      if let typed = layout.key(key, flags, us: code) {
-        code = typed.0
-        if typed.1 { flags.insert(.maskShift) }
-      }
-      // Press modifiers as real keys: system shortcuts (⌘Tab, Mission Control,
-      // switching desktops) ignore modifiers carried only as event flags.
-      var active: CGEventFlags = []
-      var pressed: [(CGKeyCode, CGEventFlags)] = []
-      for (modifier, flag) in Input.modifierKeys where flags.contains(flag) {
-        active.insert(flag)
-        let e = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: true)
-        e?.flags = active
-        e?.post(tap: .cghidEventTap)
-        pressed.append((modifier, flag))
-      }
-      for down in [true, false] {
-        let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
-        e?.flags = flags.union(Input.keyFlags(code))
-        e?.post(tap: .cghidEventTap)
-      }
-      for (modifier, flag) in pressed.reversed() {
-        active.remove(flag)
-        let e = CGEvent(keyboardEventSource: source, virtualKey: modifier, keyDown: false)
-        e?.flags = active
-        e?.post(tap: .cghidEventTap)
-      }
+      try press(key, flags(p))
     } else {
       throw NSError(domain: "Unsupported input", code: 1)
     }

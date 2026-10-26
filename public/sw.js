@@ -218,11 +218,11 @@ const shellKey = value => new URL(shellPrefix + value, self.location.origin).hre
 const shellSha = async body => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", body)), byte => byte.toString(16).padStart(2, "0")).join("");
 const shellPath = path => typeof path === "string" && (/^\/assets\/[\w.-]+$/.test(path) ||
   /^\/pdfjs\/(?:jbig2_nowasm_fallback|openjpeg_nowasm_fallback)\.js$/.test(path) ||
-  ["/index.html", "/manifest.webmanifest", "/favicon.svg"].includes(path));
+  ["/index.html", "/start.html", "/manifest.webmanifest", "/favicon.svg"].includes(path));
 const shellRuntime = path => /^\/tailnet\/(?:reach-tailnet\.[a-f0-9]{12,64}\.wasm|wasm_exec\.[a-f0-9]{12,64}\.js)$/.test(path);
-const shellNavigation = url => url.origin === self.location.origin && (url.pathname === "/" || /^\/files(?:\/|$)/.test(url.pathname));
+const shellNavigation = url => url.origin === self.location.origin && (url.pathname === "/" || /^\/(?:files|chats|screen|terminals|settings|tools)(?:\/[\w.-]*)*$/.test(url.pathname));
 const shellSource = source => {
-  try { const url = new URL(source?.url); return url.protocol === "https:" && !!url.port && url.hostname.endsWith(".ts.net") && shellNavigation(url); }
+  try { const url = new URL(source?.url); return url.protocol === "https:" && url.hostname.endsWith(".ts.net") && shellNavigation(url); }
   catch { return false; }
 };
 function shellEntry(value, runtime = false) {
@@ -412,19 +412,29 @@ self.addEventListener("fetch", event => {
   const navigation = request.mode === "navigate" && shellNavigation(url);
   if (request.method !== "GET" || url.origin !== self.location.origin || (url.search && !navigation) || request.headers?.has("Authorization")) return;
   if (!navigation && !shellPath(url.pathname) && !shellRuntime(url.pathname)) return;
+  // A network transition must never reject a document's respondWith promise.
+  // This inert page retries only navigation GETs, never workspace actions.
+  const network = () => fetch(request).catch(error => {
+    if (!navigation) throw error;
+    return new Response('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>Reconnecting to Reach</title></head><body style="margin:0;padding:32px;background:#111816;color:#edf2ee;font:18px/1.5 system-ui"><h1>Reconnecting to Reach…</h1><p>Your connection changed. Reach will retry automatically at this same link.</p><p>Keep your computer online with Reach and Tailscale running.</p><a href="" style="color:#b9efd8">Try again now</a></body></html>', { status: 503, headers: shellHeaders("text/html") });
+  });
   event.respondWith((async () => {
     try {
       const cache = await caches.open(shellRecords), bodies = await caches.open(shellBodies), cohorts = await shellCohorts(cache);
       const active = await shellJson(cache, "active");
       const selected = cohorts.find(record => record.id === active?.id);
       const cohort = navigation ? selected : cohorts.find(record => record.id === shellPins.get(event.clientId)?.id) || selected;
-      const entry = cohort?.entries.find(value => value.path === (navigation ? "/index.html" : url.pathname)) ||
+      // The permanent owner URL boots the connection screen. It can resume
+      // saved access or finish first-time browser sign-in without native HTTP.
+      // Legacy private-port snapshots keep their existing recovery entry.
+      const page = !url.port && cohort?.entries.some(value => value.path === "/start.html") ? "/start.html" : "/index.html";
+      const entry = cohort?.entries.find(value => value.path === (navigation ? page : url.pathname)) ||
         (!navigation && cohorts.flatMap(record => record.entries).find(value => value.path === url.pathname));
       const response = entry && await bodies.match(shellKey("body/" + entry.sha256));
       if (response) {
         if (navigation) {
           for (const required of cohort.entries) if (!await bodies.match(shellKey("body/" + required.sha256))) {
-            return fetch(request).catch(() => new Response('<!doctype html><title>Reconnect Reach</title><p>Turn Tailscale back on, then reopen Reach. Its saved interface is incomplete.</p>', { headers: shellHeaders("text/html") }));
+            return network();
           }
           if (event.resultingClientId) shellPins.set(event.resultingClientId, { build: cohort.build, id: cohort.id });
           const headers = shellHeaders(entry.type, entry.bytes); headers.set("X-Reach-Cached-Shell", cohort.build);
@@ -433,6 +443,6 @@ self.addEventListener("fetch", event => {
         return new Response(response.body, { headers: shellHeaders(entry.type, entry.bytes) });
       }
     } catch { /* Incomplete/evicted code never supplies API or workspace data. */ }
-    return fetch(request);
+    return network();
   })());
 });

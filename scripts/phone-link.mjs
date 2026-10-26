@@ -2,11 +2,8 @@ import { command } from "./home.mjs";
 
 // What the terminal says under the phone's QR (scripts/launch.mjs), for each
 // way a phone comes in (docs/FIRST_RUN_MATRIX.md, W1, W5, W6):
-// - the one address, with someone at this terminal: the Tailscale app opens
-//   it straight away; without the app, the phone signs in to Tailscale in its
-//   browser while the pairing window is open;
-// - the one address, nobody watching (the background service): the window
-//   opens on ./reach pair;
+// - the one address: native Tailscale when eligible, or the browser's
+//   private connection; owner bootstrap stays available after pairing;
 // - only the private address (port 443 isn't Reach's, Funnel isn't allowed):
 //   the phone needs the Tailscale app.
 export function phoneLinkText({ oneAddress = false, attended = false, minutes = 15, ownLink = "", publicProblem = "" } = {}) {
@@ -16,11 +13,8 @@ export function phoneLinkText({ oneAddress = false, attended = false, minutes = 
     // Linked computers share the first one's link; browser sign-in opens
     // here, at this computer's own.
     const signIn = ownLink ? `Open ${ownLink} and sign in` : "Sign in";
-    lines.push(
-      attended
-        ? `  No Tailscale app? ${signIn} to Tailscale in the phone's browser in the next ${minutes} minutes (later: ${command} pair).`
-        : `  No Tailscale app on the phone? Run ${command} pair: browser sign-in then opens for ${minutes} minutes${ownLink ? ` at ${ownLink}` : ""}.`,
-    );
+    lines.push(`  No Tailscale app? ${signIn} to Tailscale in the phone's browser to finish owner setup.`);
+    lines.push("  After setup, this same link reconnects automatically with the phone app on or off.");
   } else {
     lines.push("  Your phone needs the Tailscale app, on and signed in to this account. The QR holds only this private address.");
     if (publicProblem) lines.push(`  Signing in from the phone's browser isn't available: ${publicProblem}`);

@@ -12,7 +12,7 @@ import {
 } from "../server/capabilities.mjs";
 import { createReach } from "../server/index.mjs";
 const outputText = transpile(await fs.readFile(new URL("../src/capabilities.ts", import.meta.url), "utf8"));
-const { workspaceCapabilities, pageAccessible, morePlaces } = await import(
+const { workspaceCapabilities, pageAccessible } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const scopes = [
@@ -207,18 +207,10 @@ test("device discovery hides inaccessible tools and backend still rejects forbid
   assert.equal(detections, 1);
 });
 
-test("More lists the pages outside the bottom bar, nothing waits on Codex", () => {
-  const pages = ["overview", "sessions", "files", "apps", "terminal", "screen"];
-  const bar = ["overview", "sessions", "screen", "terminal"];
-  for (const state of ["checking", "ready", "missing"]) {
-    const codex = { state };
-    assert.deepEqual(
-      morePlaces(pages, bar, workspaceCapabilities(host("darwin"), codex), codex),
-      { places: ["files", "apps"], pending: [] },
-    );
-  }
+test("Tools is available without agents or extra permissions; its destinations still require access", () => {
+  for (const device of [null, host("darwin"), host("win32"), host("darwin", { access: { scopes: ["files:read"] } })])
+    assert.equal(pageAccessible("tools", workspaceCapabilities(device)), true);
 });
-
 
 test("Codex discovery follows a relocated bundled entry point while rejecting manifest paths outside the app", async () => {
   const allowed = path.posix.resolve("/Applications/ChatGPT.app/Contents/Resources/codex-cli", "new-layout/codex");

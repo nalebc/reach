@@ -20,6 +20,7 @@ import {
 import { approvalStore } from "./device-approval.mjs";
 import { createPasskeys } from "./passkeys.mjs";
 import { createFaceJoin } from "./face-join.mjs";
+import { createOwnerConnections } from "./owner-connections.mjs";
 import { createFleet } from "./fleet.mjs";
 import { createGuestKeys, guestPolicy } from "./guest-keys.mjs";
 import { tailscaleJson } from "../scripts/tailscale.mjs";
@@ -43,7 +44,7 @@ import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
 import { compressJson, serveBuild } from "./delivery.mjs";
-import { TAILNET_CONNECT_SOURCES } from "./public-start.mjs";
+import { TAILNET_CONNECT_SOURCES, ownerBootstrapRequest } from "./public-start.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
@@ -237,13 +238,16 @@ export async function createReach(overrides = {}) {
     jobs = new Jobs(config),
     app = express(),
     server = http.createServer(app);
+  const ownerConnections = createOwnerConnections({ auth, owner: config.tailscaleOwner });
   // Agents and people invited before mascots draw theirs now, once.
   try {
     auth.dressMascots();
   } catch {
     /* an unreadable access store stays locked (503) as before */
   }
-  const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(), ...overrides.browserHostGuard });
+  const browserHostGuard = createBrowserHostGuard({ clients: () => auth.list(),
+    ownerConnectionIncludes: (clientId, approverId) => auth.ownerConnectionIncludes(clientId, approverId),
+    ...overrides.browserHostGuard });
   // Any process on this Mac can claim one of your devices' Tailscale
   // identities on Reach's private socket, so an identity alone never approves
   // a device: your approval, Face ID, or a ticket a linked computer issued to
@@ -1667,7 +1671,11 @@ export async function createReach(overrides = {}) {
     if (agentsActive()) {
       await browserHostGuard.refresh();
       const client = verified();
-      if (!auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
+      // These two handlers check the pinned owner relationship themselves
+      // and require a signed, identity-bound proof. Ordinary sign-in and
+      // owner APIs remain guarded before a credential has been issued.
+      const ownerProof = req.method === "POST" && ["/api/auth/owner-connection/challenge", "/api/auth/owner-connection/join"].includes(route);
+      if (!ownerProof && !auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
         // A person opening their invitation comes in beside the agent, and
         // waits for your Allow (the redeem route holds them). Not on this
         // Mac itself: the agent drives it.
@@ -1689,6 +1697,32 @@ export async function createReach(overrides = {}) {
     if (client?.policy?.browser && !browserRouteAllowed(client, req.method, req.path))
       return res.status(403).json({ error: "This browser invitation cannot grant or request other access." });
     next();
+  });
+  // The browser's signing key proves its already-approved owner connection
+  // on the other private node. Never accept a source bearer on that node.
+  // Setup asks a few times; each verified node or device may ask 20 times a
+  // minute across these routes (CodeQL js/missing-rate-limiting).
+  const ownerConnectionLimit = rateLimit({
+    windowMs: 60_000, limit: 20, store: new MemoryStore(),
+    keyGenerator: req => {
+      const node = req.reachIdentity?.nodeId || req.client?.id;
+      if (!node) throw fail(403, "Connect this device to the owner's private network.");
+      return String(node);
+    },
+    standardHeaders: "draft-8", legacyHeaders: false,
+    identifier: "owner-connection",
+    message: { error: "Too many connection setup requests. Try again in one minute." },
+  });
+  app.post("/api/auth/owner-connection/challenge", ownerConnectionLimit, async (req, res) => {
+    if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
+      throw fail(403, "Set up this computer's own browser with its local approval.");
+    res.json(ownerConnections.challenge(req.reachIdentity, req.body, connection => browserHostGuard.assertOwnerConnection(req, connection)));
+  });
+  app.post("/api/auth/owner-connection/join", ownerConnectionLimit, async (req, res) => {
+    if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
+      throw fail(403, "Set up this computer's own browser with its local approval.");
+    const joined = ownerConnections.join(req.reachIdentity, req.body, connection => browserHostGuard.assertOwnerConnection(req, connection));
+    res.json({ ...joined, device: { id: device.id, computerId: device.computerId, name: config.name, platform: hostPlatform } });
   });
   app.post("/api/auth/requests", async (req, res) => {
     if (!approvals)
@@ -2304,6 +2338,7 @@ export async function createReach(overrides = {}) {
         ...(req.client.kind === "guest" && req.client.fullControlVersion === 1 ? { fullControlVersion: 1 } : {}),
         ...(req.client.policy?.browser && { browser: true }),
       },
+      ...(config.tailscaleOwner && req.client.kind === "device" && req.client.scopes.includes("admin") && { ownerConnection: 1 }),
       capabilities: deviceCapabilities({
         platform: overrides.platform || process.platform,
         owner: actsAsOwner(req.client),
@@ -2341,6 +2376,10 @@ export async function createReach(overrides = {}) {
   app.post("/api/device/door-key", (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json(auth.issueDoorKey(req.client.id));
+  });
+  app.post("/api/device/owner-connection", ownerConnectionLimit, (req, res) => {
+    const client = req.reauthorize();
+    res.json(auth.registerOwnerConnection(client.id, req.body?.publicKey, req.body?.role));
   });
   // An agent on its own invited device trades its credential for a new one
   // (security audit M6; scripts/agent-remote.mjs).
@@ -6261,12 +6300,11 @@ export async function createReach(overrides = {}) {
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
       return res.end("Unavailable.");
     }
-    // The public door (Oct 10): open to everyone only while something
-    // needs a stranger to come in (a pairing, an invitation waiting, an
-    // agent's page). Otherwise a request is answered only when it names
+    // Invitation and agent pages open while their admission window is live.
+    // Outside it, those requests are answered only when they name
     // a key Reach knows (an agent's own, or one that ended lately, so
     // it hears that it ended): the signed gateway and the agent runtime
-    // download. Anything else gets 404 before a byte is parsed.
+    // download. Fixed owner bootstrap is admitted separately below.
     const window = auth.funnelWindow();
     const key = req.headers["reach-key"];
     const known = typeof key === "string" && key.length <= 64 && knownKey(key);
@@ -6278,7 +6316,12 @@ export async function createReach(overrides = {}) {
     // Someone who came in through the browser and still has access: their
     // page and its code, by their own door key (a cookie; core.mjs).
     const door = (req.method === "GET" || req.method === "HEAD") && doorKeyKnown(doorCookie(req));
-    if ((window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
+    // The stable owner link always serves only its fixed bootstrap assets.
+    // Opening it grants no API access; sign-in still joins a private node.
+    const ownerStart = !!config.tailscaleOwner && ownerBootstrapRequest(req);
+    const ownerSignIn = !!config.tailscaleOwner && req.method === "POST" &&
+      ["/faceid/options", "/faceid/join"].includes(req.url) && faceJoin?.available();
+    if (ownerStart || ownerSignIn || (window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found.");
   });
@@ -6311,8 +6354,8 @@ export async function createReach(overrides = {}) {
     },
     // `publicApp`: what the internet gets at this same address (the start page).
     // The public route stays on while Reach runs (scripts/ephemeral-funnel.mjs),
-    // so the internet gets nothing at all unless an invitation or agent
-    // session is live.
+    // serving fixed owner bootstrap; invitation and agent routes have their
+    // own admission windows. No owner API or WebSocket crosses this door.
     async listenPrivate(socketPath, { publicApp } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");

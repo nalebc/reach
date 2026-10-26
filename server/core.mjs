@@ -603,7 +603,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     clients = loadJson(file, []);
     if (typeof digest !== "string" || !digest) return null;
     const now = Date.now();
-    const authorized = (c) => c.browserTransport !== "funnel" && !c.browserBinding &&
+    const authorized = (c) => ownerConnectionLive(c, clients) && c.browserTransport !== "funnel" && !c.browserBinding &&
       (!config.tailscaleOwner || identity?.validUntil > now) &&
       (!c.tailscale || (identity?.validUntil > now && c.tailscale.userId === identity.userId && c.tailscale.nodeId === identity.nodeId)) &&
       (!config.tailscaleOwner || ["guest", "agent"].includes(c.kind) ||
@@ -2078,6 +2078,96 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       expiresAt: client.expiresAt,
     };
   }
+  // A browser proves possession of one non-exportable signing key on both
+  // private paths. Each path still receives its own node-bound credential.
+  // The source approval remains the authority for the lifetime of the pair.
+  const ownerClient = (c) => c?.kind === "device" && c.scopes?.includes("admin") &&
+    !c.policy && !c.browserBinding && !c.browserTransport && c.tailscale?.nodeId && c.expiresAt > Date.now() &&
+    (c.tailscale.userId === config.tailscaleOwner?.userId || faceJoined(c));
+  function ownerConnectionLive(client, latest) {
+    if (!client.ownerConnection?.root) return true;
+    const root = latest.find(c => c.id === client.ownerConnection.root);
+    return !!(ownerClient(root) && root.ownerConnection?.other === client.id &&
+      JSON.stringify([...root.scopes].sort()) === JSON.stringify([...client.scopes].sort()) &&
+      client.expiresAt <= root.expiresAt);
+  }
+  function ownerConnection(connection) {
+    const latest = loadJson(file, []);
+    const root = latest.find(c => c.id === connection);
+    if (!ownerClient(root) || !root.ownerConnection?.key || root.ownerConnection.root)
+      throw fail(403, "This owner connection is no longer approved.");
+    return root.ownerConnection;
+  }
+  // Internal host-guard check: derive the relationship from the current
+  // approval store, never from a request, device group, name or account.
+  // A prepared source can finish enrollment; an existing pair must still
+  // have both reciprocal approvals, original scopes and bounded expiry.
+  function ownerConnectionIncludes(clientId, approverId) {
+    const latest = loadJson(file, []);
+    const client = latest.find(c => c.id === clientId);
+    if (!ownerClient(client) || !ownerConnectionLive(client, latest)) return false;
+    const root = client.ownerConnection?.root ? latest.find(c => c.id === client.ownerConnection.root) : client;
+    if (!ownerClient(root) || !root.ownerConnection?.key || root.ownerConnection.root ||
+        !["native", "browser"].includes(root.ownerConnection.role)) return false;
+    const other = latest.find(c => c.id === root.ownerConnection.other);
+    if (root.ownerConnection.other && (!ownerClient(other) || !ownerConnectionLive(other, latest) ||
+        other.ownerConnection?.root !== root.id ||
+        other.ownerConnection.role !== (root.ownerConnection.role === "native" ? "browser" : "native"))) return false;
+    return root.id === approverId || other?.id === approverId;
+  }
+  function registerOwnerConnection(clientId, publicKey, role) {
+    if (!["native", "browser"].includes(role) || publicKey?.kty !== "EC" || publicKey.crv !== "P-256" ||
+        publicKey.d !== undefined || !/^[A-Za-z0-9_-]{43}$/.test(publicKey.x || "") || !/^[A-Za-z0-9_-]{43}$/.test(publicKey.y || ""))
+      throw fail(400, "A valid owner connection key is required.");
+    let key;
+    try { key = crypto.createPublicKey({ key: publicKey, format: "jwk" }).export({ format: "jwk" }); }
+    catch { throw fail(400, "A valid owner connection key is required."); }
+    let connection;
+    changeClients(latest => {
+      const client = latest.find(c => c.id === clientId);
+      if (!ownerClient(client) || !ownerConnectionLive(client, latest)) throw fail(403, "Only an approved owner can prepare another connection.");
+      const root = client.ownerConnection?.root ? latest.find(c => c.id === client.ownerConnection.root) : client;
+      const previous = root.ownerConnection;
+      if (previous && (JSON.stringify(previous.key) !== JSON.stringify(key) || client.ownerConnection.role !== role))
+        throw fail(403, "This approval belongs to another owner connection.");
+      if (!previous) root.ownerConnection = { key, role };
+      connection = root.id;
+      return latest;
+    });
+    return { connection };
+  }
+  function joinOwnerConnection(connection, role, identity, token) {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token || "") || !["native", "browser"].includes(role) ||
+        !identity?.nodeId || identity.tagged || identity.userId !== config.tailscaleOwner?.userId || !(identity.validUntil > Date.now()))
+      throw fail(403, "This private device cannot join the owner connection.");
+    let result;
+    changeClients(latest => {
+      const root = latest.find(c => c.id === connection);
+      if (!ownerClient(root) || !root.ownerConnection?.key || root.ownerConnection.root || root.ownerConnection.role === role || root.tailscale.nodeId === identity.nodeId)
+        throw fail(403, "This owner connection is no longer approved for that path.");
+      const previous = latest.find(c => c.id === root.ownerConnection.other);
+      if (root.ownerConnection.other) {
+        // A removed or changed alternate is never silently recreated. A lost
+        // response can collect only the exact credential the browser saved
+        // before dispatch, on the same node, while its grant is still live.
+        if (!ownerClient(previous) || !ownerConnectionLive(previous, latest) || previous.ownerConnection?.role !== role ||
+            previous.tailscale.nodeId !== identity.nodeId || previous.tailscale.userId !== identity.userId || !sameHash(previous.hash, hash(token)))
+          throw fail(403, "This owner connection's other path was removed or belongs to another device. Set up this browser again.");
+        result = { clientId: previous.id, scopes: previous.scopes, expiresAt: previous.expiresAt };
+        return latest;
+      }
+      const group = root.deviceGroup || root.tailscale.nodeId;
+      const client = { id: id(), kind: "device", name: root.name, scopes: [...root.scopes], hash: hash(token),
+        createdAt: new Date().toISOString(), expiresAt: root.expiresAt,
+        tailscale: { userId: identity.userId, nodeId: identity.nodeId }, nodeName: String(identity.nodeName || "Device").slice(0, 160),
+        deviceGroup: group, ownerConnection: { root: root.id, role } };
+      root.deviceGroup = group;
+      root.ownerConnection.other = client.id;
+      result = { clientId: client.id, scopes: client.scopes, expiresAt: client.expiresAt };
+      return [...latest, client];
+    });
+    return result;
+  }
   return {
     verify,
     verifyDigest,
@@ -2118,12 +2208,16 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     pollFunnelAdmission,
     pair,
     issue,
+    registerOwnerConnection,
+    ownerConnection,
+    ownerConnectionIncludes,
+    joinOwnerConnection,
     // Agents and people listed before mascots draw theirs (at start).
     dressMascots() {
       if (mascots.needs(listStoredClients())) changeClients((latest) => latest);
     },
     list: () =>
-      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ...rest }) => ({
+      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ownerConnection, ...rest }) => ({
         ...rest,
         ...(fullControlNeedsInvitation(rest.policy) ? { needsInvitation: true } : {}),
         // The owner may reopen this agent's link (Agents & people).
@@ -2180,7 +2274,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     revoke(clientId) {
       changeClients((latest) => {
         rememberEnded(latest.find((c) => c.id === clientId));
-        return latest.filter((c) => c.id !== clientId);
+        return latest.filter((c) => c.id !== clientId && c.ownerConnection?.root !== clientId);
       });
     },
     pairing,

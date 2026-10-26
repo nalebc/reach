@@ -122,7 +122,7 @@ async function launchRun(options, root, ownPrivateFolders) {
   // Windows has no Unix socket: a keyed loopback route only Tailscale's own
   // process may use (docs/parity/D-public-door.md).
   const keyedDoor = !!preferences && process.platform === "win32";
-  const browserRequired = keyedDoor;
+  const browserRequired = !!preferences;
   // What an earlier start noted about that route (below): Tailscale's own
   // connections taken for another program's (pairing codes for a day, or
   // until Tailscale changes), or its check not answering in time twice
@@ -275,7 +275,7 @@ async function launchRun(options, root, ownPrivateFolders) {
     // is in, so a first run visibly ends with it.
     ...(options.phoneStep && {
       onFirstDevice: () =>
-        console.log(`\n  ✔ 3. Your phone  —  connected. Setup is done; change anything later with ${command} setup.\n`),
+        console.log(`\n  ✔ 3. Your phone  —  approved. Finish browser connection setup in Reach to use this same link with the phone app on or off.\n`),
     }),
     // A source checkout: interface edits reach phones without a restart.
     liveInterface: !packaged,
@@ -746,8 +746,9 @@ async function launchRun(options, root, ownPrivateFolders) {
             noteRoutes();
             if (!phoneLinkShown || stopped) return;
             if (!open) {
-              startUrl = "";
-              noteLink(privateOrigin);
+              // Keep the bookmark stable through a temporary public outage.
+              // Recovery updates availability, never the owner's URL.
+              return;
             } else if (browserRequired) {
               void refreshBrowserLink?.();
             } else if (!startUrl) {
@@ -843,8 +844,8 @@ async function launchRun(options, root, ownPrivateFolders) {
     };
     if (preferences) {
       // The one address once Reach holds it (port 443): with the Tailscale
-      // app it's Reach itself; without the app, the start page, while a
-      // pairing window is open. Otherwise the private address.
+      // app it's Reach itself; without the app, the fixed start page.
+      // Wait for bootstrap readiness on every host before showing its QR.
       startUrl = !browserRequired && publicLink?.live ? publicStart : "";
       // Someone at this terminal, reading the QR: a phone without the
       // Tailscale app may sign in from its browser for the next minutes.
@@ -865,7 +866,7 @@ async function launchRun(options, root, ownPrivateFolders) {
           if (current?.instance === reach.instance)
             atomicJson(statusFile, { ...current, browserLink: result });
           if (!result.ready) {
-            if (result.reason !== lastReason) console.log(`Reach: ${result.reason}\n  Browser QR is waiting. Phones already on this Tailscale network can use the private QR below.`);
+            if (result.reason !== lastReason) console.log(`Reach: ${result.reason}\n  Waiting before showing the phone QR. Keep this terminal open.`);
             lastReason = result.reason;
             return;
           }
@@ -889,10 +890,8 @@ async function launchRun(options, root, ownPrivateFolders) {
         : origin;
       if (startUrl) noteLink(link);
       if (browserRequired && !startUrl) {
-        console.log(`\n${heading()}\n  Preparing the connection for your phone's browser.\n  Tailscale account: ${preferences.owner.login}\n`);
-        noteLink(privateOrigin);
-        if (!options.service) showPrivate();
-        else console.log(`  Private link: ${privateOrigin}\n`);
+        noteLink(publicStart);
+        console.log(`\n${heading()}\n  Preparing your permanent phone link: ${publicStart}\n  No phone app is needed. Keep this link when the connection returns.\n  Tailscale account: ${preferences.owner.login}\n`);
       }
       else console.log(
         `\n${heading()}\n  Open on your phone: ${link}\n  Tailscale account: ${preferences.owner.login}\n`,
@@ -989,7 +988,7 @@ async function launchRun(options, root, ownPrivateFolders) {
         "  Private Tailscale link: only your Tailscale devices open it, and Reach pairing is also required. No public internet tunnel is enabled.",
       );
     if (browserRequired && !options.service)
-      console.log("  The private QR needs the Tailscale app on this computer's network (type private to show it again). The browser QR appears automatically when its connection is ready.");
+      console.log("  Already using the Tailscale app on this computer's network? Type private for its private QR. Your permanent phone QR appears automatically when ready.");
     if (!options.service) {
       console.log(
         preferences

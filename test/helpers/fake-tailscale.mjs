@@ -432,7 +432,7 @@ export const tailnetPreload = (statePath) =>
       return realFetch(target + url.pathname + url.search, { ...init, headers: { ...init.headers, Host: url.host, "X-Forwarded-For": "100.64.0.10" } });
     if (!target?.startsWith("unix:")) throw new TypeError("fetch failed");
     return new Promise((resolve, reject) =>
-      asked({ socketPath: target.slice(5), path: url.pathname + url.search, method: init.method || "GET", headers: { Host: url.host, "X-Forwarded-For": "100.64.0.10", "Tailscale-User-Login": state.login } }, url, init, resolve, reject),
+      asked({ socketPath: target.slice(5), path: url.pathname + url.search, method: init.method || "GET", headers: { ...init.headers, Host: url.host, "X-Forwarded-For": "100.64.0.10", "Tailscale-User-Login": state.login } }, url, init, resolve, reject),
     );
   };
   const spawn = cp.spawn;

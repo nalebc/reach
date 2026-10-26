@@ -8,13 +8,78 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-10-26
+
+Early-access release: one permanent owner link that works with the phone's
+Tailscale app on or off, browser enrollment during owner setup, Tools
+navigation, a UI review across the phone's pages, fullscreen Screen like a
+video, and Copy selected text on Mac Chrome pages and in apps like Numbers.
+
+### Added
+
+- One permanent owner link per computer. The same link works whether the
+  phone's Tailscale app is on, off, absent or on another tailnet; Reach picks
+  the best authorized connection itself and returns to the app's when it comes
+  back, keeping open work and never replaying an action of unknown result.
+- Owner setup prepares and verifies the phone browser's private connection as
+  well, including for owners who start with the phone app; existing app-only
+  owners are offered the same setup once. The browser registers its own
+  non-exportable key, and Reach issues that connection its own credential with
+  the same access; guests, restricted devices and agents can't use this.
+  While an agent or person is using the computer, the owner's own enrolled
+  second connection still gets in (it's checked as that owner's client,
+  never by account or device name alone).
+- A Tools page, with any tool pinned to Home as a shortcut you can reorder,
+  and a menu of your computers.
+
+### Changed
+
+- Home shows what's running on the computer again, as circles under its
+  card: a ring turns while an agent or terminal works, pulses amber when it
+  needs you, and keeps a check (or "!") for a few minutes after it ends. One
+  tap opens it; nothing running, no row. They stay in one row that scrolls
+  sideways, and Reach's own launcher windows aren't among them.
+- Home's computer card is quieter: no name under it (the top bar has it),
+  no "Open screen" pill (tap the preview, or Screen in the bottom bar), and
+  its status is one line with nothing to expand.
+- The public start page and its fixed files stay available at the owner link
+  without a pairing window, so the bookmark always opens; owner APIs and
+  WebSockets remain private. Setup shows the phone QR only once that link is
+  verified (public DNS, HTTPS and the browser client); a phone already on this
+  tailnet can still ask for the private QR by typing `private`.
+- Bottom navigation is Home, Screen and Tools; Files, Terminals, Chat and the
+  rest open from Tools, and the More sheet is gone. Each open tab remembers
+  its views for the session, never requests, results or credentials.
+- One look across the phone's pages:
+  - Home, Chat and Terminals share one top bar (height, round buttons, title, then the bell and Settings).
+  - Terminals keeps the bottom bar over its list, with a back arrow to Tools.
+  - With one computer, its name shows once: no top-bar pill, no Files caption, no Chat row.
+  - Files names the home folder as Finder and Explorer do.
+  - "…is within reach" shows only when it's news.
+  - Home's Pause reads Pause or Paused.
+  - Agents & people invites with the same "+ Invite" pill as Home.
+  - Settings says Face ID in one line, and Fallback as Set up or Ready.
+- Settings opens with how this phone reaches the computer, as a dot and a
+  word: green for the Tailscale app, amber for Tailscale in the browser or
+  the public link, grey when offline. Reach picks the route; nothing to
+  switch. About shows the version Reach runs beside "Up to date".
+- Screen fullscreen shows the computer alone, upright as well as on its
+  side, as a video plays fullscreen: the controls float over the picture
+  and fade until it's touched, instead of keeping a bar above and below.
+  On its side the picture runs under the home bar. On Android the
+  fullscreen button also hides the browser's address bar.
+- Home and the computer menu call a public link "Public link", never "Tailscale".
+
 ### Fixed
 
-- On a Mac, Copy selected text works on pages in Chrome and other apps that
-  answer only for themselves: Reach asks the app in front for its focused
-  element, never another app's. A blank selection says to select text first
-  instead of copying a blank line. The helper also reads the app in front
-  afresh each time, not the one in front when screen control began.
+- On a Mac, Copy selected text works on pages in Chrome and in apps that
+  don't tell macOS what's selected (Numbers, some Electron apps): Reach asks
+  the app in front for its focused element, never another app's, and when
+  the app won't say, copies the selection as you would (⌘C) and puts the
+  Mac's clipboard back. A hidden password copied that way is the owner's
+  alone. A blank selection says to select text first instead of copying a
+  blank line. The helper also reads the app in front afresh each time, not
+  the one in front when screen control began.
 - Escape puts a dragged queued message back even when pressed the moment it
   lifts.
 

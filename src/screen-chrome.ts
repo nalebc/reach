@@ -1,7 +1,8 @@
-// Landscape uses the whole usable viewport: controls float and fade over
-// the picture instead of reserving a sidebar. Portrait keeps its controls
-// above and below the image. Showing controls never changes the image's
-// size or origin, so taps and held drags keep their target.
+// Fullscreen is the computer and nothing else, upright or on its side, as a
+// video plays fullscreen: the stage fills the usable viewport and the
+// controls float over it, fading until the screen is touched. Showing them
+// never changes the image's size or origin, so taps and held drags keep
+// their target. Typing keeps its own keyboard layout (screen-immersive.css).
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Insets = {
   top: number;
@@ -10,15 +11,10 @@ export type Insets = {
   left: number;
 };
 export type ChromeLayout = {
-  placement: "overlay" | "ends";
+  placement: "overlay";
   stage: Rect;
   picture: Rect;
-  // Space reserved for controls. Floating landscape controls reserve none.
-  chrome: Rect[];
 };
-// Upright: the status row on top and the bar's row below, safe areas apart.
-export const TOP_ROW = 44;
-export const BOTTOM_ROW = 96;
 const none: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 const fit = (box: Rect, aspect: number): Rect => {
   const w = Math.min(box.w, box.h * aspect),
@@ -32,36 +28,20 @@ export function chromeLayout(
   insets: Insets = none,
 ): ChromeLayout {
   const ratio = aspect > 0 && Number.isFinite(aspect) ? aspect : 1.6;
-  const areaW = Math.max(0, width - insets.left - insets.right),
-    areaH = Math.max(0, height - insets.top - insets.bottom);
-  // This follows the viewport, independent of the remote display's shape.
-  // A portrait Windows display on a landscape phone still gets fullscreen.
-  if (width > height) {
-    const stage = { x: insets.left, y: insets.top, w: areaW, h: areaH };
-    return {
-      placement: "overlay",
-      stage,
-      picture: fit(stage, ratio),
-      chrome: [],
-    };
-  }
-  const top = insets.top + TOP_ROW,
-    bottom = BOTTOM_ROW + insets.bottom;
+  // The phone's own shape decides nothing: a Mac on an upright phone, a
+  // portrait Windows display on one on its side, all fill what's there.
+  // On its side the picture also takes the home bar's strip, top to bottom
+  // as a video does; the notch's sides stay clear.
+  const side = width > height;
+  const top = side ? 0 : insets.top,
+    bottom = side ? 0 : insets.bottom;
   const stage = {
     x: insets.left,
     y: top,
-    w: areaW,
+    w: Math.max(0, width - insets.left - insets.right),
     h: Math.max(0, height - top - bottom),
   };
-  return {
-    placement: "ends",
-    stage,
-    picture: fit(stage, ratio),
-    chrome: [
-      { x: 0, y: 0, w: width, h: top },
-      { x: 0, y: height - bottom, w: width, h: bottom },
-    ],
-  };
+  return { placement: "overlay", stage, picture: fit(stage, ratio) };
 }
 export const overlaps = (a: Rect, b: Rect) =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

@@ -162,10 +162,11 @@ export function FaceIdSettings({ peer }: { peer: Peer }) {
           {shown.text}
         </p>
       )}
+      {/* One line, as a settings list wants it. Requiring it to approve
+          agents is said where that switch lives (Agents & people,
+          AgentFaceId.tsx). */}
       <p className="gs-foot">
-        A new browser of yours (another browser on this {said.device}, or a new
-        one with your passkeys) signs in with {said.word} instead of a code at
-        your {computer}. Agents &amp; people can require it to approve agents.
+        Signs in your new browsers without a code at your {computer}.
       </p>
     </section>
   );

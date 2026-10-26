@@ -37,12 +37,20 @@ test(`Terminals: a terminal opened from the phone runs on this ${word} and answe
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar");
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
   await page.see(() => document.querySelector('[aria-label="Start a terminal"]'), "the ways to start a terminal");
-  await page.tap(/^Terminal$/, "Terminal, to start one");
+  // The list, opened from Tools: its arrow goes back there, and the bottom
+  // bar is still there to tap (nothing painted over it).
+  const barOnTop = `(() => { const b = document.querySelector('nav.mobile-nav button[aria-label="Tools"]'); if (!b) return false; const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && b.contains(hit); })()`;
+  await page.see({ js: `${barOnTop} && !!document.querySelector('button[aria-label="Leave terminal"]')` }, "the bottom bar over the list, its arrow back to Tools");
+  await page.shot("terminal-list");
+  await page.tap({ selector: `[aria-label="Start a terminal"] button`, text: /^Terminal$/ }, "Terminal, to start one");
   // Its shell's prompt: the computer's own shell answered.
   await page.see(() => (document.querySelector(".terminal-screen .xterm-rows")?.innerText || "").trim().length > 0, "the shell's first words", 90000);
   await page.shot("terminal-opened");
+  // A level deeper: the terminal covers the bar and has its back arrow.
+  await page.see({ js: `!${barOnTop} && !!document.querySelector('button[aria-label="Leave terminal"]')` }, "the open terminal over the bar, with its back arrow");
   const echo = marker("typed");
   await page.tap(".terminal-screen", "the terminal");
   await page.type(`echo ${echo}`);
@@ -75,7 +83,8 @@ test(
     await page.skipIntro();
     const title = marker("window");
     const window = await computerTerminal(t, title);
-    await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar");
+    await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+    await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
     // Listed under the computer's own, by the title it was given.
     const group = `On your ${word}`;
     const row = await page.see(
@@ -106,7 +115,8 @@ test(
     // Closed from the phone: asked first, then gone from the list and from
     // the computer.
     await page.tap(`button[aria-label="Leave terminal"]`, "Leave");
-    await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar, for the list");
+    await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+    await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
     await page.tap({ selector: `section[aria-label="${group}"] button.terminal-row-action`, text: new RegExp(`^Close .*${title}.* on your ${word}$`) }, "the window's Close");
     await page.see(
       { js: `!([...document.querySelectorAll('section[aria-label="${group}"] button.terminal-row-main')].some((b) => b.innerText.includes(${JSON.stringify(title)})))` },

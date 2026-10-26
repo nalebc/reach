@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Globe,
   Plug,
+  Plus,
   Sparkles,
   SquareTerminal,
   UserRound,
@@ -209,6 +210,17 @@ export function Choices<T extends string>({
         </button>
       ))}
     </div>
+  );
+}
+
+// The one Invite button, on Home's Access card and in Agents & people's
+// header alike: the same action looks the same and says what it does,
+// rather than a bare "+" on one screen and a labelled pill on the other.
+export function InviteButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" className="invite-pill" aria-label={label} onClick={onClick}>
+      <Plus size={17} aria-hidden="true" /> Invite
+    </button>
   );
 }
 

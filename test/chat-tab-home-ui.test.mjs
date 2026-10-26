@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
 
-test("the active Chat tab returns directly to the selected provider's list from nested views", async () => {
+test("Tools returns from nested chats and reopens the selected provider", async () => {
   const peer = {
     id: "mac",
     name: "Mac",
@@ -33,8 +33,12 @@ test("the active Chat tab returns directly to the selected provider's list from 
         network: { connected: true, peers: [] },
         capabilities: { files: true, terminal: true, apps: true, screen: true },
       }),
-      "/api/terminals": () => ({ sessions: [] }),
+      "/api/terminals": () => [],
       "/api/codex": () => ({ sessions: [] }),
+      "/api/handoffs": () => [],
+      "/api/chats": () => [],
+      "/api/terminals/desktop": () => ({ sessions: [] }),
+      "/api/terminals/agents": () => ({ agents: [] }),
       "/api/activity": () => ({ activities: [] }),
       "/api/sessions": () => ({ sessions: [], errors: {} }),
       "/api/sessions/health": () => ({
@@ -85,8 +89,10 @@ test("the active Chat tab returns directly to the selected provider's list from 
     b.click();
     await settle();
   };
-  const chatTab = () =>
-    dom.document.querySelector('.mobile-nav [aria-label="Chat"]');
+  const openChatFromTools = async () => {
+    dom.document.querySelector('.mobile-nav [aria-label="Tools"]').click();
+    (await dom.waitFor(() => dom.document.querySelector('.tools-page [aria-label="Chat"]'))).click();
+  };
   try {
     localStorage.setItem("reach.devices", JSON.stringify([peer]));
     localStorage.setItem("reach.active", peer.id);
@@ -116,7 +122,16 @@ test("the active Chat tab returns directly to the selected provider's list from 
         if (nested) await click(nested);
       }
       assert.equal(button("Customize"), undefined);
-      chatTab().click();
+      const previous = dom.document.querySelector(".claw-conversation, .claw-page");
+      const label = previous.getAttribute("aria-label");
+      const at = dom.window.history.state.reach.i;
+      dom.document.querySelector(".workspace-settings").click();
+      await dom.waitFor(() => dom.document.querySelector(".page-settings"));
+      dom.document.querySelector(".workspace-back").click();
+      await dom.waitFor(() => [...dom.document.querySelectorAll(".claw-conversation, .claw-page")].some(el => el.getAttribute("aria-label") === label));
+      await settle();
+      assert.equal(dom.window.history.state.reach.i, at, "Settings restores the same nested OpenClaw entry");
+      await openChatFromTools();
       await dom.waitFor(() => button("Customize") && button("Weekend plans"));
       assert.equal(
         localStorage.getItem("reach.chatAgent"),
@@ -126,7 +141,7 @@ test("the active Chat tab returns directly to the selected provider's list from 
       assert.equal(dom.document.querySelector(".claw-conversation"), null);
       assert.equal(dom.document.querySelector(".claw-page"), null);
     }
-    chatTab().click();
+    await openChatFromTools();
     await dom.waitFor(() => button("Customize"));
     assert.equal(localStorage.getItem("reach.chatAgent"), "openclaw");
     assert.deepEqual(dom.errors, []);
@@ -148,8 +163,12 @@ test("Open request on a notification opens its chat even when Chat is already op
     mobile: true,
     routes: {
       "/api/device": () => ({ id: "mac", name: "Mac", platform: "darwin", roots: [], memory: { total: 1, free: 1 }, network: { connected: true, peers: [] }, capabilities: { files: true, terminal: true, apps: true, screen: true } }),
-      "/api/terminals": () => ({ sessions: [] }),
+      "/api/terminals": () => [],
       "/api/codex": () => ({ sessions: [] }),
+      "/api/handoffs": () => [],
+      "/api/chats": () => [],
+      "/api/terminals/desktop": () => ({ sessions: [] }),
+      "/api/terminals/agents": () => ({ agents: [] }),
       "/api/activity": () => ({ activities: [] }),
       "/api/sessions": () => ({ sessions: [], errors: {} }),
       "/api/sessions/health": () => ({ agents: [{ agent: "openclaw", name: "OpenClaw", installed: true, signedIn: true, supported: true }] }),
@@ -195,6 +214,18 @@ test("Open request on a notification opens its chat even when Chat is already op
     await dom.waitFor(() => button("Open request"));
     button("Open request").click();
     await dom.waitFor(() => dom.document.querySelector(".claw-conversation"));
+    // A notification opened from Home has Home directly underneath it.
+    dom.document.querySelector('.mobile-nav [aria-label="Home"]').click();
+    await dom.waitFor(() => dom.document.querySelector(".page-overview"));
+    dom.document.querySelector(".notification-bell").click();
+    await dom.waitFor(() => button("Open request"));
+    button("Open request").click();
+    await dom.waitFor(() => dom.document.querySelector(".claw-conversation"));
+    await settle();
+    assert.equal(dom.window.history.state.reach.i, 1);
+    dom.document.querySelector('.claw-conversation [aria-label="Back to previous view"]').click();
+    await dom.waitFor(() => dom.document.querySelector(".page-overview"));
+    assert.equal(dom.window.history.state.reach.i, 0);
     assert.deepEqual(dom.errors, []);
   } finally {
     await view?.unmount();

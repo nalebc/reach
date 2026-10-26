@@ -94,6 +94,8 @@ before(async () => {
 });
 after(() => dom?.close());
 beforeEach(() => {
+  // An earlier full-App case must not leave a page beneath this standalone view.
+  dom.window.history.replaceState(null, "");
   dom.errors.length = 0;
   mac.reset();
   dom.window.localStorage.clear();
@@ -1075,7 +1077,7 @@ test("a chat opened from All goes back to All, by Back or the phone's back gestu
   await click(await dom.waitFor(card));
   await dom.waitFor(() => $(".as-page"));
   assert.equal(history.state?.reachChat, true, "the open chat is a history entry");
-  await click(button("Back to all sessions"));
+  await click(button("Back to previous view"));
   await dom.waitFor(() => $(".chat-hub"));
   assert.equal(shownApp(), "All");
   assert.equal(dom.window.localStorage.getItem("reach.chatAgent"), "all");

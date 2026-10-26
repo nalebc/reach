@@ -97,7 +97,7 @@ test("held in the foreground: funnel --https=443 <target>, no --bg; live only on
   assert.equal(await started, true);
   assert.equal(s.funnel.live, true);
   assert.deepEqual(s.changes, [true]);
-  assert.deepEqual(s.reports, ["Public link on: the internet gets nothing until an invitation or agent session is live."]);
+  assert.deepEqual(s.reports, ["Public link on: fixed start page only; computer access requires approval."]);
   assert.equal(await s.funnel.ensure(), true);
   assert.ok(!s.children.some((c) => c.args.includes("--bg")));
 });

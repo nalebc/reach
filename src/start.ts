@@ -7,7 +7,9 @@ import "./abort-polyfill";
 import "./storage-fallback";
 // Keeps the browser's install prompt from page load: the app comes later here.
 import "./home-screen";
-import { browserState as storeFor, createBrowserNode } from "./browser-node";
+import { browserState as storeFor, createBrowserNode, rememberOwnerBrowserSignIn } from "./browser-node";
+import { offlineBootstrap } from "./offline-shell";
+import { resumeOwnerConnection } from "./owner-connection";
 import { rememberPrivateConfig } from "./app-watch";
 import { openReach } from "./app-boot";
 import { guestConnection } from "./guest-connection";
@@ -50,6 +52,7 @@ import "./start.css";
 const view = document.getElementById("start")!;
 const USED = "reach.tailnet.used";
 let workspaceStarted = false;
+let browserBooting = false;
 let browserNode: TailnetNode | null = null;
 const startupStops = new Set<() => void>();
 const startupConnection = new AbortController();
@@ -161,7 +164,7 @@ function render(parts: {
     link.textContent = "Get the Tailscale app";
     hint.append(
       link,
-      " for a faster connection. Reach switches to it automatically when that connection is already approved.",
+      " for a faster connection. Reach switches automatically after owner setup.",
     );
     card.append(hint);
   }
@@ -169,6 +172,10 @@ function render(parts: {
 }
 
 async function loadConfig(): Promise<StartConfig | null> {
+  // The cached startup page belongs to a complete public-code generation.
+  // No cached approval is implied; private identities still authenticate.
+  const saved = await offlineBootstrap();
+  if (saved) return saved;
   try {
     const response = await fetch("/reach-start.json", {
       cache: "no-store",
@@ -200,6 +207,15 @@ async function boot(
   node: TailnetNode,
   guest: GuestLink | null,
 ) {
+  if (workspaceStarted || browserBooting) return;
+  browserBooting = true;
+  try {
+    if (!guest) await resumeOwnerConnection(config, node, startupConnection.signal);
+  } catch (error) {
+    if (!workspaceStarted) render({ title: "Your connection needs attention", detail: (error as Error).message,
+      action: { label: "Try again", onClick: () => { void boot(config, node, guest); } } });
+    return;
+  } finally { browserBooting = false; }
   if (!claimWorkspace()) return;
   rememberPrivateConfig(config);
   installTailnet(node, tailnetSuffix(config.origin));
@@ -440,6 +456,7 @@ async function browserMode(
         });
     },
     authURL: (url) => {
+      if (!guest) rememberOwnerBrowserSignIn(node, url);
       if (workspaceStarted) return;
       if (guestJoin) {
         guestJoin.error("key");
@@ -598,7 +615,7 @@ async function main() {
     );
     return;
   }
-  if (!guest && location.pathname === "/" && config.home === location.origin) {
+  if (!guest && config.home === location.origin) {
     const native = watchNativeStart(config, (peer) => {
       if (!claimWorkspace()) return;
       rememberPrivateConfig(config);
@@ -621,7 +638,7 @@ async function main() {
   // Your own browser without a Tailscale device yet (a new one, or signing
   // in again): whatever it saved belonged to its old device.
   const device = !!storeFor("reach.tailnet:").getState("_current-profile");
-  if (!guest && !device) forgetSaved();
+  if (!guest && !device) forgetSaved({ keepInterface: true });
   // Face ID sign-in, when your computer offers it.
   const faceOk =
     !guest && !!config.faceId && !!config.tailnet && (await faceIdReady());

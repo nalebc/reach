@@ -35,8 +35,7 @@ test(`Updates: Settings says whether Reach on this ${word} is up to date`, { ski
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
-  await page.tap({ selector: `nav[aria-label="Settings"] button`, text: "Settings" }, "Settings, in More");
+  await page.tap(`.workspace-settings`, "Settings in the header");
   const state = await page.see(
     () => {
       const v = document.querySelector("button.interface-updates .gs-value")?.innerText?.trim();
@@ -60,8 +59,8 @@ test(
     await page.skipIntro();
     // Pause, from Home.
     await page.tap(`button.home-pause[aria-label="Pause Reach on your ${word}"]`, "Pause, on Home");
-    await page.see(() => document.querySelector(`button.home-pause[aria-label^="Resume Reach on your"]`), "Pause turned to Resume", 30000);
-    await page.see(/· paused/, "Home saying it's paused", 30000);
+    await page.see(() => document.querySelector(`button.home-pause[aria-pressed="true"]`)?.innerText.trim() === "Paused", "Pause turned to Paused", 30000);
+    await page.see(/· paused/i, "Home saying it's paused", 30000);
     await page.shot("paused-home");
     // The screen, paused: said there, with no way to control it.
     await page.tap(`nav.mobile-nav button[aria-label="Screen"]`, "Screen in the bottom bar");

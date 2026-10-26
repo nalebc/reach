@@ -94,6 +94,22 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     }
     await fs.copyFile(path.join(packageRoot, "package.json"), path.join(app, "package.json"));
   }
+  // Public DNS/TLS are simulated like Tailscale itself. Exercise the real
+  // bootstrap response/manifest check through this fixture's Funnel ingress;
+  // the separate browser-link tests verify public DNS pinning and TLS errors.
+  const browserLinkFile = path.join(app, "scripts/browser-link.mjs");
+  const browserLink = await fs.readFile(browserLinkFile, "utf8");
+  await fs.writeFile(browserLinkFile, browserLink.replace("export async function checkBrowserLink(", "async function fixtureCheckBrowserLink(") + `
+    export function checkBrowserLink(origin, instance) {
+      return fixtureCheckBrowserLink(origin, instance, {
+        resolve: async () => ({ state: "published", addresses: ["192.0.2.53"] }),
+        read: async url => {
+          const response = await fetch(url, { headers: { "Tailscale-Funnel-Request": "?1" } });
+          return response.ok ? response.json() : null;
+        },
+      });
+    }
+  `);
   const fake = await fakeTailscale(temp, { ...tailscale, setup: status, funnelDenied, identities: {
     "100.64.0.21": identity("phone-app"),
     "100.64.0.22": identity("phone-browser"),
@@ -265,7 +281,7 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     if (!source && !nativeInstall) for (const name of ["dist", "tailnet", "node_modules"]) await fs.rm(path.join(app, name), { force: true }).catch(() => {});
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
-  const request = async (route, { ip = "100.64.0.21", public: internet = false, body, token, port, method } = {}) => {
+  const request = async (route, { ip = "100.64.0.21", public: internet = false, body, token, port, method, headers: extra = {} } = {}) => {
     const routes = await fake.read();
     const target = routes.serve.Web?.[`${HOST}:${port || (funnelDenied ? 8443 : 443)}`]?.Handlers?.["/"]?.Proxy;
     if (!target?.startsWith("unix:")) throw Error("The simulated Tailscale route is not ready.");
@@ -275,6 +291,7 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
         ...(internet ? { "Tailscale-Funnel-Request": "?1" } : { "Tailscale-User-Login": ip === "100.64.0.23" ? "other@example.test" : "owner@example.test" }),
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...extra,
       } }, res => {
         const chunks = [];
         res.on("data", chunk => chunks.push(chunk));

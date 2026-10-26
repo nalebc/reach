@@ -6,7 +6,6 @@ import {
   RotateCcwClock,
   Laptop,
   Link2,
-  Plus,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -49,14 +48,14 @@ import {
   type MadeLink,
 } from "./InviteSheet";
 import { guestLinkUrl } from "./start-flow";
-import { InviteChooser } from "./invite-menu";
+import { InviteButton, InviteChooser } from "./invite-menu";
 import "./settings-list.css";
 import "./invite-sheet.css";
 import "./people-hub.css";
-import { pushInPage } from "./nav-history";
+import { currentView, pushInPage } from "./nav-history";
 
 // Who can use this computer, as one short ChatGPT-style list: agents first,
-// then people, then your own devices. "+" invites; a row opens what that one
+// then people, then your own devices. Invite, top right, invites; a row opens what that one
 // may do, when it ends, its link and Remove; an agent's sheet also holds what
 // it's doing, its requests, Pause and its activity. Ended agents, saved
 // shortcuts and shared services are a row each, only when there are any. Every change is checked by the
@@ -267,8 +266,8 @@ export default function PeopleHub({
   // The page open in place of the list. Each one pushed is a history entry,
   // so the back chevron (history.back), Safari's swipe and Android's back
   // are one path; leaving Agents & people takes its entries back.
-  const [page, setPage] = useState<Page | null>(null);
-  const pushed = useRef(0);
+  const [page, setPage] = useState<Page | null>(() => currentView() ? pageIn(window.history.state) : null);
+  const pushed = useRef(depth(page));
   const pushing = useRef(false);
   const hub = useRef<HTMLDivElement>(null);
   const hubScroll = useRef(0);
@@ -356,7 +355,7 @@ export default function PeopleHub({
   }, [peer.url, peer.token, visible, extrasAt]);
   useEffect(() => {
     // A reload keeps the entry's state: it starts on the list, unmarked.
-    if (pageIn(window.history.state)) window.history.replaceState({ ...window.history.state, reachPeople: null }, "");
+    if (!currentView() && pageIn(window.history.state)) window.history.replaceState({ ...window.history.state, reachPeople: null }, "");
     const onPop = () => {
       const next = pageIn(window.history.state);
       pushed.current = depth(next);
@@ -366,7 +365,7 @@ export default function PeopleHub({
     window.addEventListener("popstate", onPop);
     return () => {
       window.removeEventListener("popstate", onPop);
-      if (pushed.current) window.history.go(-pushed.current);
+      if (pushed.current && pageIn(window.history.state)) window.history.go(-pushed.current);
     };
   }, []);
   const goTo = (next: Page) => {
@@ -822,11 +821,10 @@ export default function PeopleHub({
       <header className="ppl-head">
         <div>
           <h1>Agents &amp; people</h1>
-          <p>Who can use {device.name}</p>
+          {/* Which computer, only when there's more than one to mix up. */}
+          {peers.length > 1 && <p>Who can use {device.name}</p>}
         </div>
-        <button className="ppl-add" aria-label="Invite" onClick={() => setInviting("choose")}>
-          <Plus size={22} />
-        </button>
+        <InviteButton label="Invite" onClick={() => setInviting("choose")} />
       </header>
 
       <ErrorLine error={[...new Set(Object.values(loadErrors))].filter(Boolean).join(" ")} />
@@ -857,7 +855,7 @@ export default function PeopleHub({
         </Group>
       )}
 
-      {/* One way to invite on this screen: the + above. Empty lists say
+      {/* One way to invite on this screen: Invite above. Empty lists say
           so in a line, without another button. */}
       <Group title="Agents">
         {extras.waiting > 0 && extraRow("services", <ShieldCheck size={19} />, "Services", `${extras.waiting} waiting`, true)}

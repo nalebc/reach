@@ -91,6 +91,14 @@ h1.files-title {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The home folder's house, in the title's own line so it ellipsizes with it
+   (and, inside the h1, never turns with the switch's chevron). */
+.files-title-icon {
+  display: inline-block;
+  margin-right: 8px;
+  color: #8fa596;
+  vertical-align: -0.08em;
+}
 .files-title.is-switch > svg {
   flex-shrink: 0;
   color: #8fa596;

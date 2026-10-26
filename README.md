@@ -109,10 +109,10 @@ The first run takes about 3 minutes. It shows three steps, then prompts you thro
 1. **Tailscale on this computer.** If Tailscale is missing, setup opens its download page; if you're signed out, its sign-in. Then it waits for you. It also asks which Tailscale account your phones sign in with.
 2. **Your private link.** Your tailnet needs MagicDNS and HTTPS certificates. If either is off, setup opens the one Tailscale page that turns them on, and waits.
 3. **Your phone.** Reach starts and shows a QR code. Scan it with the phone's camera and tap **Connect**.
-   - Type the code your phone shows into the terminal to approve it. Without the phone app, or with it connected to another Tailscale network, sign in through the browser in the next 15 minutes (later: `reach pair`). A phone already on this computer’s Tailscale network uses the private connection.
-   - On Windows, Reach shows the working private QR while browser setup is pending. That QR needs the phone's Tailscale app on the same network. The browser QR appears automatically after public DNS, HTTPS and any Funnel approval are ready. Busy private ports are handled automatically.
+   - Type the code your phone shows into the terminal to approve it. Owner setup also prepares this browser's private connection; if you started with the phone app, finish the browser sign-in shown in Reach once. After setup, the same link works with the phone app on, off, absent, or connected to another Tailscale network. Reach switches automatically and preserves open work.
+   - On macOS and Windows, Reach verifies its public DNS, HTTPS page and browser client before showing the owner QR. The link stays the same during recovery. Busy private ports are handled automatically. The laptop must remain online with Reach and Tailscale running.
 
-The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
+The terminal confirms the phone is approved; finish the browser sign-in shown in Reach once to prepare both connections. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
 
 ### Install
 
@@ -128,7 +128,7 @@ reach
 - **Mac:** allow **Screen Recording** and **Accessibility** when asked, so Reach can show and control the screen. Use [Tailscale 1.104](https://tailscale.com/changelog#2026-10-07) or newer.
 - **Windows (experimental, not yet verified on a physical PC):** use Reach from your phone or another computer; opened on the PC itself, Screen would only show itself. Works on Windows: files, terminals, and the live screen with control. Built as on a Mac, with no setting to turn on, and passing on GitHub's Windows machines but not yet run on a physical PC: the live screen as H.264 video from Windows itself (where Windows has no H.264 encoder, [FFmpeg](https://ffmpeg.org/)'s video or still images, and the Screen page says why), phone sign-in from the browser, invite links for people and agents, Face ID sign-in and linked computers, the notification-area icon with Pause and Resume, app icons, document previews, voice memos, your own shell in terminals, and the Claude desktop app's chats. Built the same way, its Windows tests not yet run: background mode at sign-in, sleep prevention, one Reach per PC, restarts and updates in a window of its own, the PC's own terminals on the phone, and OpenClaw. Full Claude Code and Codex coding tasks haven't been verified on Windows. Codex 0.163.0 connection and thread listing passed with a standard account on GitHub's Windows Server 2025 runner; this does not establish physical-PC or full-chat compatibility.
 
-For a source install of this release, use `git clone --branch v0.4.2 https://github.com/nalebc/reach.git`.
+For a source install of this release, use `git clone --branch v0.4.3 https://github.com/nalebc/reach.git`.
 See [Install in the guide](docs/GUIDE.md#install) for prerequisites and portable folders.
 `main` contains unreleased contributor work.
 

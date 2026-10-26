@@ -263,6 +263,11 @@ export function TerminalView({
   const mounted = !!current;
   // No terminal open: the page is the list of every terminal.
   const listing = !current && !macTab;
+  // The list of terminals, opened from Tools: the bottom bar stays over it
+  // (its back arrow returns to Tools). A Mac window opened from Home counts
+  // as open while the list is still being fetched, so the bar doesn't flash.
+  const atRoot =
+    listing && !(macSelected && !macFresh && !macError);
   const showSwipeHint =
     swipeHint && !listing && !menu && items.length > 1 && position >= 0;
   swipeHintShown.current = showSwipeHint;
@@ -562,9 +567,9 @@ export function TerminalView({
     claude: "Claude Code",
   };
   return (
-    <div className="terminal-page" ref={page}>
+    <div className={`terminal-page${atRoot ? " at-root" : ""}`} ref={page}>
       <header className="terminal-bar" {...swipeHandlers}>
-        <button className="terminal-bar-icon" aria-label="Leave terminal" onClick={onExit}>
+        <button className="terminal-bar-icon" aria-label="Leave terminal" title="Leave terminal" onClick={onExit}>
           <ChevronLeft size={20} />
         </button>
         {listing ? (
@@ -597,6 +602,7 @@ export function TerminalView({
         <button
           className="terminal-bar-icon"
           aria-label="New terminal"
+          title="New terminal"
           aria-haspopup="menu"
           aria-expanded={menu === "new"}
           disabled={starting}

@@ -17,7 +17,7 @@ import { newIngressKey } from "../server/tailscale-auth.mjs";
 import { findChrome, launchChrome, openTab, testCertificate } from "./helpers/headless-chrome.mjs";
 
 const chromeBinary = findChrome(), source = new URL("../", import.meta.url);
-test("actual Chrome sets up its own fallback approval without changing the native workspace", {
+test("actual Chrome retains legacy fallback setup without changing the native workspace", {
   skip: !process.env.CI && !chromeBinary && "Chrome/Chromium is not installed", timeout: 45000,
 }, async t => {
   assert.ok(chromeBinary, "Chrome is required in CI for fallback setup boundaries");
@@ -123,6 +123,8 @@ test("actual Chrome sets up its own fallback approval without changing the nativ
     globalThis.startFixture = async () => {
       localStorage.clear();
       const device = await fixtureNativeFetch("/api/device", { headers: { Authorization: "Bearer ${nativeToken}" } }).then(response => response.json());
+      // Model an older host without automatic owner enrollment capability.
+      delete device.ownerConnection;
       const peer = { id: device.id, computerId: device.computerId, name: device.name, platform: device.platform, url: location.origin, token: ${JSON.stringify(nativeToken)} };
       localStorage.setItem("reach.devices", JSON.stringify([peer])); localStorage.setItem("reach.active", peer.id);
       globalThis.fixture = { current: { peer, device }, changes: [], nativeBytes: localStorage.getItem("reach.devices"), way: privateWay, address: location.href };

@@ -58,7 +58,7 @@ export function workspaceCapabilities(
 }
 export type WorkspaceCapabilities = ReturnType<typeof workspaceCapabilities>;
 export function pageAccessible(page: string, features: WorkspaceCapabilities) {
-  if (page === "overview") return true;
+  if (page === "overview" || page === "tools") return true;
   // Transcripts of every AI session: the owner only (server: admin scope).
   if (page === "sessions") return features.owner;
   if (page === "terminal") return features.terminal;
@@ -67,18 +67,4 @@ export function pageAccessible(page: string, features: WorkspaceCapabilities) {
       page,
     ) && !!features[page as keyof WorkspaceCapabilities]
   );
-}
-
-// What More lists: the pages not in the phone's bottom bar, in order. Codex
-// keeps its row, waiting, while the computer checks it, so the list doesn't
-// jump when the answer comes.
-export function morePlaces(
-  pages: string[],
-  bar: string[],
-  features: WorkspaceCapabilities,
-  codex?: CodexStatus,
-) {
-  void codex;
-  const places = pages.filter((id) => !bar.includes(id) && pageAccessible(id, features));
-  return { places, pending: [] as string[] };
 }

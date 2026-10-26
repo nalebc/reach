@@ -13,7 +13,10 @@ test(`Agents & people: inviting an agent or a person offers what this ${word} ca
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`button[aria-label="Invite an agent or someone"]`, "Invite, on Home");
+  // Invites start from Agents & people (Tools); Home keeps no access card.
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap('[aria-label="Agents & people"]', "Agents & people");
+  await page.tap(`button.invite-pill[aria-label="Invite"]`, "Invite, on Agents & people");
   await page.see("Claude, Codex, ChatGPT or any AI", "who to invite: an agent or a person");
   await page.shot("who");
   // An agent: how it connects, and what it may do.

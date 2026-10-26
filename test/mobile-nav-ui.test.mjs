@@ -1,39 +1,68 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
-
-// The phone's bottom bar: the page you're on wears the pill (it glides to
-// the tab's place), a page that lives under More lights More, and the Chat
-// tab shows how many sessions wait for an answer.
-let dom, React, MobileNav;
+let dom, MobileNav;
 before(async () => {
   dom = await startDom({ mobile: true });
-  React = dom.React;
   ({ default: MobileNav } = await dom.load("/src/MobileNav.tsx"));
 });
 after(async () => dom?.close());
-
 const items = [
   { id: "overview", label: "Home", icon: "H" },
-  { id: "sessions", label: "Chat", icon: "C", badge: 2 },
   { id: "screen", label: "Screen", icon: "S" },
-  { id: "terminal", label: "Terminal", icon: "T" },
+  { id: "tools", label: "Tools", icon: "T", badge: 2 },
 ];
+test("all three tabs navigate directly; Screen is one tap away from every tool", async () => {
+  for (const page of [
+    "overview",
+    "screen",
+    "tools",
+    "files",
+    "sessions",
+    "terminal",
+    "settings",
+  ]) {
+    const calls = [];
+    const view = await dom.render(
+      dom.React.createElement(MobileNav, {
+        items,
+        current: page,
+        onNavigate: (id) => calls.push(id),
+      }),
+    );
+    const nav = view.container.querySelector("nav");
+    const section = ["overview", "screen"].includes(page) ? page : "tools";
+    const label = items.find((i) => i.id === section).label;
+    assert.equal(
+      nav.querySelector('[aria-current="page"]').getAttribute("aria-label"),
+      label,
+    );
+    assert.equal(nav.style.getPropertyValue("--tabs"), "3");
+    assert.equal(nav.querySelectorAll("button").length, 3);
+    assert.equal(nav.querySelector('[aria-haspopup="dialog"]'), null);
+    nav.querySelector('[aria-label="Screen"]').click();
+    nav.querySelector('[aria-label="Tools"]').click();
+    await settle();
+    assert.deepEqual(calls, ["screen", "tools"]);
+    assert.equal(nav.querySelector(".nav-badge").textContent, "2");
+    await view.unmount();
+  }
+  assert.deepEqual(dom.errors, []);
+});
+
 async function bar(current, initial = items) {
   const calls = [];
   let update;
   function Fixture() {
-    const [props, setProps] = React.useState({
+    const [props, setProps] = dom.React.useState({
       items: initial,
       current,
-      moreOpen: false,
       onNavigate: (id) => calls.push(["go", id]),
-      onMore: () => calls.push(["more"]),
     });
     update = setProps;
-    return React.createElement(MobileNav, props);
+    return dom.React.createElement(MobileNav, props);
   }
-  const view = await dom.render(React.createElement(Fixture));
+  const view = await dom.render(dom.React.createElement(Fixture));
   const nav = view.container.querySelector("nav.mobile-nav");
   const active = () =>
     [...nav.querySelectorAll("button.active")].map((b) =>
@@ -48,46 +77,17 @@ const pointer = (target, type, { x = 283, y = 806, id = 1, primary = true } = {}
 ));
 const nativeClick = (target) => dom.update(() => target.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })));
 
-test("the page you're on wears the pill, at its tab", async () => {
-  const { view, calls, nav, active } = await bar("screen");
-  assert.equal(nav.dataset.tab, "2");
-  assert.equal(nav.style.getPropertyValue("--tab"), "2");
-  assert.equal(nav.style.getPropertyValue("--tabs"), "5", "four tabs and More");
-  assert.deepEqual(active(), ["Screen"]);
-  assert.equal(
-    nav.querySelector('[aria-current="page"]').getAttribute("aria-label"),
-    "Screen",
-  );
-  assert.equal(nav.querySelector(".nav-badge").textContent, "2");
-  nav.querySelector('[aria-label="Terminal"]').click();
-  nav.querySelector('[aria-label="More workspace options"]').click();
-  await settle();
-  assert.deepEqual(calls, [["go", "terminal"], ["more"]]);
-  await view.unmount();
-});
-
-test("a page under More lights More", async () => {
-  for (const page of ["files", "settings"]) {
-    const { view, nav, active } = await bar(page);
-    assert.equal(nav.dataset.tab, "4");
-    assert.deepEqual(active(), ["More workspace options"]);
-    assert.equal(nav.querySelector('[aria-current="page"]'), null);
-    await view.unmount();
-  }
-  assert.deepEqual(dom.errors, []);
-});
-
 // Deterministic models of the real Chrome retargeted native click in
 // mobile-nav-chrome-e2e. These do not claim jsdom performs browser hit testing.
-test("a changed layout keeps the pressed More action and uses the current handler once", async (t) => {
-  const { view, calls, nav, change } = await bar("overview", items.slice(0, 1));
+test("a changed layout keeps the pressed Tools action and uses the current handler once", async (t) => {
+  const { view, calls, nav, change } = await bar("overview", items.filter((item) => item.id !== "screen"));
   t.after(() => view.unmount());
-  const more = named(nav, "More workspace options");
+  const more = named(nav, "Tools");
   pointer(more, "pointerdown");
   pointer(more, "pointerup");
-  change({ items, onMore: () => calls.push(["current more"]) });
-  nativeClick(named(nav, "Terminal"));
-  assert.deepEqual(calls, [["current more"]]);
+  change({ items, onNavigate: (id) => calls.push(["current go", id]) });
+  nativeClick(named(nav, "Home"));
+  assert.deepEqual(calls, [["current go", "tools"]]);
 });
 
 test("a changed layout keeps an eligible pressed page using the current handler", async (t) => {
@@ -97,7 +97,7 @@ test("a changed layout keeps an eligible pressed page using the current handler"
   pointer(screen, "pointerdown");
   change({ items: [...items].reverse(), onNavigate: (id) => calls.push(["current go", id]) });
   pointer(screen, "pointerup");
-  nativeClick(named(nav, "Terminal"));
+  nativeClick(named(nav, "Home"));
   assert.deepEqual(calls, [["current go", "screen"]]);
 });
 
@@ -107,39 +107,39 @@ test("a removed pressed page cannot activate itself or its replacement", async (
   pointer(named(nav, "Screen"), "pointerdown");
   change({ items: items.filter((item) => item.id !== "screen") });
   pointer(nav, "pointerup");
-  nativeClick(named(nav, "Terminal"));
+  nativeClick(named(nav, "Home"));
   assert.deepEqual(calls, []);
-  dom.update(() => named(nav, "Terminal").click());
-  assert.deepEqual(calls, [["go", "terminal"]], "the normal current access remains usable");
+  dom.update(() => named(nav, "Home").click());
+  assert.deepEqual(calls, [["go", "overview"]], "the normal current access remains usable");
 });
 
 for (const changed of [false, true]) {
   test(`a cancelled pointer cannot navigate with ${changed ? "changed" : "unchanged"} items`, async (t) => {
-    const { view, calls, nav, change } = await bar("overview", items.slice(0, 1));
+    const { view, calls, nav, change } = await bar("overview", items.filter((item) => item.id !== "screen"));
     t.after(() => view.unmount());
-    const more = named(nav, "More workspace options");
+    const more = named(nav, "Tools");
     pointer(more, "pointerdown");
     if (changed) change({ items });
     pointer(more, "pointercancel");
-    nativeClick(changed ? named(nav, "Terminal") : more);
+    nativeClick(changed ? named(nav, "Home") : more);
     assert.deepEqual(calls, []);
-    dom.update(() => named(nav, "More workspace options").click());
-    assert.deepEqual(calls, [["more"]], "keyboard/programmatic click is not trapped by a cancelled touch");
+    dom.update(() => named(nav, "Tools").click());
+    assert.deepEqual(calls, [["go", "tools"]], "keyboard/programmatic click is not trapped by a cancelled touch");
   });
   test(`scroll movement cannot navigate with ${changed ? "changed" : "unchanged"} items, even after returning to the starting point`, async (t) => {
-    const { view, calls, nav, change } = await bar("overview", items.slice(0, 1));
+    const { view, calls, nav, change } = await bar("overview", items.filter((item) => item.id !== "screen"));
     t.after(() => view.unmount());
-    const more = named(nav, "More workspace options");
+    const more = named(nav, "Tools");
     pointer(more, "pointerdown");
     pointer(more, "pointermove", { y: 760 });
     if (changed) change({ items });
     pointer(more, "pointerup");
-    nativeClick(changed ? named(nav, "Terminal") : more);
+    nativeClick(changed ? named(nav, "Home") : more);
     assert.deepEqual(calls, []);
     pointer(more, "pointerdown");
     pointer(more, "pointerup");
     nativeClick(more);
-    assert.deepEqual(calls, [["more"]], "a fresh tap still works once");
+    assert.deepEqual(calls, [["go", "tools"]], "a fresh tap still works once");
   });
 }
 
@@ -147,35 +147,35 @@ test("an unchanged layout never turns a cross-button gesture into navigation", a
   const { view, calls, nav } = await bar("overview");
   t.after(() => view.unmount());
   pointer(named(nav, "Screen"), "pointerdown");
-  pointer(named(nav, "Terminal"), "pointerup");
-  nativeClick(named(nav, "Terminal"));
+  pointer(named(nav, "Home"), "pointerup");
+  nativeClick(named(nav, "Home"));
   assert.deepEqual(calls, []);
 });
 
 test("ordinary same-button taps use the current handler after a badge-only update", async (t) => {
   const { view, calls, nav, change } = await bar("overview");
   t.after(() => view.unmount());
-  const chat = named(nav, "Chat");
+  const chat = named(nav, "Tools");
   pointer(chat, "pointerdown");
   change({ items: items.map((item) => ({ ...item, badge: 3 })), onNavigate: (id) => calls.push(["current go", id]) });
   pointer(chat, "pointerup");
   nativeClick(chat);
-  assert.deepEqual(calls, [["current go", "sessions"]]);
+  assert.deepEqual(calls, [["current go", "tools"]]);
 });
 
 test("keyboard/programmatic clicks use their own target even with an old held pointer", async (t) => {
-  const { view, calls, nav, change } = await bar("overview", items.slice(0, 1));
+  const { view, calls, nav, change } = await bar("overview", items.filter((item) => item.id !== "screen"));
   t.after(() => view.unmount());
-  pointer(named(nav, "More workspace options"), "pointerdown");
+  pointer(named(nav, "Tools"), "pointerdown");
   change({ items });
-  dom.update(() => named(nav, "Terminal").click());
-  assert.deepEqual(calls, [["go", "terminal"]]);
+  dom.update(() => named(nav, "Home").click());
+  assert.deepEqual(calls, [["go", "overview"]]);
 });
 
 test("a second finger cancels a held navigation gesture", async (t) => {
   const { view, calls, nav } = await bar("overview");
   t.after(() => view.unmount());
-  const more = named(nav, "More workspace options");
+  const more = named(nav, "Tools");
   pointer(more, "pointerdown");
   pointer(more, "pointerdown", { id: 2, primary: false });
   pointer(more, "pointerup");

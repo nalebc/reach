@@ -1,0 +1,94 @@
+.workspace-computer {
+  display: none;
+}
+/* The tool page has a visible route back, independent of browser gestures. */
+.workspace-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 8px;
+  margin: -8px 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+.workspace-back:active {
+  background: #ffffff0c;
+}
+/* A detail view already has the same Back action in its own header. */
+.screen-boundary-content:has(.as-page, .claw-conversation, .sub-page) > .workspace-back {
+  display: none;
+}
+@media (max-width: 1024px), (pointer: coarse) {
+  .app-shell .main-shell > .topbar {
+    display: flex;
+    gap: 10px;
+    padding-inline: 16px;
+    padding-top: env(safe-area-inset-top);
+    height: calc(64px + env(safe-area-inset-top));
+  }
+  .app-shell .topbar .mobile-brand,
+  .app-shell .topbar .topbar-crumb {
+    display: none;
+  }
+  .app-shell .topbar-right {
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .app-shell .topbar-right > .avatar,
+  .app-shell .topbar-right > .icon-button,
+  .app-shell .topbar-status {
+    display: none;
+  }
+  .app-shell .topbar-right > .workspace-settings {
+    display: grid;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .app-shell .workspace-computer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 6px 4px;
+    border: 0;
+    background: transparent;
+    color: var(--text, #eef4ef);
+    text-align: left;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .workspace-computer > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .workspace-computer > svg,
+  .workspace-computer > i {
+    flex-shrink: 0;
+  }
+  .app-shell .main-shell > nav.fleet-switcher {
+    display: none;
+  }
+  .workspace-computer:active {
+    opacity: 0.65;
+  }
+  .workspace-computer:focus-visible {
+    outline: 2px solid var(--lime);
+    border-radius: 8px;
+  }
+  .app-shell .page-sessions .chat-library {
+    min-height: calc(100dvh - 64px - env(safe-area-inset-top));
+    padding-top: 0;
+  }
+  .app-shell .page-sessions .chat-list-top {
+    padding-top: 4px;
+  }
+  .app-shell .page-sessions > .screen-boundary-content > .workspace-back {
+    margin: calc(env(safe-area-inset-top) + 4px) 16px 0;
+  }
+}

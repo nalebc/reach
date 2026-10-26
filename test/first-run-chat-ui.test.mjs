@@ -33,6 +33,7 @@ before(async () => {
       "/api/sessions/agent-install/codex": () => ({ agent: "codex", name: "Codex", command: "npm install -g @openai/codex" }),
       "/api/sessions/agent-install/openclaw": () => openclawPlan,
       "/api/terminals": () => [],
+      "/api/terminals/agents": () => ({ agents: [] }),
       "/api/clients": () => ({ current: "me", clients: [] }),
     },
   });
@@ -131,7 +132,7 @@ test("before the computer has said what it has, Chat doesn't offer to start one"
 });
 
 // A10: Home with nothing running names no agent the computer doesn't have.
-test("Home's empty hint doesn't name agents that aren't installed", async () => {
+test("Home with no agents or actions hides the empty activity section", async () => {
   const view = await dom.render(
     React.createElement(HomeLive, {
       features: { terminal: true, codex: false, screen: false, desktopTerminals: false, shortcuts: false, owner: true, writeFiles: false },
@@ -155,9 +156,9 @@ test("Home's empty hint doesn't name agents that aren't installed", async () => 
       toast() {},
     }),
   );
-  const hint = await dom.waitFor(() => dom.document.querySelector(".home-stories-hint"));
-  assert.doesNotMatch(hint.textContent, /Codex|Claude/);
-  assert.match(hint.textContent, /Start an agent or a terminal on Studio/);
+  await settle();
+  assert.equal(dom.document.querySelector(".home-section"), null);
+  assert.equal(dom.document.querySelector(".home-plus"), null);
   await view.unmount();
 });
 
@@ -188,8 +189,10 @@ test("Home's connection line links to the Tailscale app when signed in from the 
     }),
   );
   const link = await dom.waitFor(() => dom.document.querySelector(".home-app-link"));
-  assert.equal(link.textContent, "faster with the app");
+  assert.equal(link.textContent, "Tailscale app · optional, potentially faster");
   assert.equal(link.getAttribute("href"), "https://apps.apple.com/app/tailscale/id1470499037");
-  assert.match(link.closest("p").textContent, /Online · Tailscale in browser · faster with the app/);
+  // No menu to open: the route is in Settings; Home says only how it is.
+  assert.equal(link.closest(".home-connection").querySelector(".home-connection-line").textContent.trim(), "Connected");
+  assert.equal(dom.document.querySelector(".home-connection details, .home-connection summary"), null);
   await view.unmount();
 });

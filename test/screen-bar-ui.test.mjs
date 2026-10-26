@@ -53,7 +53,7 @@ test("every Screen control is one small icon bar; nothing else on the screen", a
   bar.querySelector('[aria-label="Control"]').click();
   await dom.waitFor(() => bar.querySelector('[aria-label="Stop"]'));
   // Desktops (Oct 12): previous, all windows, next, as one small group.
-  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Previous desktop", "All windows", "Next desktop", "Enter fullscreen", "Screen options"]);
+  assert.deepEqual(names(bar), ["Stop", "Open phone keyboard", "Paste from your phone", "Pointer mode: Direct touch", "Previous desktop", "All windows", "Next desktop", "Enter fullscreen", "Screen options"]);
   assert.equal(bar.querySelector('[aria-label="Stop"]').getAttribute("aria-pressed"), "true");
   // Shortcuts and options are one menu: keys on top, then short lists.
   bar.querySelector('[aria-label="Screen options"]').click();
