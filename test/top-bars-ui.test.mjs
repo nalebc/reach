@@ -110,7 +110,8 @@ test("the Terminal page's bar names and titles its round buttons", async () => {
 test("Reach's header: Add a computer is named and titled", async () => {
   const view = await dom.render(
     React.createElement(ComputerSwitcher, {
-      peers: [peer],
+      // Two computers: with one, there's no switcher to show at all.
+      peers: [peer, { ...peer, id: "pc", name: "Desk PC", url: "https://pc.tail.ts.net", platform: "win32" }],
       active: peer.id,
       connections: {},
       choose() {},

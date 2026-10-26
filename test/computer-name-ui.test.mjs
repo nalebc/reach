@@ -80,7 +80,7 @@ for (const host of [mac, pc]) {
 
 test("two computers: both in the top bar, with Add", async () => {
   const c = await switcher([mac, pc]);
-  const names = [...c.querySelectorAll(".fleet-switcher button[title]")].map((b) => b.title);
+  const names = [...c.querySelectorAll(".fleet-switcher button[title]:not(.fleet-add)")].map((b) => b.title);
   assert.deepEqual(names, [mac.name, pc.name]);
   assert.ok(c.querySelector(".fleet-add[aria-label='Add a computer']"));
 });
