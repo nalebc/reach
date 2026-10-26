@@ -30,7 +30,7 @@
   }
   /* Tablets get the phone's header too: the desktop's status words,
      avatar and its icon buttons sat under the floating computers there. */
-  .app-shell .main-shell > .topbar .topbar-right > .icon-button,
+  .app-shell .main-shell > .topbar .topbar-right > .icon-button:not(.workspace-settings),
   .app-shell .main-shell > .topbar .topbar-right > .topbar-status,
   .app-shell .main-shell > .topbar .topbar-right > .avatar {
     display: none;
@@ -46,18 +46,24 @@
     gap: var(--bar-gap);
     padding: env(safe-area-inset-top) 0 0 4px;
   }
-  .app-shell .main-shell > .topbar:has(.notification-bell) + .fleet-switcher {
+  .app-shell .main-shell > .topbar:is(:has(.notification-bell), :has(.workspace-settings)) + .fleet-switcher {
     --bar-end: calc(var(--bar-inline) + var(--bar-button) + var(--bar-gap));
     right: var(--bar-end);
     max-width: calc(100% - 128px - var(--bar-end));
     padding-right: 0;
   }
+  /* The bell and Settings (#89's header) side by side: room for both. */
+  .app-shell .main-shell > .topbar:has(.notification-bell):has(.workspace-settings) + .fleet-switcher {
+    --bar-end: calc(var(--bar-inline) + 2 * (var(--bar-button) + var(--bar-gap)));
+  }
   .app-shell .main-shell > .fleet-switcher button {
     height: var(--bar-button);
   }
 
-  /* Every round icon button in a top bar: one glass circle. */
+  /* Every round icon button in a top bar: one glass circle. Settings stays
+     in the bar beside the bell (it was hidden with the desktop's buttons). */
   .app-shell .main-shell > .topbar .notification-bell,
+  .app-shell .main-shell > .topbar .topbar-right > .workspace-settings,
   .app-shell .main-shell > .fleet-switcher .fleet-add,
   .app-shell .chat-mobile-round,
   .app-shell .chat-mobile-tools .notification-bell,
