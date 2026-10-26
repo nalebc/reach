@@ -73,12 +73,7 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
   const config = { product: "Reach", origin: privateOrigin, home: ORIGIN, instance: reach.instance, name: "Fixture", tailnet: null };
   const bundle = (await build({ stdin: { contents: 'export { ownerEnrollment, browserOwnerKeys } from "./src/owner-connection.ts";', resolveDir: process.cwd() },
     bundle: true, write: false, format: "iife", globalName: "OwnerFixture", platform: "browser", target: "es2022" })).outputFiles[0].text;
-  // Chrome's own network log beside the test's reports, for a failure on a
-  // runner (fixture hosts and test credentials only).
-  const netLog = path.join(process.cwd(), "reports", `owner-cors-${sourceRole}-netlog.json`);
-  fs.mkdirSync(path.dirname(netLog), { recursive: true });
-  browser = await launchChrome(t, { binary: chromeBinary, hosts: [hostname], spki: certificate.spki,
-    args: [`--log-net-log=${netLog}`, "--net-log-capture-mode=IncludeSensitive"] });
+  browser = await launchChrome(t, { binary: chromeBinary, hosts: [hostname], spki: certificate.spki });
   const version = await browser.send("Browser.getVersion");
   for (const name of ["local-network-access", "local-network", "loopback-network"]) {
     try { await browser.send("Browser.setPermission", { permission: { name }, setting: "granted", origin: ORIGIN }); }
@@ -107,8 +102,17 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
       responseCode: event.request.url === `${ORIGIN}/` ? 200 : 404,
       responseHeaders: [{ name: "Content-Type", value: "text/html" }], body: Buffer.from("<!doctype html><title>Owner fixture</title>").toString("base64") }).catch(() => {});
   });
-  await tab.send("Fetch.enable", { patterns: [{ urlPattern: `${ORIGIN}/*`, requestStage: "Request" }] });
-  await tab.navigate(`${ORIGIN}/`); await tab.evaluate(bundle);
+  // DevTools serves the fixture page itself (interception), on only while it
+  // loads. Left on, Linux Chrome sometimes canceled the page's own requests
+  // (validation runs on Node 24: 12 of 20 failed with it on, 0 of 20 off),
+  // which no real page meets.
+  const load = async () => {
+    await tab.send("Fetch.enable", { patterns: [{ urlPattern: `${ORIGIN}/*`, requestStage: "Request" }] });
+    await tab.navigate(`${ORIGIN}/`);
+    await tab.send("Fetch.disable");
+    await tab.evaluate(bundle);
+  };
+  await load();
   // The page's own code, fixed; the peer and its config go in as arguments
   // (DevTools' callFunctionOn), never spliced into code (CodeQL #358).
   const call = async (fn, ...args) => {
@@ -133,7 +137,7 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
   assert.notEqual(joined.first.token, grant.token);
   sourceUnavailable = true;
   const sourceRequests = seen.filter(r => r.path === '/api/device/owner-connection').length;
-  await tab.navigate(`${ORIGIN}/`); await tab.evaluate(bundle);
+  await load();
   const restored = await call(`async function (peer, config, sourceRole) {
     return OwnerFixture.ownerEnrollment(peer, sourceRole, config).join(new AbortController().signal);
   }`, peer, config, sourceRole);
