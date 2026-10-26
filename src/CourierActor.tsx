@@ -14,10 +14,18 @@ export default function CourierActor({
   playing,
   greeting = false,
   connecting = false,
+  welcome = false,
+  reaction = 0,
+  held = false,
+  onPosition,
 }: {
   playing: boolean;
   greeting?: boolean;
   connecting?: boolean;
+  welcome?: boolean;
+  reaction?: number;
+  held?: boolean;
+  onPosition?: (point: Point) => void;
 }) {
   const root = useRef<SVGGElement>(null);
   const [visible, setVisible] = useState(true);
@@ -33,8 +41,23 @@ export default function CourierActor({
     elapsed: 0,
     index: 0,
     variant: 0,
-    plan: itinerary(0),
+    plan: welcome
+      ? [
+          {
+            kind: "wave" as const,
+            from: { x: 78, y: 210 },
+            to: { x: 78, y: 210 },
+            seconds: 1.5,
+          },
+          ...itinerary(0),
+        ]
+      : itinerary(0),
   });
+  const pendingHello = useRef(false);
+  const hello = useRef<{ at: Point; elapsed: number } | null>(null);
+  useEffect(() => {
+    if (reaction) pendingHello.current = true;
+  }, [reaction]);
   useEffect(() => {
     const element = root.current;
     if (!element || !playing || !visible) return;
@@ -89,6 +112,7 @@ export default function CourierActor({
                 : 0;
       element.setAttribute("transform", `translate(${at.x} ${at.y})`);
       element.setAttribute("data-action", move.kind);
+      onPosition?.(at);
       body.setAttribute(
         "transform",
         `translate(0 ${dip + bob}) rotate(${lean} 0 -9)`,
@@ -150,7 +174,10 @@ export default function CourierActor({
       const dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
       last = now;
       const state = clock.current;
-      state.elapsed += dt;
+      // A press holds the moving target still. Greetings borrow the current
+      // grounded position, then continue the same route without a jump.
+      if (hello.current) hello.current.elapsed += dt;
+      else if (!held) state.elapsed += dt;
       if (now - paint >= 1000 / 30) {
         paint = now;
         if (connecting) {
@@ -219,7 +246,29 @@ export default function CourierActor({
             }
           }
           const move = state.plan[state.index];
-          draw(move, state.elapsed / move.seconds);
+          const progress = state.elapsed / move.seconds;
+          if (
+            pendingHello.current &&
+            ["walk", "rest", "wave", "land"].includes(move.kind)
+          ) {
+            pendingHello.current = false;
+            hello.current = { at: position(move, progress), elapsed: 0 };
+          }
+          const greetingNow = hello.current;
+          if (greetingNow && greetingNow.elapsed < 1.5) {
+            draw(
+              {
+                kind: "wave",
+                from: greetingNow.at,
+                to: greetingNow.at,
+                seconds: 1.5,
+              },
+              greetingNow.elapsed / 1.5,
+            );
+          } else {
+            hello.current = null;
+            draw(move, progress);
+          }
         }
       }
       if (!connecting || state.elapsed < 1.85)
@@ -227,7 +276,7 @@ export default function CourierActor({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing, greeting, connecting, visible]);
+  }, [playing, greeting, connecting, visible, held, onPosition]);
   return (
     <g
       ref={root}

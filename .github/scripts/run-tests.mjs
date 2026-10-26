@@ -38,6 +38,9 @@ export const suites = {
     "tap-clicks", "screen-double-click-ui",
     // Oct 18 screen control fixes: iOS's late taps, drags, typing bursts and reconnects.
     "screen-control-fixes-ui", "screen-typing-reconnect-ui", "screen-typing-reconnect-chrome", "screen-control-diagnostics",
+    // Shared Home / Screen / Tools navigation and permission-aware shortcuts.
+    "tools-page-ui", "computer-menu-ui", "chat-tab-home-ui", "chat-back-reload-ui",
+    "waiting-computer-ui", "phone-prompts-ui", "view-memory-ui", "home-logos", "home-glance-ui", "home-layout-chrome", "pause-ui",
     // Bug bash recovery: shared chat/file/tool UI and native input refusals.
     "agent-markdown-ui", "back-stack-ui", "agent-tool-workspace-ui", "agent-too-old-ui",
     "chat-send-recovery-ui", "file-send-recovery-ui", "app-context-recovery-ui",
@@ -51,6 +54,7 @@ export const suites = {
     "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
+    "owner-connections", "owner-connection-ui", "owner-connection-cors",
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     // The host guard refreshing ahead, and live connections held through a
     // lapse of Tailscale's word instead of closed (Oct 18).

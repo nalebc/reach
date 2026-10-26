@@ -1,5 +1,5 @@
-import { browserHostname, type StartConfig } from "./start-flow";
-import { tailnetNode, type TailnetNode } from "./tailnet-transport";
+import { browserHostname, tailnetSuffix, type StartConfig } from "./start-flow";
+import { tailnetNode, installTailnet, privateWay, type TailnetNode } from "./tailnet-transport";
 import { storageBlocked } from "./storage-fallback";
 
 type NodeEvents = Parameters<TailnetNode["start"]>[0];
@@ -382,4 +382,38 @@ export async function setupBrowserNode(config: StartConfig, signal: AbortSignal)
     retainOwnerNode(config, state, signal);
   }
   return abortable(standby!.nodeReady, signal);
+}
+
+
+const ownerAuthURLs = new WeakMap<TailnetNode, string>();
+const ownerLoginRequested = new WeakSet<TailnetNode>();
+const ownerObserved = new WeakSet<TailnetNode>();
+export function rememberOwnerBrowserSignIn(node: TailnetNode, url: string) {
+  ownerAuthURLs.set(node, url);
+  window.dispatchEvent(new Event("reach-owner-browser-state"));
+}
+// Owner setup shares recovery's retained node and storage lineage. It keeps
+// the working native route selected while this browser signs in once.
+export async function ownerBrowserNode(config: StartConfig) {
+  const node = await setupBrowserNode(config, AbortSignal.timeout(12000));
+  if (!tailnetNode()) installTailnet(node, tailnetSuffix(config.origin), privateWay());
+  const signIn = () => {
+    const url = ownerAuthURLs.get(node) || nodeEvents.get(node)?.url;
+    if (node.status().self.state === "NeedsLogin" && !url && !ownerLoginRequested.has(node)) {
+      ownerLoginRequested.add(node);
+      node.login();
+    }
+  };
+  if (!ownerObserved.has(node)) {
+    ownerObserved.add(node);
+    observeBrowserNode(node, {
+      state(state) {
+        if (state === "Running") ownerAuthURLs.delete(node);
+        window.dispatchEvent(new Event("reach-owner-browser-state"));
+      },
+      authURL(url) { rememberOwnerBrowserSignIn(node, url); },
+    });
+  }
+  signIn();
+  return { node, authURL: ownerAuthURLs.get(node) || nodeEvents.get(node)?.url || "" };
 }

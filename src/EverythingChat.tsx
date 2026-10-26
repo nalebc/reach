@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp,
   ArrowUpRight,
@@ -56,7 +56,7 @@ import {
 import { useClaudeFonts } from "./agent-fonts";
 import { computerWord } from "./pause";
 import { rememberPlace } from "./deep-link";
-import { leavingForReload, pushInPage } from "./nav-history";
+import { backOne, currentView, leavingForReload, pushInPage, updateEntry } from "./nav-history";
 import {
   CODEX_MODE_CHOICES,
   agentLabel,
@@ -1019,18 +1019,21 @@ function coarsePointer() {
 let chatShown = false;
 // A reload keeps the entry's state: marked a chat's, the first chat shown
 // pushed none and Back reloaded the page. Unmarked once, it gets its own.
-if (typeof window !== "undefined" && window.history.state?.reachChat)
+if (typeof window !== "undefined" && window.history.state?.reachChat && !currentView())
   window.history.replaceState({ ...window.history.state, reachChat: false }, "");
-// Pushed one above the chat list's own entry (src/nav-history.ts), so the
-// workspace knows how deep its stack is.
+// A chat from the list gets an entry above it. A direct link or Home card
+// already owns its page entry, with its actual caller directly underneath.
 const chatEntry = () => {
   if (!window.history.state?.reachChat) pushInPage({ reachChat: true });
 };
-function useBackCloses(shown: boolean, close: () => void) {
+function useBackCloses(target: Target | null, close: () => void) {
+  const shown = !!target;
   const closeNow = useRef(close);
   closeNow.current = close;
-  useEffect(() => {
-    if (!shown) return;
+  useLayoutEffect(() => {
+    // A tap can navigate before this render's effects run. The old chat
+    // must not append its entry on top of the destination page.
+    if (!shown || (currentView()?.page && currentView()?.page !== "sessions")) return;
     chatShown = true;
     chatEntry();
     const onPop = () => {
@@ -1048,6 +1051,10 @@ function useBackCloses(shown: boolean, close: () => void) {
       window.history.back();
     };
   }, [shown]);
+  useLayoutEffect(() => {
+    if (target && window.history.state?.reachChat)
+      updateEntry({ reachChatTarget: { agent: target.agent, id: target.id } });
+  }, [target?.agent, target?.id]);
 }
 
 export default function EverythingChat({
@@ -1220,7 +1227,7 @@ export default function EverythingChat({
     );
     onTargetOpened?.();
   }, [target?.agent, target?.id]);
-  useBackCloses(!!open, () => {
+  useBackCloses(open, () => {
     setOpen(null);
     void reload();
   });
@@ -1303,6 +1310,7 @@ export default function EverythingChat({
         <div className="chat-workspace">
           {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
           <ChatHub
+            active={active}
             peer={peer}
             computers={computers}
             connections={connections}
@@ -1335,7 +1343,7 @@ export default function EverythingChat({
       return (
         // OpenClaw's chats have no folder: a command runs in the home folder.
         <RunCommandContext.Provider value={runCommand ? (command) => runCommand("", command) : null}>
-          <OpenClawSpace peer={peer} apps={apps} logos={logos}
+          <OpenClawSpace peer={peer} active={active} apps={apps} logos={logos}
             onScreen={onScreen}
             openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
             onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
@@ -1350,7 +1358,7 @@ export default function EverythingChat({
     return (
       <div className="chat-workspace">
         {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
-        <ChatList peer={peer} sessions={sessions} logos={logos} apps={apps}
+        <ChatList peer={peer} active={active} sessions={sessions} logos={logos} apps={apps}
           agent={app.agent} onAgentChange={setAgent} appPending={appPending}
           onRefresh={() => { recheck(); void reload(); }} health={health}
           onSectionMoved={() => void reload()} onArchived={() => void reload()}
@@ -1409,8 +1417,10 @@ export default function EverythingChat({
             onSignedIn={recheck}
             onSelect={openChat}
             onBack={() => {
-              setOpen(null);
-              void reload();
+              if (!backOne()) {
+                setOpen(null);
+                void reload();
+              }
             }}
             onNew={() => {
               pickNew(open.agent);

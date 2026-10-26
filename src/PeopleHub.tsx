@@ -53,7 +53,7 @@ import { InviteChooser } from "./invite-menu";
 import "./settings-list.css";
 import "./invite-sheet.css";
 import "./people-hub.css";
-import { pushInPage } from "./nav-history";
+import { currentView, pushInPage } from "./nav-history";
 
 // Who can use this computer, as one short ChatGPT-style list: agents first,
 // then people, then your own devices. "+" invites; a row opens what that one
@@ -267,8 +267,8 @@ export default function PeopleHub({
   // The page open in place of the list. Each one pushed is a history entry,
   // so the back chevron (history.back), Safari's swipe and Android's back
   // are one path; leaving Agents & people takes its entries back.
-  const [page, setPage] = useState<Page | null>(null);
-  const pushed = useRef(0);
+  const [page, setPage] = useState<Page | null>(() => currentView() ? pageIn(window.history.state) : null);
+  const pushed = useRef(depth(page));
   const pushing = useRef(false);
   const hub = useRef<HTMLDivElement>(null);
   const hubScroll = useRef(0);
@@ -356,7 +356,7 @@ export default function PeopleHub({
   }, [peer.url, peer.token, visible, extrasAt]);
   useEffect(() => {
     // A reload keeps the entry's state: it starts on the list, unmarked.
-    if (pageIn(window.history.state)) window.history.replaceState({ ...window.history.state, reachPeople: null }, "");
+    if (!currentView() && pageIn(window.history.state)) window.history.replaceState({ ...window.history.state, reachPeople: null }, "");
     const onPop = () => {
       const next = pageIn(window.history.state);
       pushed.current = depth(next);
@@ -366,7 +366,7 @@ export default function PeopleHub({
     window.addEventListener("popstate", onPop);
     return () => {
       window.removeEventListener("popstate", onPop);
-      if (pushed.current) window.history.go(-pushed.current);
+      if (pushed.current && pageIn(window.history.state)) window.history.go(-pushed.current);
     };
   }, []);
   const goTo = (next: Page) => {

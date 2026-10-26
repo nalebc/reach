@@ -1,0 +1,64 @@
+.computer-menu-list {
+  display: grid;
+  gap: 4px;
+}
+.computer-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 72px;
+  padding: 12px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text, #eef4ef);
+  text-align: left;
+}
+.computer-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+.computer-menu-row strong,
+.computer-menu-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.computer-menu-row strong {
+  font-size: 16px;
+  font-weight: 550;
+}
+.computer-menu-row small {
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.computer-menu-row[aria-pressed="true"] {
+  background: #b9efd40c;
+}
+.computer-menu-row > svg {
+  color: var(--lime);
+  flex-shrink: 0;
+}
+.computer-menu-row:active,
+.computer-menu-add:active {
+  background: #ffffff0c;
+}
+.computer-menu-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text, #eef4ef);
+  background: transparent;
+}
+.computer-menu-row:focus-visible,
+.computer-menu-add:focus-visible {
+  outline: 2px solid var(--lime);
+}

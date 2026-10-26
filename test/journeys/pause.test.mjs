@@ -35,8 +35,7 @@ test(`Updates: Settings says whether Reach on this ${word} is up to date`, { ski
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
-  await page.tap({ selector: `nav[aria-label="Settings"] button`, text: "Settings" }, "Settings, in More");
+  await page.tap(`.workspace-settings`, "Settings in the header");
   const state = await page.see(
     () => {
       const v = document.querySelector("button.interface-updates .gs-value")?.innerText?.trim();

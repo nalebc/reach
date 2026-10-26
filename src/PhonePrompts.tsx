@@ -13,11 +13,7 @@ import "./phone-prompts.css";
 // One suggestion at a time, on Home, just above the bottom bar
 // (docs/FIRST_RUN_MATRIX.md, S and N):
 // - Signed in from the browser, without the Tailscale app: get the app. The
-//   start page this browser came through answers only while a pairing window
-//   is open; with the app, the same link works any time, device to device.
-// - With the app, without a fallback yet: set one up while the app is on, so
-//   Reach keeps working when it's off (src/native-fallback.ts). Its own
-//   approval is needed once; it is offered here instead of after access ends.
+//   same owner link works with either connection; the app can connect directly.
 // - With the app, in a phone's browser tab: add Reach to the Home Screen. The
 //   Home Screen copy is this same Tailscale device, so it's approved at once.
 // Each comes back from time to time (nudges.ts) and stops for good once done.
@@ -28,7 +24,7 @@ export default function PhonePrompts({ owner, url, peer, device }: { owner: bool
   const [shown, setShown] = useState<NudgeName | null>(null);
   const [steps, setSteps] = useState(false);
   const [settingUp, setSettingUp] = useState(false);
-  const offerFallback = !!peer && !!device && canSetUpFallback(peer, device) && fallbackSetupNeeded(peer);
+  const offerFallback = !!peer && !!device && device.ownerConnection !== 1 && canSetUpFallback(peer, device) && fallbackSetupNeeded(peer);
   // Another connection or access: its setup starts over from its own row.
   useEffect(() => setSettingUp(false), [peer?.token, peer?.url, device?.id, device?.access?.kind, device?.access?.scopes.join("\n")]);
   useEffect(() => {
@@ -76,7 +72,7 @@ export default function PhonePrompts({ owner, url, peer, device }: { owner: bool
         <span className="phone-prompt-icon">
           <Zap size={16} aria-hidden="true" />
         </span>
-        <span className="phone-prompt-text">Get the Tailscale app to open Reach any time · faster too</span>
+        <span className="phone-prompt-text">Get the Tailscale app for a faster connection · optional</span>
         <a className="phone-prompt-go" href={tailscaleAppLink()} target="_blank" rel="noopener noreferrer">
           Get
         </a>

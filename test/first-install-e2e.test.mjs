@@ -72,10 +72,9 @@ for (const desktop of desktops) test(`fresh install: desktop ${desktop.name}, ev
   });
   for (const [index, phone] of ["no Tailscale app", "app switched off", "app signed out", "app on another tailnet"].entries())
     await t.test(`phone ${phone}: public start, browser sign-in, local approval, files`, async () => {
-      // The prior phone closed the window. The actual CLI reopens it for a
-      // new phone; browser joining itself is represented by its node identity.
-      assert.equal((await reach.request("/reach-start.json", { public: true })).status, 404);
-      assert.match(await reach.cli(["pair"]), /15 minutes/);
+      // The prior phone closed the window. Owner bootstrap stays available;
+      // browser joining itself is represented by its separate node identity.
+      assert.equal((await reach.request("/reach-start.json", { public: true })).status, 200);
       assert.equal((await reach.request("/", { public: true })).status, 200);
       assert.equal((await reach.request("/api/files", { public: true })).status, 404);
       await approvePhone(reach, `100.64.0.${31 + index}`);
@@ -126,7 +125,7 @@ test("first install resumes after Tailscale signed out while HTTPS setup was pau
   assert.equal((await reach.read("onboarding.json")).done, true);
   await approvePhone(reach, "100.64.0.21");
   // Setup's step 3 ends with the phone in, said by the launcher.
-  await reach.until(/✔ 3\. Your phone {2}— {2}connected\. Setup is done/);
+  await reach.until(/✔ 3\. Your phone {2}— {2}approved\. Finish browser connection setup in Reach/);
 });
 
 test("a returning setup detects a different desktop Tailscale account before offering a broken phone link", options, async t => {
@@ -149,14 +148,14 @@ test("a returning setup detects a different desktop Tailscale account before off
 test("fresh install without Funnel: connected phone works, phone without Tailscale gets explicit setup instructions", options, async t => {
   const reach = await firstInstall(t, { funnelDenied: true });
   await finishFirstSetup(reach);
-  assert.match(reach.output(), /Open on your phone: https:\/\/mac.example.ts.net:8443/);
-  assert.match(reach.output(), /Your phone needs the Tailscale app/);
+  assert.match(reach.output(), /Preparing your permanent phone link: https:\/\/mac.example.ts.net/);
+  assert.doesNotMatch(reach.output(), /Your phone needs the Tailscale app/);
   assert.match(reach.output(), /finish Tailscale setup: https:\/\/login.tailscale.com\/f\/funnel\?node=nMac/);
   assert.equal((await reach.fake.read()).serve.AllowFunnel?.[`${HOST}:443`], undefined);
   await approvePhone(reach, "100.64.0.21");
   await reach.fake.setStatus({ funnelDenied: false });
   await reach.until(/Public link on:/, 8000);
-  assert.equal((await reach.request("/reach-start.json", { public: true, port: 443 })).status, 404, "enabling Funnel must not reopen a window closed by the first approval");
+  assert.equal((await reach.request("/reach-start.json", { public: true, port: 443 })).status, 200, "owner bootstrap is independent of the closed pairing window");
   assert.match(await reach.cli(["pair"]), /15 minutes/);
   assert.equal((await reach.request("/reach-start.json", { public: true, port: 443 })).status, 200);
 });
@@ -184,7 +183,7 @@ test("fresh install from nothing: enabling Funnel after setup opens browser pair
     await reach.until(/Turn on HTTPS certificates/);
     await reach.fake.setStatus({ CertDomains: [HOST] });
   } });
-  assert.match(reach.output(), /Your phone needs the Tailscale app/);
+  assert.match(reach.output(), /Preparing your permanent phone link/);
   await reach.fake.setStatus({ funnelDenied: false });
   await reach.until(/Public link on:/, 8000);
   assert.equal((await reach.read("host-status.json")).link, `https://${HOST}`, "the running host advertises the recovered public link");

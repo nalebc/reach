@@ -144,7 +144,7 @@ test("in the browser without the Tailscale app: get the app (for this phone), ne
   phone({ browserNode: true });
   const view = await show({ url: "https://studio.example.ts.net" });
   assert.equal(prompt()?.getAttribute("aria-label"), "Get the Tailscale app");
-  assert.match(prompt().textContent, /Get the Tailscale app to open Reach any time · faster too/);
+  assert.match(prompt().textContent, /Get the Tailscale app for a faster connection · optional/);
   assert.equal(prompt().querySelector("a").href, "https://apps.apple.com/app/tailscale/id1470499037");
   assert.equal(dom.document.querySelectorAll(".phone-prompt").length, 1, "one at a time");
   await view.unmount();
@@ -235,37 +235,33 @@ test("private browsing (storage blocked): Not now holds for this visit, nothing 
   }
 });
 
-// N3, N6: the way in, said the same in Home, More and Settings; signed in
+// N3, N6: the way in, said the same in Home, the computer picker and Settings; signed in
 // from the browser, "faster with the app" is a link to it.
-test("More names the connection as Home does: Tailscale, or Tailscale in browser", async () => {
-  const { default: MoreSheet } = await dom.load("/src/MoreSheet.tsx");
+test("The computer picker names the connection as Home does: Tailscale, or Tailscale in browser", async () => {
+  const { default: ComputerMenu } = await dom.load("/src/ComputerMenu.tsx");
   dom.window.HTMLDialogElement.prototype.showModal ??= function () {
     this.open = true;
   };
+  dom.window.HTMLDialogElement.prototype.close ??= function () { this.open = false; };
   const peer = { id: "mac", name: "Studio", url: APP_URL, token: "t", platform: "darwin" };
-  const more = () =>
+  const picker = () =>
     dom.render(
-      React.createElement(MoreSheet, {
-        peer,
-        device: { id: "mac", name: "Studio", platform: "darwin", capabilities: {} },
-        places: ["files"],
-        current: "overview",
-        settings: true,
+      React.createElement(ComputerMenu, {
         peers: [peer],
         active: "mac",
         connections: { mac: { state: "connected" } },
-        onNavigate() {},
         onChoose() {},
         onAdd() {},
         onClose() {},
       }),
     );
   phone();
-  let view = await more();
-  assert.match(view.container.querySelector(".more-computer small").textContent, /Tailscale$/);
+  let view = await picker();
+  assert.match(view.container.querySelector(".computer-menu-row small").textContent, /Tailscale$/);
   await view.unmount();
   phone({ browserNode: true });
-  view = await more();
-  assert.match(view.container.querySelector(".more-computer small").textContent, /Tailscale in browser/);
+  view = await picker();
+  assert.match(view.container.querySelector(".computer-menu-row small").textContent, /Tailscale in browser/);
   await view.unmount();
+  assert.deepEqual(dom.errors, []);
 });

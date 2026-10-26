@@ -381,7 +381,7 @@ test("an OpenClaw conversation keeps its swipes; provider swipes return after cl
   swipe($(".claw-conversation"), 130, 0, 100);
   await settle();
   assert.equal(selected(), "openclaw");
-  $('[aria-label="Back to OpenClaw sessions"]').click();
+  $('[aria-label="Back to previous view"]').click();
   await dom.waitFor(() => $(".chat-workspace"));
   swipe(undefined, 130, 0, 100);
   await idle();

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useMemo, useState, type RefObject } from "react";
 import { ArrowUpRight, FolderOpen, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
+import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
@@ -65,6 +66,7 @@ const Where = ({ computer }: { computer: Peer }) => <span className="hub-compute
 // chats' names at once, what was said in them from each computer as it
 // answers, newest first.
 function SearchAll({
+  scope,
   computers,
   lists,
   labelled,
@@ -72,6 +74,7 @@ function SearchAll({
   field,
   onOpen,
 }: {
+  scope: string;
   computers: Peer[];
   lists: ComputerChats[];
   labelled: boolean;
@@ -79,7 +82,7 @@ function SearchAll({
   field: RefObject<HTMLInputElement | null>;
   onOpen: (computer: Peer, chat: Ref) => void;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useViewState(scope, "query", "");
   const q = query.trim();
   const found = useAskEveryComputer<{ results: Hit[]; partial: boolean }>(
     computers,
@@ -185,6 +188,7 @@ function SearchAll({
 }
 
 export default function ChatHub({
+  active = true,
   peer,
   computers,
   connections,
@@ -206,6 +210,7 @@ export default function ChatHub({
   health = [],
 }: {
   peer: Peer;
+  active?: boolean;
   // Every computer this phone is paired with, and their live connections
   // (useFleetConnections): the page covers them all.
   computers?: Peer[];
@@ -230,11 +235,10 @@ export default function ChatHub({
   // This computer's agents (the live feed); the others' are asked here.
   health?: AgentHealth[];
 }) {
-  const field = useRef<HTMLInputElement>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  useEffect(() => {
-    if (searchOpen) field.current?.focus();
-  }, [searchOpen]);
+  const scope = viewScope(peer, "chats:all");
+  const [searchOpen, setSearchOpen] = useViewState(scope, "search", false);
+  const { field, requestFocus } = useSearchFocus<HTMLInputElement>(searchOpen);
+  const scroll = useViewScroll<HTMLDivElement>(scope, active, sessions !== null);
   // This computer first, then the others (when a chat there can be opened).
   const fleet = useMemo(() => (onOpenOn ? chatComputers(peer, computers) : [peer]), [peer, computers, !!onOpenOn]);
   const others = fleet.slice(1);
@@ -274,7 +278,7 @@ export default function ChatHub({
   const labelled = covered.length > 1;
   const names = computerNames(covered.map((computer) => computer.name));
   const openOn = (computer: Peer, chat: Ref) => (computer.id === peer.id ? onOpen(chat) : onOpenOn?.(computer, chat));
-  const [opened, setOpened] = useState<string[]>([]);
+  const [opened, setOpened] = useViewState<string[]>(scope, "folders", []);
   const [cancelling, setCancelling] = useState("");
   const all = useMemo(() => (sessions || []).filter((s) => !s.archived), [sessions]);
   const chatLists = useMemo<ComputerChats[]>(
@@ -333,7 +337,7 @@ export default function ChatHub({
     }
   };
   return (
-    <div className="chat-library chat-hub">
+    <div ref={scroll} className="chat-library chat-hub">
       <ChatLibraryHeader
         peer={peer}
         apps={apps}
@@ -346,7 +350,7 @@ export default function ChatHub({
         workflows={workflows}
         health={usage}
         searchOpen={searchOpen}
-        onSearch={() => setSearchOpen((open) => !open)}
+        onSearch={() => { if (!searchOpen) requestFocus(); setSearchOpen(!searchOpen); }}
       />
       {absent.length > 0 && (
         <p className="hub-fleet-note" role="status">
@@ -354,7 +358,7 @@ export default function ChatHub({
         </p>
       )}
       <div hidden={!searchOpen}>
-        <SearchAll computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
+        <SearchAll scope={scope} computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
       </div>
       {!!pending && onReview && (
         <button className="chat-needs-row" onClick={onReview}>

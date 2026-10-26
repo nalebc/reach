@@ -2,9 +2,8 @@ import { tailnetBrowser } from "./tailnet-transport";
 import { appLink } from "./start-flow";
 
 // How this page reaches the computer: with the Tailscale app (device to
-// device, the fastest, at any time), Tailscale running in this browser (no
-// app: relayed by Tailscale, slower, and only while the start page can be
-// opened), or directly (this computer, --local).
+// device when possible), Tailscale running in this browser (no phone app,
+// encrypted private relay), or directly (this computer, --local).
 export type ConnectionWay = "app" | "browser" | "direct";
 export function connectionWay(url: string): ConnectionWay {
   // The start page marks the page when its own Tailscale node runs (start.ts).

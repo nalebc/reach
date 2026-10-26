@@ -44,8 +44,8 @@ test(`Files: the phone browses this ${word}'s home and its drive, previews a tex
   t.after(() => fs.rmSync(settings, { force: true }));
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
-  await page.tap({ selector: `nav[aria-label="Go to"] button`, text: "Files" }, "Files, in More");
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap({ selector: `.tools-page .tool-open`, text: "Files" }, "Files, in Tools");
   // Home first, its files listed.
   await page.see(() => document.querySelector(".files-title")?.innerText?.trim() === "Home", "Home's files", 30000);
   await page.see({ js: `(${names})().includes("Journey notes.txt")` }, "the text file in Home", 30000);
@@ -122,8 +122,8 @@ test("Files: a late save acknowledgement preserves a newer draft after the previ
   t.after(() => fs.rmSync(file, { force: true }));
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="More workspace options"]`, "More");
-  await page.tap({ selector: `nav[aria-label="Go to"] button`, text: "Files" }, "Files");
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap({ selector: `.tools-page .tool-open`, text: "Files" }, "Files");
   await page.tap({ selector: "button.file-main", text: name }, "the draft file");
   await page.tap(`button[aria-label="Edit ${name}"]`, "Edit");
   await page.fill("textarea.file-editor", "first save\n");

@@ -8,8 +8,8 @@ import { agentSteps, agentStepsPage, wantsPage } from "./agent-steps.mjs";
 // no data: the start page, the app's built code and the browser tailnet
 // client, and the agent runtime. No API, no WebSockets, no proxying; Reach
 // itself stays private.
-// With the Tailscale app on, the start page sends the phone straight to the
-// private address; without it, the phone signs in to Tailscale in the browser.
+// The owner stays at the same address: use an eligible native approval, or
+// restore/sign in to the browser's private Tailscale connection.
 
 const accepts = (req, encoding) =>
   new RegExp(`(?:^|[\\s,])${encoding}(?:[\\s,;]|$)`).test(
@@ -36,6 +36,18 @@ export const PUBLIC_CSP =
   `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ${TAILNET_CONNECT_SOURCES}; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`;
 // One file name: no "." or ".." (they name folders).
 const NAME = /^\/(?!\.{1,2}$)[\w.-]+$/;
+
+// Public bootstrap is data-free. This allowlist is also used by the ingress
+// door so opening the owner's bookmark never depends on a pairing window.
+export const ownerPagePath = (route) => route === "/" || /^\/(?:files|chats|screen|terminals|settings|tools)(?:\/[\w.-]+)*\/?$/.test(route);
+export function ownerBootstrapRequest(req) {
+  if (!["GET", "HEAD"].includes(req.method)) return false;
+  const route = (req.url || "/").split("?", 1)[0];
+  return ownerPagePath(route) || route === "/reach-start.json" ||
+    ["/favicon.svg", "/fonts.css", "/manifest.webmanifest", "/sw.js"].includes(route) ||
+    (route.startsWith("/assets/") && NAME.test(route.slice(7))) ||
+    (route.startsWith("/tailnet/") && NAME.test(route.slice(8)));
+}
 
 // Where the browser client was built, if it was: { wasm, exec } file names.
 export function readTailnetManifest(dir) {
@@ -173,7 +185,7 @@ export function publicStartHandler({
     if (url === "/agent-browser")
       return send(req, res, path.join(dist, "agent.html"), "no-store");
     if (url === "/agent") return agentPage(req, res);
-    if (url === "/" || url === "/guest")
+    if (ownerPagePath(url) || url === "/guest")
       return send(req, res, path.join(dist, "start.html"), "no-cache");
     if (url === "/reach-start.json") {
       const body = config();

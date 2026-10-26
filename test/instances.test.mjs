@@ -163,7 +163,7 @@ test("reach status tells what really runs, with its link", { skip: process.platf
   const routes = { private: { up: true, since: new Date(2026, 9, 5, 18, 9).getTime(), interruptions: 2 }, public: { open: true, since: new Date(2026, 9, 5, 18, 20).getTime() } };
   assert.match(
     statusText([hosts[0]], { dir: HOME, now, runtime: () => ({ link: "https://mac.tail.ts.net", routes }) }),
-    /\nLink: https:\/\/mac\.tail\.ts\.net\nPrivate route: up since [^\n]*:09[^\n]* · 2 interruptions\nPublic link: on since [^\n]*:20[^\n]*, blocked until an invite$/,
+    /\nLink: https:\/\/mac\.tail\.ts\.net\nPrivate route: up since [^\n]*:09[^\n]* · 2 interruptions\nPublic link: on since [^\n]*:20[^\n]*, start page only; access requires approval$/,
   );
   assert.match(
     statusText([hosts[0]], { dir: HOME, runtime: () => ({ routes: { private: { up: false, since: 0, interruptions: 0 }, public: { open: false, since: 0 } } }) }),
@@ -425,7 +425,7 @@ test("Windows: a second start says where Reach runs and what that costs there; s
   });
   assert.equal(
     statusText([reach], { command: ".\\reach.cmd", runtime }),
-    "Reach: running in a terminal window (process 330), from C:\\Users\\Me\\reach\nLink: https://pc.tail.ts.net\nPrivate route: up\nPublic link: on, blocked until an invite\nSleep prevention: always · active\nBrowser sign-in is off for now: Tailscale is older than 1.104; update Tailscale.",
+    "Reach: running in a terminal window (process 330), from C:\\Users\\Me\\reach\nLink: https://pc.tail.ts.net\nPrivate route: up\nPublic link: on, start page only; access requires approval\nSleep prevention: always · active\nBrowser sign-in is off for now: Tailscale is older than 1.104; update Tailscale.",
   );
   assert.match(statusText([inCode], { command: ".\\reach.cmd", runtime: () => ({}) }), /\nIt ends when VS Code closes\. Run \.\\reach\.cmd restart to move it to a window of its own\.$/);
   assert.match(statusText([service], { command: "reach", runtime: () => ({}), state: () => "C:\\Users\\Me\\.reach" }), /^Reach: running as the background service, from [^\n]+\nLogs: C:\\Users\\Me\\\.reach[\\/]logs$/);

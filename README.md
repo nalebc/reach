@@ -109,10 +109,10 @@ The first run takes about 3 minutes. It shows three steps, then prompts you thro
 1. **Tailscale on this computer.** If Tailscale is missing, setup opens its download page; if you're signed out, its sign-in. Then it waits for you. It also asks which Tailscale account your phones sign in with.
 2. **Your private link.** Your tailnet needs MagicDNS and HTTPS certificates. If either is off, setup opens the one Tailscale page that turns them on, and waits.
 3. **Your phone.** Reach starts and shows a QR code. Scan it with the phone's camera and tap **Connect**.
-   - Type the code your phone shows into the terminal to approve it. Without the phone app, or with it connected to another Tailscale network, sign in through the browser in the next 15 minutes (later: `reach pair`). A phone already on this computer’s Tailscale network uses the private connection.
-   - On Windows, Reach shows the working private QR while browser setup is pending. That QR needs the phone's Tailscale app on the same network. The browser QR appears automatically after public DNS, HTTPS and any Funnel approval are ready. Busy private ports are handled automatically.
+   - Type the code your phone shows into the terminal to approve it. Owner setup also prepares this browser's private connection; if you started with the phone app, finish the browser sign-in shown in Reach once. After setup, the same link works with the phone app on, off, absent, or connected to another Tailscale network. Reach switches automatically and preserves open work.
+   - On macOS and Windows, Reach verifies its public DNS, HTTPS page and browser client before showing the owner QR. The link stays the same during recovery. Busy private ports are handled automatically. The laptop must remain online with Reach and Tailscale running.
 
-The terminal says **✔ 3. Your phone — connected** when it's in. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
+The terminal confirms the phone is approved; finish the browser sign-in shown in Reach once to prepare both connections. Later, when you want them: `reach setup invites` invites people and agents with a link, and `reach setup background` keeps Reach running after the window closes.
 
 ### Install
 

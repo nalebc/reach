@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { leavingForReload, pushInPage, stackDepth } from "./nav-history";
+import { currentView, leavingForReload, pushInPage, stackDepth } from "./nav-history";
 
 // OpenClaw's pieces, laid out as the ChatGPT app lays out its own: a row in a
 // rounded group (a tinted icon, a name, a word on the right, a chevron) and a
@@ -112,7 +112,14 @@ const enter = (level: ClawLevel) => {
   // Its entry, still on top (opened again before it was taken away), is
   // still its own; anything else gets a new one.
   if (entryAt.get(level) === stackDepth()) return;
-  pushInPage({ reachClaw: level });
+  const state = window.history.state;
+  const entries = state?.reachClawEntries || {};
+  const saved = entries[level] ?? (state?.reachClaw === level ? stackDepth() : undefined);
+  if (Number.isInteger(saved) && saved >= 0 && saved <= stackDepth()) {
+    entryAt.set(level, saved);
+    return;
+  }
+  pushInPage({ reachClaw: level, reachClawEntries: { ...entries, [level]: stackDepth() + 1 } });
   entryAt.set(level, stackDepth());
 };
 let settling = false;
@@ -151,8 +158,8 @@ if (typeof window !== "undefined")
 export function useClawBack(shown: boolean, close: () => void, level: ClawLevel) {
   const closeNow = useRef(close);
   closeNow.current = close;
-  useEffect(() => {
-    if (!shown) return;
+  useLayoutEffect(() => {
+    if (!shown || (currentView()?.page && currentView()?.page !== "sessions")) return;
     shownLevels.add(level);
     enter(level);
     const onPop = () => {

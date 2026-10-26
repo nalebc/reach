@@ -1,0 +1,9 @@
+.owner-connection-setup {
+  margin: 12px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 14px;
+}
+.owner-connection-setup p { margin: 8px 0; line-height: 1.5; }
+.owner-connection-setup a { display: inline-flex; margin-top: 4px; }

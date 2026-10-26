@@ -5,15 +5,19 @@ import { startDom } from "./dom/harness.mjs";
 const LOGO = "data:image/png;base64,iVBORw0KGgo=";
 const peer = { id: "mac", name: "Mac", url: "https://mac.test", token: "t", platform: "darwin" };
 let dom, React, HomeLive;
+let desktopReads = 0;
 before(async () => {
   dom = await startDom({
     mobile: true,
     routes: {
       "/api/sessions/logos": () => ({ version: "v1", logos: { codex: LOGO, claude: LOGO, terminal: LOGO } }),
-      "/api/terminals/desktop": () => ({
-        sessions: [{ id: "t1", provider: "terminal", name: "owner — -zsh — 80×24", tty: "/dev/ttys000" }],
-        providers: [],
-      }),
+      "/api/terminals/desktop": () => {
+        desktopReads++;
+        return {
+          sessions: [{ id: "t1", provider: "terminal", name: "owner — -zsh — 80×24", tty: "/dev/ttys000" }],
+          providers: [],
+        };
+      },
     },
   });
   React = dom.React;
@@ -21,7 +25,7 @@ before(async () => {
 });
 after(() => dom?.close());
 
-test("Home's circles are filled by the real app icons, terminals included", async () => {
+test("Home retains agent icons on requests that need attention", async () => {
   const view = await dom.render(
     React.createElement(HomeLive, {
       features: { terminal: false, codex: false, screen: false, desktopTerminals: true, shortcuts: false, owner: false, writeFiles: false },
@@ -39,7 +43,7 @@ test("Home's circles are filled by the real app icons, terminals included", asyn
       openTerminal() {},
       openMacTab() {},
       agentSessions: [
-        { agent: "codex", id: "c1", title: "Fix login", status: "running", live: { where: "codex-app" }, updatedAt: Date.now(), preview: "" },
+        { agent: "codex", id: "c1", title: "Fix login", status: "waiting", prompts: [{ id: "review", kind: "question", title: "Review change" }], updatedAt: Date.now(), preview: "" },
       ],
       openAgentSession() {},
       onShortcuts() {},
@@ -47,14 +51,12 @@ test("Home's circles are filled by the real app icons, terminals included", asyn
       toast() {},
     }),
   );
-  const icons = () => [...dom.document.querySelectorAll(".story-ring img.agent-logo")];
-  await dom.waitFor(() => icons().length === 2);
-  assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex", "Terminal"]);
-  // Sized by the frame (drawn larger and cropped), not a small fixed icon in the middle.
-  for (const icon of icons()) {
-    assert.ok(icon.classList.contains("fill"), `${icon.alt} fills its circle`);
-    assert.equal(icon.getAttribute("style"), null);
-  }
+  const icons = () => [...dom.document.querySelectorAll(".home-needs .need-icon img.agent-logo")];
+  await dom.waitFor(() => icons().length === 1);
+  assert.deepEqual(icons().map((i) => i.alt).sort(), ["Codex"]);
+  assert.equal(icons()[0].getAttribute("src"), LOGO);
+  assert.equal(desktopReads, 0, "Home does not read desktop terminals");
+  assert.equal(dom.document.querySelector(".home-terminals"), null);
   assert.deepEqual(dom.errors, []);
   await view.unmount();
 });

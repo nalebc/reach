@@ -17,6 +17,7 @@ export type Peer = {
 };
 export type Root = { id: number; name: string; path: string };
 export type Device = {
+  ownerConnection?: 1;
   access?: {
     kind: string;
     scopes: string[];

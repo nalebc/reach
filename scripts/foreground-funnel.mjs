@@ -162,7 +162,7 @@ export class ForegroundFunnel {
     return false;
   }
   up() {
-    if (!this.live) this.report("Public link on: the internet gets nothing until an invitation or agent session is live.");
+    if (!this.live) this.report("Public link on: fixed start page only; computer access requires approval.");
     this.live = true;
     this.lastError = "";
     this.enableUrl = "";

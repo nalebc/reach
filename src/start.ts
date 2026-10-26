@@ -7,7 +7,7 @@ import "./abort-polyfill";
 import "./storage-fallback";
 // Keeps the browser's install prompt from page load: the app comes later here.
 import "./home-screen";
-import { browserState as storeFor, createBrowserNode } from "./browser-node";
+import { browserState as storeFor, createBrowserNode, rememberOwnerBrowserSignIn } from "./browser-node";
 import { rememberPrivateConfig } from "./app-watch";
 import { openReach } from "./app-boot";
 import { guestConnection } from "./guest-connection";
@@ -161,7 +161,7 @@ function render(parts: {
     link.textContent = "Get the Tailscale app";
     hint.append(
       link,
-      " for a faster connection. Reach switches to it automatically when that connection is already approved.",
+      " for a faster connection. Reach switches automatically after owner setup.",
     );
     card.append(hint);
   }
@@ -440,6 +440,7 @@ async function browserMode(
         });
     },
     authURL: (url) => {
+      if (!guest) rememberOwnerBrowserSignIn(node, url);
       if (workspaceStarted) return;
       if (guestJoin) {
         guestJoin.error("key");
@@ -598,7 +599,7 @@ async function main() {
     );
     return;
   }
-  if (!guest && location.pathname === "/" && config.home === location.origin) {
+  if (!guest && config.home === location.origin) {
     const native = watchNativeStart(config, (peer) => {
       if (!claimWorkspace()) return;
       rememberPrivateConfig(config);

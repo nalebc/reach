@@ -31,7 +31,7 @@ test("actual browser watcher bootstraps only its existing approval through real 
   const browserDevice = structuredClone(device);
   const tokenKind = value => value === `Bearer ${appToken}` ? "native-approved" : value === `Bearer ${browserToken}` ? "browser-approved" : value ? "other" : "none";
   const receipt = { hostPlatform: process.platform, arch: process.arch, node: process.version,
-    actual: "Real Chrome HTTPS, production private metadata/client delivery, instantiation of a minimal fixture WASM module, production closed public door/cookie admission, cross-port CORS and watchPrivateRecovery itself.",
+    actual: "Real Chrome HTTPS, production private metadata/client delivery, instantiation of a minimal fixture WASM module, production always-available owner bootstrap, cross-port CORS and watchPrivateRecovery itself.",
     controlled: "Tailscale ingress/process identity, approved device records and node packet delivery; the fixture runtime never enrolls, starts a live Tailscale session or receives an auth key.",
     productionTailnetRuntime: false, physicalDevice: false, customerCause: "unproven", cases: [] };
   t.after(async () => {
@@ -280,7 +280,7 @@ test("actual browser watcher bootstraps only its existing approval through real 
   });
   nativeMode = "public-closed";
   await navigate("/?cold=1");
-  await t.test("valid asset cookie admits cold fixed files but public owner APIs and WebSockets stay closed", async () => {
+  await t.test("fixed owner files stay available without a cookie while public APIs and WebSockets stay closed", async () => {
     const result = await tab.evaluate(`(async () => {
       const metadata = await fixtureNativeFetch("/reach-start.json", { cache: "no-store" });
       const owner = await fixtureNativeFetch("/api/device", { headers: { Authorization: ${JSON.stringify(`Bearer ${browserToken}`)} } });
@@ -288,7 +288,7 @@ test("actual browser watcher bootstraps only its existing approval through real 
       const ws = await new Promise(resolve => { const socket = new fixtureNativeSocket(location.origin.replace("https:", "wss:") + "/ws/screen"); socket.onopen = () => { socket.close(); resolve("opened"); }; socket.onerror = socket.onclose = () => resolve("refused"); });
       return { metadata: metadata.status, manifest: (await metadata.json()).tailnet, owner: owner.status, noCookie: denied.status, ws };
     })()`);
-    assert.deepEqual(result, { metadata: 200, manifest, owner: 404, noCookie: 404, ws: "refused" });
+    assert.deepEqual(result, { metadata: 200, manifest, owner: 404, noCookie: 200, ws: "refused" });
     receipt.cases.push({ name: "closed asset door", ...result });
   });
   await t.test("a cold watcher uses its existing asset cookie and restores only its own approved identity", async () => {
@@ -328,30 +328,30 @@ test("actual browser watcher bootstraps only its existing approval through real 
   browserStatus = 200; browserDevice.access.kind = "device"; browserDevice.computerId = device.computerId; cors = true;
   await navigate("/?rotated-cookie=1");
   const nextDoor = reach.auth.issueDoorKey(browserGrant.clientId);
-  await t.test("a rotated asset cookie cannot reopen discovery or enroll another identity", async () => {
+  await t.test("a rotated asset cookie still restores only the already-approved browser", async () => {
     const before = calls.length; await start(true);
     const discovery = await discoverySince(before);
-    assert.deepEqual(discovery.map(call => ({ status: call.status, cookiePresent: call.cookiePresent })), [{ status: 404, cookiePresent: true }]);
-    assert.deepEqual(await tab.evaluate("({ changes: f.changes, runtimeStarted: !!globalThis.runtime })"), { changes: [], runtimeStarted: false });
+    assert.deepEqual(discovery.map(call => ({ status: call.status, cookiePresent: call.cookiePresent })), [{ status: 200, cookiePresent: true }]);
+    await wait('f.changes.join(",") === "browser"');
+    assert.deepEqual(await tab.evaluate("({ changes: f.changes, logins: runtime.logins })"), { changes: ["browser"], logins: 0 });
     await tab.evaluate("stopWatch()");
-    await tab.navigate(frontOrigin + "/?rotated-cold=1");
-    assert.match(await tab.evaluate("document.body.textContent"), /Not found/);
-    assert.equal(await tab.evaluate("typeof globalThis.BootstrapFixture"), "undefined", "cold navigation with a rotated asset key cannot execute the owner entry");
-    receipt.cases.push({ name: "rotated asset cookie", discovery, coldNavigation: 404 });
+    await navigate("/?rotated-cold=1");
+    assert.equal(await tab.evaluate("typeof globalThis.BootstrapFixture"), "object");
+    receipt.cases.push({ name: "rotated asset cookie", discovery, coldNavigation: 200 });
   });
   await tab.send("Network.setCookie", { name: "reach-door", value: nextDoor.key, url: frontOrigin, path: "/", secure: true, sameSite: "Lax" });
   await navigate("/?missing-cookie=1");
-  await t.test("a missing asset cookie stays closed even when browser approval state remains saved", async () => {
+  await t.test("a missing cookie permits cold reopening with the existing browser approval", async () => {
     await tab.evaluate('document.cookie = "reach-door=; Max-Age=0; Path=/; Secure; SameSite=Lax"');
     const before = calls.length; await start(true);
     const discovery = await discoverySince(before);
-    assert.deepEqual(discovery.map(call => ({ status: call.status, cookiePresent: call.cookiePresent })), [{ status: 404, cookiePresent: false }]);
-    assert.deepEqual(await tab.evaluate("({ changes: f.changes, runtimeStarted: !!globalThis.runtime, hasSavedIdentity: !!localStorage.getItem('reach.tailnet:_machinekey') })"), { changes: [], runtimeStarted: false, hasSavedIdentity: true });
+    assert.deepEqual(discovery.map(call => ({ status: call.status, cookiePresent: call.cookiePresent })), [{ status: 200, cookiePresent: false }]);
+    await wait('f.changes.join(",") === "browser"');
+    assert.deepEqual(await tab.evaluate("({ changes: f.changes, logins: runtime.logins })"), { changes: ["browser"], logins: 0 });
     await tab.evaluate("stopWatch()");
-    await tab.navigate(frontOrigin + "/?missing-cold=1");
-    assert.match(await tab.evaluate("document.body.textContent"), /Not found/);
-    assert.equal(await tab.evaluate("typeof globalThis.BootstrapFixture"), "undefined");
-    receipt.cases.push({ name: "missing asset cookie", discovery, coldNavigation: 404 });
+    await navigate("/?missing-cold=1");
+    assert.equal(await tab.evaluate("typeof globalThis.BootstrapFixture"), "object");
+    receipt.cases.push({ name: "missing asset cookie", discovery, coldNavigation: 200 });
   });
   assert.ok(calls.filter(call => call.route === "controlled-browser-private" && call.credential !== "none").every(call => call.credential === "browser-approved"), "native credentials never cross into the browser identity");
 });

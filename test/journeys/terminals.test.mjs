@@ -37,7 +37,8 @@ test(`Terminals: a terminal opened from the phone runs on this ${word} and answe
   const computer = await startComputer(t);
   const page = await phone(t, computer);
   await page.skipIntro();
-  await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar");
+  await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+  await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
   await page.see(() => document.querySelector('[aria-label="Start a terminal"]'), "the ways to start a terminal");
   await page.tap(/^Terminal$/, "Terminal, to start one");
   // Its shell's prompt: the computer's own shell answered.
@@ -75,7 +76,8 @@ test(
     await page.skipIntro();
     const title = marker("window");
     const window = await computerTerminal(t, title);
-    await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar");
+    await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+    await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
     // Listed under the computer's own, by the title it was given.
     const group = `On your ${word}`;
     const row = await page.see(
@@ -106,7 +108,8 @@ test(
     // Closed from the phone: asked first, then gone from the list and from
     // the computer.
     await page.tap(`button[aria-label="Leave terminal"]`, "Leave");
-    await page.tap(`nav.mobile-nav button[aria-label="Terminal"]`, "Terminal in the bottom bar, for the list");
+    await page.tap(`nav.mobile-nav button[aria-label="Tools"]`, "Tools");
+    await page.tap(`.tools-page button[aria-label="Terminal"]`, "Terminal in Tools");
     await page.tap({ selector: `section[aria-label="${group}"] button.terminal-row-action`, text: new RegExp(`^Close .*${title}.* on your ${word}$`) }, "the window's Close");
     await page.see(
       { js: `!([...document.querySelectorAll('section[aria-label="${group}"] button.terminal-row-main')].some((b) => b.innerText.includes(${JSON.stringify(title)})))` },

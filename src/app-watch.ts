@@ -254,6 +254,7 @@ export function watchForApp(config: StartConfig, every = 5000, options?: Recover
   const hidden = () => { resumePending = true; };
   const timer = setInterval(check, every);
   window.addEventListener("online", online);
+  window.addEventListener("reach-owner-connections", check);
   window.addEventListener("pagehide", hidden);
   window.addEventListener("pageshow", resume);
   window.addEventListener("focus", resume);
@@ -263,6 +264,7 @@ export function watchForApp(config: StartConfig, every = 5000, options?: Recover
     clearInterval(timer);
     recovery.stop();
     window.removeEventListener("online", online);
+    window.removeEventListener("reach-owner-connections", check);
     window.removeEventListener("pagehide", hidden);
     window.removeEventListener("pageshow", resume);
     window.removeEventListener("focus", resume);

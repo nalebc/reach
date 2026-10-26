@@ -28,7 +28,7 @@ const privateOrigin = (peer: Peer) => {
   } catch { return false; }
 };
 export const canSetUpFallback = (peer: Peer, device: Device) =>
-  privateWay() === "native" && !guestPeers() && privateOrigin(peer) && owner(device);
+  device.ownerConnection !== 1 && privateWay() === "native" && !guestPeers() && privateOrigin(peer) && owner(device);
 const nativeCredential = (token: string, current: string) => token === current ||
   readPrivatePeers("native").some(peer => peer.token === token) || privatePeerWay({ url: location.origin, token }) === "native";
 export const fallbackSetupNeeded = (peer: Peer) => !savedBrowserProfile() ||

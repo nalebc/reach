@@ -38,8 +38,9 @@ async function host(t) {
   // The start page: what the internet gets while a window is open.
   await reach.listenPrivate(socketPath, {
     publicApp: (req, res) => {
-      res.writeHead(req.url === "/" ? 200 : 404, { "Content-Type": "text/plain" });
-      res.end(req.url === "/" ? "start page" : "Not found.");
+      const page = ["/", "/guest"].includes(req.url);
+      res.writeHead(page ? 200 : 404, { "Content-Type": "text/plain" });
+      res.end(page ? "start page" : "Not found.");
     },
   });
   t.after(async () => {
@@ -48,7 +49,7 @@ async function host(t) {
     await fs.rm(socketDir, { recursive: true, force: true });
   });
   // A request from the internet, as Tailscale Funnel marks it.
-  const internet = (route = "/", headers = {}) =>
+  const internet = (route = "/guest", headers = {}) =>
     new Promise((resolve, reject) =>
       http
         .get(
@@ -82,9 +83,10 @@ async function host(t) {
   return { reach, dataDir, internet, upgrade };
 }
 
-test("the start page answers the internet only while a pairing window is open", unix, async (t) => {
+test("the invitation page needs a pairing window; owner bootstrap remains available", unix, async (t) => {
   const { reach, dataDir, internet, upgrade } = await host(t);
   assert.deepEqual(await internet(), { status: 404, body: "Not found." }, "no window: nothing");
+  assert.deepEqual(await internet("/"), { status: 200, body: "start page" }, "the stable owner link opens without a window");
   assert.equal(reach.funnelWindow().open, false);
 
   const until = openPairingWindow(dataDir);
@@ -104,6 +106,7 @@ test("the start page answers the internet only while a pairing window is open", 
   await assert.rejects(fs.access(pairingWindowFile(dataDir)));
   assert.equal(reach.funnelWindow().open, false);
   assert.deepEqual(await internet(), { status: 404, body: "Not found." });
+  assert.equal((await internet("/")).status, 200, "owner reopening works after setup closes the window");
 });
 
 test("a pairing window ends on its own, and never stays open longer than 15 minutes", unix, async (t) => {
@@ -152,27 +155,27 @@ test("someone who joined in the browser gets through the door with their own key
   const { key, expiresAt } = reach.auth.issueDoorKey(grant.clientId);
   assert.equal(expiresAt, grant.expiresAt);
   const cookie = { Cookie: `theme=dark; reach-door=${key}` };
-  assert.deepEqual(await internet("/", cookie), { status: 200, body: "start page" });
+  assert.deepEqual(await internet("/guest", cookie), { status: 200, body: "start page" });
   // Only the page's files: never Reach's API or a live connection.
   assert.equal((await internet("/api/health", cookie)).status, 404);
   assert.doesNotMatch(await upgrade(), /101 Switching/);
   // Someone else's guess, or an old key, gets nothing.
-  assert.equal((await internet("/", { Cookie: `reach-door=${"x".repeat(43)}` })).status, 404);
+  assert.equal((await internet("/guest", { Cookie: `reach-door=${"x".repeat(43)}` })).status, 404);
   const { key: next } = reach.auth.issueDoorKey(grant.clientId);
-  assert.equal((await internet("/", cookie)).status, 404, "asking again replaces the key");
-  assert.equal((await internet("/", { Cookie: `reach-door=${next}` })).status, 200);
+  assert.equal((await internet("/guest", cookie)).status, 404, "asking again replaces the key");
+  assert.equal((await internet("/guest", { Cookie: `reach-door=${next}` })).status, 200);
   // The key never shows in the access list.
   assert.equal(JSON.stringify(reach.auth.list()).includes("doorHash"), false);
   // Their access ends: their key does too.
   reach.auth.revoke(grant.clientId);
-  assert.equal((await internet("/", { Cookie: `reach-door=${next}` })).status, 404);
+  assert.equal((await internet("/guest", { Cookie: `reach-door=${next}` })).status, 404);
   // Agents don't hold door keys.
   const agent = reach.auth.issue("Agent", ["files"], "agent");
   assert.throws(() => reach.auth.issueDoorKey(agent.clientId), { status: 403 });
   // Your own phone, signed in through the browser, keeps one like a guest.
   const phone = reach.auth.issue("Phone", ["admin"], "device");
   const own = reach.auth.issueDoorKey(phone.clientId);
-  assert.equal((await internet("/", { Cookie: `reach-door=${own.key}` })).status, 200);
+  assert.equal((await internet("/guest", { Cookie: `reach-door=${own.key}` })).status, 200);
 });
 
 // W4: ./reach pair, against the Reach already running (in a terminal or in

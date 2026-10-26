@@ -270,19 +270,20 @@ test("changed app signature prevents an already displayed owner request from gra
   assert.equal((await agent.as(`/api/browser/apps/windows?appId=${encodeURIComponent(notes)}`)).status, 403);
 });
 
-test("the held public route gives the internet nothing unless an invitation is live", platform, async (t) => {
+test("the public agent page needs a live invitation while owner bootstrap remains available", platform, async (t) => {
   const served = [];
   const f = await fixture(t, { funnel: true, publicApp: (req, res) => { served.push(req.url); res.end("start page"); } });
-  const internet = () => f.call("/", { token: "", headers: { "Tailscale-Funnel-Request": "?1" } });
+  const internet = () => f.call("/agent-browser", { token: "", headers: { "Tailscale-Funnel-Request": "?1" } });
+  assert.deepEqual(await f.call("/", { token: "", headers: { "Tailscale-Funnel-Request": "?1" } }), { status: 200, body: "start page" });
   assert.deepEqual(await internet(), { status: 404, body: "Not found." });
-  assert.deepEqual(served, []);
+  assert.deepEqual(served, ["/"]);
   const created = await f.invite(undefined, { body: { name: "Muse", ttlSeconds: 600, screen: "apps", appAccess: [{ id: textEdit, mode: "view" }], transport: "funnel" } });
   assert.equal(created.status, 201, JSON.stringify(created));
   assert.deepEqual(await internet(), { status: 200, body: "start page" });
-  assert.deepEqual(served, ["/"]);
+  assert.deepEqual(served, ["/", "/agent-browser"]);
   f.reach.auth.revoke(created.body.clientId);
   assert.deepEqual(await internet(), { status: 404, body: "Not found." });
-  assert.deepEqual(served, ["/"]);
+  assert.deepEqual(served, ["/", "/agent-browser"]);
 });
 
 test("a Funnel invite whose public name Tailscale hasn't published still issues, and says so", platform, async (t) => {

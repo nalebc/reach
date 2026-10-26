@@ -553,7 +553,7 @@ export function statusText(hosts, { command = "reach", started = new Map(), now,
       // Its routes in Tailscale: the private one phones use, the public one
       // open while an invitation or agent session is live.
       ...(routes?.private ? [`Private route: ${routes.private.up ? `up${since(routes.private)}` : "down"}${interruptions ? ` · ${interruptions} interruption${interruptions === 1 ? "" : "s"}` : ""}`] : []),
-      ...(routes?.public ? [`Public link: ${routes.public.open ? `on${since(routes.public)}, blocked until an invite` : "off"}`] : []),
+      ...(routes?.public ? [`Public link: ${routes.public.open ? `on${since(routes.public)}, start page only; access requires approval` : "off"}`] : []),
       ...(awake?.mode ? [`Sleep prevention: ${awake.mode} · ${awake.active ? "active" : "not active"}${awake.error ? ` · ${awake.error}` : ""}`] : []),
       // Set up for browser sign-in, on pairing codes for now (Windows: scripts/launch.mjs).
       ...(typeof signInOff === "string" && signInOff ? [`Browser sign-in is off for now: ${signInOff}`] : []),

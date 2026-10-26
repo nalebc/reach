@@ -20,6 +20,7 @@ import {
 import { approvalStore } from "./device-approval.mjs";
 import { createPasskeys } from "./passkeys.mjs";
 import { createFaceJoin } from "./face-join.mjs";
+import { createOwnerConnections } from "./owner-connections.mjs";
 import { createFleet } from "./fleet.mjs";
 import { createGuestKeys, guestPolicy } from "./guest-keys.mjs";
 import { tailscaleJson } from "../scripts/tailscale.mjs";
@@ -43,7 +44,7 @@ import { DOCUMENT_TEXT, readDocumentText } from "./document-text.mjs";
 import { archiveBase, extractArchive } from "./archives.mjs";
 import { isIconType, readFileIcons } from "./file-icons.mjs";
 import { compressJson, serveBuild } from "./delivery.mjs";
-import { TAILNET_CONNECT_SOURCES } from "./public-start.mjs";
+import { TAILNET_CONNECT_SOURCES, ownerBootstrapRequest } from "./public-start.mjs";
 import { createUploads } from "./uploads.mjs";
 import { createLinks } from "./links.mjs";
 import { ensurePtyHelper } from "./pty-helper.mjs";
@@ -237,6 +238,7 @@ export async function createReach(overrides = {}) {
     jobs = new Jobs(config),
     app = express(),
     server = http.createServer(app);
+  const ownerConnections = createOwnerConnections({ auth, owner: config.tailscaleOwner });
   // Agents and people invited before mascots draw theirs now, once.
   try {
     auth.dressMascots();
@@ -1690,6 +1692,19 @@ export async function createReach(overrides = {}) {
       return res.status(403).json({ error: "This browser invitation cannot grant or request other access." });
     next();
   });
+  // The browser's signing key proves its already-approved owner connection
+  // on the other private node. Never accept a source bearer on that node.
+  app.post("/api/auth/owner-connection/challenge", async (req, res) => {
+    if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
+      throw fail(403, "Set up this computer's own browser with its local approval.");
+    res.json(ownerConnections.challenge(req.reachIdentity, req.body));
+  });
+  app.post("/api/auth/owner-connection/join", async (req, res) => {
+    if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
+      throw fail(403, "Set up this computer's own browser with its local approval.");
+    const joined = ownerConnections.join(req.reachIdentity, req.body);
+    res.json({ ...joined, device: { id: device.id, computerId: device.computerId, name: config.name, platform: hostPlatform } });
+  });
   app.post("/api/auth/requests", async (req, res) => {
     if (!approvals)
       throw fail(
@@ -2304,6 +2319,7 @@ export async function createReach(overrides = {}) {
         ...(req.client.kind === "guest" && req.client.fullControlVersion === 1 ? { fullControlVersion: 1 } : {}),
         ...(req.client.policy?.browser && { browser: true }),
       },
+      ...(config.tailscaleOwner && req.client.kind === "device" && req.client.scopes.includes("admin") && { ownerConnection: 1 }),
       capabilities: deviceCapabilities({
         platform: overrides.platform || process.platform,
         owner: actsAsOwner(req.client),
@@ -2341,6 +2357,10 @@ export async function createReach(overrides = {}) {
   app.post("/api/device/door-key", (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json(auth.issueDoorKey(req.client.id));
+  });
+  app.post("/api/device/owner-connection", (req, res) => {
+    const client = req.reauthorize();
+    res.json(auth.registerOwnerConnection(client.id, req.body?.publicKey, req.body?.role));
   });
   // An agent on its own invited device trades its credential for a new one
   // (security audit M6; scripts/agent-remote.mjs).
@@ -6261,12 +6281,11 @@ export async function createReach(overrides = {}) {
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
       return res.end("Unavailable.");
     }
-    // The public door (Oct 10): open to everyone only while something
-    // needs a stranger to come in (a pairing, an invitation waiting, an
-    // agent's page). Otherwise a request is answered only when it names
+    // Invitation and agent pages open while their admission window is live.
+    // Outside it, those requests are answered only when they name
     // a key Reach knows (an agent's own, or one that ended lately, so
     // it hears that it ended): the signed gateway and the agent runtime
-    // download. Anything else gets 404 before a byte is parsed.
+    // download. Fixed owner bootstrap is admitted separately below.
     const window = auth.funnelWindow();
     const key = req.headers["reach-key"];
     const known = typeof key === "string" && key.length <= 64 && knownKey(key);
@@ -6278,7 +6297,12 @@ export async function createReach(overrides = {}) {
     // Someone who came in through the browser and still has access: their
     // page and its code, by their own door key (a cookie; core.mjs).
     const door = (req.method === "GET" || req.method === "HEAD") && doorKeyKnown(doorCookie(req));
-    if ((window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
+    // The stable owner link always serves only its fixed bootstrap assets.
+    // Opening it grants no API access; sign-in still joins a private node.
+    const ownerStart = !!config.tailscaleOwner && ownerBootstrapRequest(req);
+    const ownerSignIn = !!config.tailscaleOwner && req.method === "POST" &&
+      ["/faceid/options", "/faceid/join"].includes(req.url) && faceJoin?.available();
+    if (ownerStart || ownerSignIn || (window.open && !window.keyed) || (known && forAgents) || hosted || door) return publicApp(req, res);
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not found.");
   });
@@ -6311,8 +6335,8 @@ export async function createReach(overrides = {}) {
     },
     // `publicApp`: what the internet gets at this same address (the start page).
     // The public route stays on while Reach runs (scripts/ephemeral-funnel.mjs),
-    // so the internet gets nothing at all unless an invitation or agent
-    // session is live.
+    // serving fixed owner bootstrap; invitation and agent routes have their
+    // own admission windows. No owner API or WebSocket crosses this door.
     async listenPrivate(socketPath, { publicApp } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");

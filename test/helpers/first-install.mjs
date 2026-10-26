@@ -94,6 +94,22 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     }
     await fs.copyFile(path.join(packageRoot, "package.json"), path.join(app, "package.json"));
   }
+  // Public DNS/TLS are simulated like Tailscale itself. Exercise the real
+  // bootstrap response/manifest check through this fixture's Funnel ingress;
+  // the separate browser-link tests verify public DNS pinning and TLS errors.
+  const browserLinkFile = path.join(app, "scripts/browser-link.mjs");
+  const browserLink = await fs.readFile(browserLinkFile, "utf8");
+  await fs.writeFile(browserLinkFile, browserLink.replace("export async function checkBrowserLink(", "async function fixtureCheckBrowserLink(") + `
+    export function checkBrowserLink(origin, instance) {
+      return fixtureCheckBrowserLink(origin, instance, {
+        resolve: async () => ({ state: "published", addresses: ["192.0.2.53"] }),
+        read: async url => {
+          const response = await fetch(url, { headers: { "Tailscale-Funnel-Request": "?1" } });
+          return response.ok ? response.json() : null;
+        },
+      });
+    }
+  `);
   const fake = await fakeTailscale(temp, { ...tailscale, setup: status, funnelDenied, identities: {
     "100.64.0.21": identity("phone-app"),
     "100.64.0.22": identity("phone-browser"),
