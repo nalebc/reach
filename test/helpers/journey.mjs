@@ -353,7 +353,9 @@ export async function startComputer(t) {
     // stays off. Wait for the input prompt before requesting the private
     // fallback; no automatic QR is allowed on this unavailable ingress path.
     await reach.until(/Press Enter for a new pairing code\. Type pause to pause\. Ctrl\+C stops sharing and Reach\./, 120000);
-    assert.match(reach.output(), /The private QR needs the Tailscale app on this computer's network/);
+    // One permanent owner link (docs/CONNECTION_POLICY.md): no QR stands in
+    // for it; a phone already on the tailnet asks for the private one.
+    assert.match(reach.output(), /Type private for its private QR/);
     assert.doesNotMatch(reach.output(), /Pairing code:/);
     reach.answer("private");
   }

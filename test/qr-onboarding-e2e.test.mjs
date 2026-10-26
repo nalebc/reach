@@ -40,7 +40,7 @@ test("Windows default QR: host-only success, public browser entry, and same-tail
     env: { FAKE_TTY: "1" },
     preloads: platformPreloads,
     pair: false,
-    ready: /Preparing the connection for your phone's browser|Pairing code: \d{4} \d{4}/,
+    ready: /Preparing your permanent phone link|Pairing code: \d{4} \d{4}/,
     prepare: async (root, home) => {
       seen.fake = await fakeTailscale(root, { version: "1.104.0", serve: structuredClone(occupied), identities: {
         ...Object.fromEntries(Array.from({ length: 30 }, (_, i) => {
@@ -78,7 +78,10 @@ test("Windows default QR: host-only success, public browser entry, and same-tail
     assert.equal(host.json.instance, status().instance);
     for (const mode of ["no-app", "app-off", "different-tailnet"])
       await assert.rejects(network.request(privateOrigin, { mode }), { code: "ENOTFOUND" });
-    assert.deepEqual(scanTerminalQRs(reach.output()), [privateOrigin], "only the private QR is shown while the browser connection waits");
+    // One permanent owner link (docs/CONNECTION_POLICY.md): no QR stands in
+    // for it while it's prepared; the private one is there on request (below).
+    assert.deepEqual(scanTerminalQRs(reach.output()), [], "no QR replaces the permanent link while the browser connection waits");
+    assert.ok(reach.output().includes(`Preparing your permanent phone link: https://${HOST}`));
     assert.equal(status().browserLink.ready, false);
     assert.equal(network.requests.filter(r => r.kind === "public").length, 0, "missing public DNS prevents the host probe from using its MagicDNS route");
   });

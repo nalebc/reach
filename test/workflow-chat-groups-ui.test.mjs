@@ -2,8 +2,9 @@ import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle, typeInto } from "./dom/harness.mjs";
 
-const peer = { id: "local", name: "Local Mac", url: "https://reach.test", token: "local-token", platform: "darwin" };
-const remote = { ...peer, id: "remote", name: "Remote Mac", url: "https://remote.test", token: "remote-token" };
+const localPeer = { id: "local", name: "Local Mac", url: "https://reach.test", token: "local-token", platform: "darwin" };
+const peer = localPeer;
+const remote = { ...localPeer, id: "remote", name: "Remote Mac", url: "https://remote.test", token: "remote-token" };
 const now = Date.now();
 const chat = (id, extra = {}) => ({
   agent: "codex", id, title: `Chat ${id}`, cwd: "/work/reach", branch: "", origin: "reach", inApp: false,
@@ -26,7 +27,12 @@ before(async () => {
 });
 after(() => dom?.close());
 
+// Each mount is a fresh tab: the chat list remembers its search and folders
+// for the tab (src/view-memory.ts), and one test's search must not filter the
+// next test's list (Oct 25: "Unique release" left 0 chats in the next two).
+let tabs = 0;
 async function mount(t, kind, sessions, flows, extra = {}) {
+  const peer = { ...localPeer, workspaceKey: `tab-${++tabs}` };
   const props = {
     peer, sessions, logos: {}, agent: "codex", apps: [], appPending: {}, pending: 0, relays: [],
     onOpen() {}, onNew() {}, onAgentChange() {},
