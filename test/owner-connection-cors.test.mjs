@@ -20,7 +20,7 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
 }, async t => {
   assert.ok(chromeBinary, "Chrome is required in CI");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-owner-cors-"));
-  const certificate = await testCertificate(root, hostname), seen = [], ingressKey = newIngressKey();
+  const certificate = await testCertificate(root, hostname), seen = [], trace = [], ingressKey = newIngressKey();
   let reach, browser, ingressPort, publicRoute = false, sourceUnavailable = false;
   const tls = https.createServer(certificate, (req, res) => {
     seen.push({ method: req.method, path: req.url, origin: req.headers.origin, site: req.headers["sec-fetch-site"], bearer: !!req.headers.authorization });
@@ -30,9 +30,15 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
       headers: { ...req.headers, host: "localhost", "x-forwarded-host": req.headers.host,
         "x-forwarded-for": source ? "100.64.0.21" : "100.64.0.22", "tailscale-user-login": "owner@example.test",
         ...(publicRoute ? { "tailscale-funnel-request": "?1" } : {}) } }, response => {
+      // What went back, for a failure's report (Oct 26, Ubuntu/Node 22 CI:
+      // two preflights seen, no POST after them, "Failed to fetch").
+      trace.push({ answered: req.method, path: req.url, status: response.statusCode,
+        allowOrigin: response.headers["access-control-allow-origin"] || null,
+        allowMethods: response.headers["access-control-allow-methods"] || null,
+        allowHeaders: response.headers["access-control-allow-headers"] || null });
       res.writeHead(response.statusCode, response.headers); response.pipe(res);
     });
-    proxy.on("error", error => res.destroy(error)); req.pipe(proxy);
+    proxy.on("error", error => { trace.push({ proxyError: error.code || error.message, path: req.url }); res.destroy(error); }); req.pipe(proxy);
   });
   await new Promise((resolve, reject) => { tls.once("error", reject); tls.listen(0, "127.0.0.1", resolve); });
   t.after(async () => {
@@ -74,6 +80,11 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
     catch (error) { if (!/Invalid PermissionDescriptor|Unknown permission|Unrecognized permission/i.test(error.message)) throw error; }
   }
   const tab = await openTab(browser);
+  // Chrome's own reason when a request fails (a CORS refusal names itself).
+  await tab.send("Network.enable");
+  browser.on("Network.loadingFailed", (event, session) => {
+    if (session === tab.sessionId) trace.push({ chromeFailed: event.errorText, cors: event.corsErrorStatus || null, blocked: event.blockedReason || null, type: event.type });
+  });
   browser.on("Fetch.requestPaused", (event, session) => {
     if (session === tab.sessionId) void tab.send("Fetch.fulfillRequest", { requestId: event.requestId,
       responseCode: event.request.url === `${ORIGIN}/` ? 200 : 404,
@@ -98,7 +109,7 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
     const pair = await OwnerFixture.browserOwnerKeys.pair(peer.computerId || peer.id);
     return { first, second, extractable: pair.privateKey.extractable,
       saved: JSON.parse(localStorage.getItem(sourceRole === "native" ? "reach.browser.devices" : "reach.devices")) };
-  }`, peer, config, sourceRole).catch(error => { t.diagnostic(JSON.stringify({ seen, problems: tab.problems })); throw error; });
+  }`, peer, config, sourceRole).catch(error => { t.diagnostic(JSON.stringify({ seen, trace, problems: tab.problems })); throw error; });
   assert.equal(joined.first.token, joined.second.token);
   assert.equal(joined.extractable, false);
   assert.equal(joined.saved[0].token, joined.first.token);
