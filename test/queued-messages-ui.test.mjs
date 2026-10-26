@@ -351,6 +351,32 @@ test("dragging: a press lifts a copy, the others slide, a gap shows, and the row
   assert.deepEqual(dom.errors, []);
 });
 
+// Oct 25, Intel macOS CI: Escape pressed while the row was lifted did
+// nothing. The window's Escape listener came with a passive effect, which
+// React runs some time after the lifted copy shows: a busy phone (or CI
+// machine) let an Escape land in between. It listens as the copy shows.
+test("Escape the moment a row lifts puts it back: the copy never shows without Escape working", async () => {
+  const restore = motion(true);
+  const { view, calls } = await render({ agent: "codex", messages: three });
+  try {
+    geometry();
+    const pointer = pointerOn(button("Reorder queued message 1 of 3")[0]);
+    pointer("pointerdown", 20);
+    pointer("pointermove", 100);
+    // The lift renders in a later task (a move isn't a discrete event):
+    // the moment its copy shows, and not a task later, Escape.
+    for (let i = 0; i < 50 && !$$(".qm-ghost").length; i++) await settle(0);
+    assert.equal($$(".qm-ghost").length, 1, "lifted, its copy showing");
+    dom.update(() => dom.window.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    assert.equal($$(".qm-ghost").length, 0);
+    pointer("pointerup", 100);
+    await settle(10);
+    assert.deepEqual(calls.order, []);
+    assert.deepEqual(texts(), [long, "second", "third"]);
+    assert.match(said(), /Cancelled\. Back at position 1 of 3/);
+  } finally { restore(); await view.unmount(); }
+});
+
 test("Escape while dragging puts the row back where it was, nothing sent", async () => {
   const restore = motion(true);
   const { view, calls } = await render({ agent: "codex", messages: three });

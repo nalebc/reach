@@ -8,6 +8,16 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Fixed
+
+- On a Mac, Copy selected text works on pages in Chrome and other apps that
+  answer only for themselves: Reach asks the app in front for its focused
+  element, never another app's. A blank selection says to select text first
+  instead of copying a blank line. The helper also reads the app in front
+  afresh each time, not the one in front when screen control began.
+- Escape puts a dragged queued message back even when pressed the moment it
+  lifts.
+
 ## [0.4.2] — 2026-10-25
 
 Early-access candidate including the file editing, terminal clipboard paste

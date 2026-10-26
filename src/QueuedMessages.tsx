@@ -366,7 +366,9 @@ export default function QueuedMessages({
       dropping.current = setTimeout(done, SETTLE_MS);
     } else done();
   }
-  useEffect(() => {
+  // As the lifted copy shows, not a moment later (a passive effect runs
+  // after it's drawn: an Escape in between was lost, Oct 25).
+  useLayoutEffect(() => {
     if (!lift) return;
     // Escape puts a dragged row back, wherever the focus is.
     const key = (e: KeyboardEvent) => {
