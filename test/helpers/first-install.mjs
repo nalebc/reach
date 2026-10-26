@@ -281,7 +281,7 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
     if (!source && !nativeInstall) for (const name of ["dist", "tailnet", "node_modules"]) await fs.rm(path.join(app, name), { force: true }).catch(() => {});
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
-  const request = async (route, { ip = "100.64.0.21", public: internet = false, body, token, port, method } = {}) => {
+  const request = async (route, { ip = "100.64.0.21", public: internet = false, body, token, port, method, headers: extra = {} } = {}) => {
     const routes = await fake.read();
     const target = routes.serve.Web?.[`${HOST}:${port || (funnelDenied ? 8443 : 443)}`]?.Handlers?.["/"]?.Proxy;
     if (!target?.startsWith("unix:")) throw Error("The simulated Tailscale route is not ready.");
@@ -291,6 +291,7 @@ export async function firstInstall(t, { missing = false, status = {}, funnelDeni
         ...(internet ? { "Tailscale-Funnel-Request": "?1" } : { "Tailscale-User-Login": ip === "100.64.0.23" ? "other@example.test" : "owner@example.test" }),
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...extra,
       } }, res => {
         const chunks = [];
         res.on("data", chunk => chunks.push(chunk));

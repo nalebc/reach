@@ -79,6 +79,31 @@ for (const desktop of desktops) test(`fresh install: desktop ${desktop.name}, ev
       assert.equal((await reach.request("/api/files", { public: true })).status, 404);
       await approvePhone(reach, `100.64.0.${31 + index}`);
     });
+  // The owner link's door is open to the internet with no pairing window
+  // (docs/CONNECTION_POLICY.md): it answers only the fixed start page and
+  // its files. Owner APIs and WebSockets stay private, under any path.
+  await t.test("the always-open owner link gives the internet only the start page", async () => {
+    const page = await reach.request("/files/notes", { public: true });
+    assert.equal(page.status, 200);
+    assert.match(page.headers["content-type"], /text\/html/);
+    const start = await reach.request("/", { public: true });
+    assert.equal(page.text, start.text, "an owner page path is the start page, no data");
+    for (const route of ["/api/files", "/api/auth/method", "/api/sessions", "/api/settings", "/api/screen"])
+      assert.equal((await reach.request(route, { public: true })).status, 404, route);
+    // A page path that names an API is still the start page, never the API.
+    const dodge = await reach.request("/files/../api/files", { public: true });
+    assert.ok(dodge.status === 404 || dodge.text === start.text, `${dodge.status} ${dodge.text.slice(0, 80)}`);
+    assert.equal(dodge.json, undefined, "no API answer");
+    assert.equal((await reach.request("/", { public: true, method: "POST", body: {} })).status, 404);
+    assert.equal((await reach.request("/api/auth/requests", { public: true, body: { name: "Stranger" } })).status, 404);
+    // Refused outright: answered with an error, or the connection dropped
+    // unanswered (how Reach turns away an upgrade it won't take).
+    const upgrade = await reach.request("/api/desktop", { public: true, headers: { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==" } })
+      .catch((error) => (/socket hang up|ECONNRESET/.test(error.message) ? { status: "dropped" } : Promise.reject(error)));
+    assert.ok(upgrade.status === "dropped" || upgrade.status >= 400, `no WebSocket from the internet: ${upgrade.status}`);
+    const config = await reach.request("/reach-start.json", { public: true });
+    assert.deepEqual(Object.keys(config.json).filter((key) => !["product", "origin", "home", "faceId", "name", "instance", "since", "tailnet"].includes(key)), [], "only the start page's own fields");
+  });
   await t.test("different account cannot request approval or browse files", async () => {
     const ip = "100.64.0.23";
     assert.equal((await reach.request("/api/auth/method", { ip })).json.eligible, false);
