@@ -324,10 +324,10 @@ jobs:
         # Ad-hoc simulator signing needs no Apple account. URLSession's native
         # background daemon requires the bundle identity omitted by NO signing.
         run: xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build
-      - name: Real iOS pairing, authenticated files and native transfer bridges
+      - name: Real iOS pairing, authenticated files, native transfer bridges, and the page back after iOS ends it
         run: |
           mkdir -p reports
-          npm run test:file -- --test-timeout=600000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs
+          npm run test:file -- --test-timeout=600000 --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/ios.xml test/ios-simulator.test.mjs test/ios-page-recovery.test.mjs
         env:
           REACH_TEST_IOS_APP: ${{ github.workspace }}/build/Build/Products/Release-iphonesimulator/App.app
           REACH_TEST_IOS_REPORT: reports/ios-simulator.json

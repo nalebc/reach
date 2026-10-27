@@ -1,13 +1,134 @@
 import AVFoundation
 import Capacitor
 import UIKit
+import WebKit
 
 /// Registers Reach's local plugins with the Capacitor bridge.
 class ReachBridgeViewController: CAPBridgeViewController {
+    private var recovery: PageRecovery?
+
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(QRScannerPlugin())
         bridge?.registerPluginInstance(RemoteKeyboardPlugin())
         bridge?.registerPluginInstance(BackgroundTransferPlugin())
+    }
+
+    override open func viewDidLoad() {
+        super.viewDidLoad()
+        if let webView, let home = bridge?.config.serverURL {
+            recovery = PageRecovery(webView: webView, home: home)
+        }
+    }
+}
+
+/// Reach's page, back on its own after it's gone. iOS ends a web page's
+/// process to free memory while the app sits idle; Capacitor reloads it then,
+/// and a reload that found no network (the phone asleep or still waking) left
+/// a blank white page until the app was closed and opened again (Oct 26).
+/// While the app is in front, a page with nothing in it is opened again at
+/// Reach's own link, "Reconnecting…" showing in place of the blank: soon at
+/// first, then every 15 s. A page that loads, or is loading, is left alone.
+final class PageRecovery {
+    private weak var webView: WKWebView?
+    private let home: URL
+    private let cover = UIView()
+    private var timer: Timer?
+    private var loading: NSKeyValueObservation?
+    private var tries = 0
+    // An unanswered look happens mid-navigation too: only twice in a row
+    // counts as no page.
+    private var unanswered = 0
+    private var asking = false
+
+    init(webView: WKWebView, home: URL) {
+        self.webView = webView
+        self.home = home
+        cover.backgroundColor = UIColor(red: 0x10 / 255, green: 0x15 / 255, blue: 0x12 / 255, alpha: 1)
+        cover.isHidden = true
+        cover.isUserInteractionEnabled = false
+        cover.translatesAutoresizingMaskIntoConstraints = false
+        let words = UILabel()
+        words.text = "Reconnecting to your computer…"
+        words.textColor = UIColor(red: 0xed / 255, green: 0xf2 / 255, blue: 0xee / 255, alpha: 1)
+        words.font = .preferredFont(forTextStyle: .headline)
+        words.translatesAutoresizingMaskIntoConstraints = false
+        cover.addSubview(words)
+        webView.addSubview(cover)
+        NSLayoutConstraint.activate([
+            cover.topAnchor.constraint(equalTo: webView.topAnchor),
+            cover.bottomAnchor.constraint(equalTo: webView.bottomAnchor),
+            cover.leadingAnchor.constraint(equalTo: webView.leadingAnchor),
+            cover.trailingAnchor.constraint(equalTo: webView.trailingAnchor),
+            words.centerXAnchor.constraint(equalTo: cover.centerXAnchor),
+            words.centerYAnchor.constraint(equalTo: cover.centerYAnchor),
+        ])
+        NotificationCenter.default.addObserver(self, selector: #selector(inFront), name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(putAway), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        // A load just ended: the cover goes as soon as there's a page under
+        // it. Only the timer ever opens the page again.
+        loading = webView.observe(\.isLoading) { [weak self] view, _ in
+            guard !view.isLoading else { return }
+            DispatchQueue.main.async { self?.look(opening: false) }
+        }
+        look(after: 5)
+    }
+
+    deinit {
+        timer?.invalidate()
+        loading?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func inFront() { look(after: 1) }
+    @objc private func putAway() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func look(after seconds: TimeInterval) {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in self?.look() }
+    }
+
+    private func look(opening: Bool = true) {
+        guard let webView, UIApplication.shared.applicationState == .active else { return }
+        if webView.isLoading {
+            if opening { look(after: 2) }
+            return
+        }
+        if opening {
+            // The last look never came back: a page that doesn't answer.
+            if asking { unanswered += 1 }
+            if unanswered >= 2 { return open(webView) }
+            asking = true
+            look(after: 15)
+        }
+        webView.evaluateJavaScript("document.body ? document.body.childElementCount : 0") { [weak self] result, error in
+            guard let self else { return }
+            let url = webView.url?.absoluteString ?? ""
+            let empty = url.isEmpty || url == "about:blank" || (error == nil && (result as? NSNumber)?.intValue == 0)
+            if !opening {
+                if !empty && error == nil { self.cover.isHidden = true }
+                return
+            }
+            self.asking = false
+            if error != nil { self.unanswered += 1 } else { self.unanswered = 0 }
+            if empty || self.unanswered >= 2 { return self.open(webView) }
+            self.cover.isHidden = true
+            self.tries = 0
+            self.look(after: 10)
+        }
+    }
+
+    // Reach's own link again, the blank covered while it loads.
+    private func open(_ webView: WKWebView) {
+        cover.isHidden = false
+        webView.bringSubviewToFront(cover)
+        tries += 1
+        unanswered = 0
+        asking = false
+        webView.load(URLRequest(url: home))
+        look(after: min(15, 2 * Double(tries)))
     }
 }
 
