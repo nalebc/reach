@@ -15,6 +15,7 @@ import {
   type GuestSession,
 } from "./guest-session";
 import { keepDoorKey } from "./door-key";
+import { keepReconnectPage } from "./offline-shell";
 import { parseGuestLink } from "./start-flow";
 import { homeOrigin } from "./home-origin";
 // Capture the new link before the lazy redemption component removes its hash.
@@ -157,6 +158,7 @@ import "./workspace-pages.css";
 import "./app-style.css";
 // After the shared look: one top bar on every page (top-bar.css).
 import "./top-bar.css";
+if (location.pathname !== "/guest") void keepReconnectPage();
 export const appRoot = createRoot(document.getElementById("root")!);
 appRoot.render(
   <React.StrictMode>

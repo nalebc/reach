@@ -25,6 +25,18 @@ function command(worker: ServiceWorker, value: object, signal?: AbortSignal, tra
     catch (error) { cleanup(); reject(error); }
   });
 }
+// Every owner page keeps Reach's worker, not only one that saved its offline
+// copy or turned on notifications: a load that finds no network then gets the
+// worker's "Reconnecting to Reach…" page, which retries the same link. Without
+// the worker, a Home Screen web app showed a blank white page there, with no
+// way back but closing it (Oct 26). With nothing saved, the worker answers
+// nothing else: every other request goes to the network as before.
+export async function keepReconnectPage() {
+  if (!supported()) return false;
+  try {
+    return !!((await navigator.serviceWorker.getRegistration("/")) || (await navigator.serviceWorker.register("/sw.js", { scope: "/" })));
+  } catch { return false; }
+}
 async function worker(register: boolean, signal?: AbortSignal) {
   if (!supported()) return null;
   const halt = new AbortController(), deadline = signal ? AbortSignal.any([signal, halt.signal]) : halt.signal;

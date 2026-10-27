@@ -416,7 +416,7 @@ self.addEventListener("fetch", event => {
   // This inert page retries only navigation GETs, never workspace actions.
   const network = () => fetch(request).catch(error => {
     if (!navigation) throw error;
-    return new Response('<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>Reconnecting to Reach</title></head><body style="margin:0;padding:32px;background:#111816;color:#edf2ee;font:18px/1.5 system-ui"><h1>Reconnecting to Reach…</h1><p>Your connection changed. Reach will retry automatically at this same link.</p><p>Keep your computer online with Reach and Tailscale running.</p><a href="" style="color:#b9efd8">Try again now</a></body></html>', { status: 503, headers: shellHeaders("text/html") });
+    return new Response('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>Reconnecting to Reach</title></head><body style="margin:0;padding:32px;background:#111816;color:#edf2ee;font:18px/1.5 system-ui"><h1>Reconnecting to Reach…</h1><p>Your connection changed. Reach will retry automatically at this same link.</p><p>Keep your computer online with Reach and Tailscale running.</p><a href="" style="color:#b9efd8">Try again now</a></body></html>', { status: 503, headers: shellHeaders("text/html; charset=utf-8") });
   });
   event.respondWith((async () => {
     try {
