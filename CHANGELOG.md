@@ -8,6 +8,22 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-10-26
+
+The iPhone app no longer shows a blank white page after the phone sits idle.
+
+### Fixed
+
+- After the iPhone sat idle, the Reach app could come back as a blank white
+  page that only quitting and reopening fixed: iOS had ended the page's
+  content process and its reload failed while the computer didn't answer. The
+  app now notices an empty or unanswering page when it comes back to the
+  front (and every 10 seconds), shows "Reconnecting to your computer…", and
+  reopens the same Reach link once the computer answers. The page itself no
+  longer reloads for an update while it's put away without an offline copy,
+  and reloads in front only once the computer answers. The app part needs a
+  new build of the iPhone app.
+
 ## [0.4.3] — 2026-10-26
 
 Early-access release: one permanent owner link that works with the phone's
