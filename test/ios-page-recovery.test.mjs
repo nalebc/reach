@@ -80,15 +80,19 @@ test("the app opens Reach's page again by itself after iOS ends it while the com
   await simctl(["boot", device]);
   await simctl(["bootstatus", device, "-b"], 300000);
   await simctl(["install", device, copy], 300000);
-  await simctl(["launch", device, bundle], 120000);
+  // simctl can stay open after the app has started (as test/ios-simulator
+  // finds): the app opening this computer's page is the proof it launched.
+  let launch = null;
+  const launching = simctl(["launch", device, bundle], 150000).catch((error) => { launch = error; });
+  t.after(() => launching);
   const until = async (check, what, ms) => {
     const end = Date.now() + ms;
     while (!check()) {
-      if (Date.now() > end) assert.fail(`${what} (loads ${loads.length}, page up ${alive.length}, refused ${refused.length})`);
+      if (Date.now() > end) assert.fail(`${what} (loads ${loads.length}, page up ${alive.length}, refused ${refused.length}${launch ? `; simctl launch: ${launch.killed ? "still open when stopped" : launch.message}` : ""})`);
       await pause(250);
     }
   };
-  await until(() => alive.length >= 1, "the app opened Reach's page", 120000);
+  await until(() => alive.length >= 1, "the app opened Reach's page", 150000);
 
   // The computer can't be reached, and iOS ends the page's process.
   // An unreachable network ends the open connections too.
