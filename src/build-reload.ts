@@ -40,7 +40,30 @@ type UpdateOptions = {
   wait?: (f: () => void) => unknown;
   currentPage?: () => Promise<boolean | null>;
   prepare?: () => Promise<boolean>;
+  away?: () => boolean;
+  offlineCopy?: () => boolean;
+  answers?: () => Promise<boolean>;
 };
+// Whether Reach's offline copy serves this page (its service worker controls
+// it): a reload with no network then opens the copy. The iPhone and Android
+// apps' web view has none, and a reload there that found no network left a
+// blank white page until the app was closed and opened again (Oct 26).
+export const servedOffline = () =>
+  offlineShellEnabled() && typeof navigator !== "undefined" && !!navigator.serviceWorker?.controller;
+// The new interface answers right now: asked just before a reload that no
+// offline copy would catch.
+export async function pageAnswers(href = location.href, load: typeof fetch = fetch, timeoutMs = 10000) {
+  try {
+    const response = await load(freshInterfaceUrl(href), {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return response.ok && !response.headers.get("X-Reach-Cached-Shell");
+  } catch {
+    return false;
+  }
+}
 // The last touch, key, scroll or wheel on the page (its load counts).
 let touched = Date.now();
 export const IDLE_MS = 5 * 60 * 1000;
@@ -58,15 +81,26 @@ function queueUpdate({
   busy = () => busyHere() || inUse(),
   wait = (f) => setTimeout(f, 5000),
   prepare = offlineShellEnabled() ? prepareInterfaceReload : undefined,
+  away = () => document.hidden,
+  offlineCopy = servedOffline,
+  answers = () => pageAnswers(),
 }: UpdateOptions) {
   if (waiting) return;
   waiting = true;
   const seen = generation;
   let done = false;
-  let preparing = false, prepared = false;
+  let preparing = false, prepared = false, asking = false;
+  // Put away, a page with no offline copy waits to be in front again: the
+  // phone may be locking or waking, its network not there yet.
+  const held = () => busy() || (away() && !offlineCopy());
+  const apply = () => {
+    done = true;
+    setUpdateState("reloading");
+    reload();
+  };
   const attempt = () => {
     if (seen !== generation || done) return;
-    if (busy()) {
+    if (held()) {
       setUpdateState("waiting");
       wait(attempt);
     } else {
@@ -82,15 +116,23 @@ function queueUpdate({
         });
         return;
       }
-      done = true;
-      setUpdateState("reloading");
-      reload();
+      if (offlineCopy()) return apply();
+      // No offline copy to open if the network went: only once the new page
+      // has answered, and the page is still free and in front.
+      if (asking) return;
+      asking = true;
+      void answers().catch(() => false).then(ok => {
+        asking = false;
+        if (seen !== generation || done) return;
+        if (ok && !held()) apply();
+        else { setUpdateState("waiting"); wait(attempt); }
+      });
     }
   };
   // Put away (another app, the screen locked): now, not up to 5 s later,
-  // when the page may already be frozen.
+  // when the page may already be frozen; only a page its offline copy serves.
   if (typeof document !== "undefined")
-    document.addEventListener("visibilitychange", () => document.hidden && attempt());
+    document.addEventListener("visibilitychange", () => document.hidden && offlineCopy() && attempt());
   attempt();
 }
 // Live screens and app windows open on this page: a reload mid-stream threw
