@@ -228,7 +228,7 @@ export function useRemoteScreen(peer, enabled, live, display) {
   undo.push(() => browser.close());
   const browserVersion = await browser.send("Browser.getVersion");
   const tab = await openTab(browser);
-  await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenOrientation: { type: "portraitPrimary", angle: 0 } });
   await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   const button = (text) => `[...document.querySelectorAll("button")].find(b => b.getAttribute("aria-label") === ${JSON.stringify(text)} || b.textContent.trim() === ${JSON.stringify(text)})`;
   const sink = 'document.querySelector(".remote-keyboard-sink")';

@@ -844,6 +844,14 @@ static class Policy {
   public static bool SecureKeyAllowed(string name, bool command) {
     return !command && System.Array.IndexOf(SecureKeys, name) >= 0;
   }
+  // The shell's own surfaces (a notification, the taskbar, Start, Search)
+  // aren't another app, but one that's really over a control takes its click:
+  // on a Mac a notification over a page's button took an agent's press, and the
+  // agent was told the button was pressed (Oct 26). Really over it: its window is
+  // on top there and what's under the point is its own.
+  public static bool SurfaceCovers(int surface, int hit, int control) {
+    return surface > 0 && surface != control && hit == surface;
+  }
   // Whether a numbered control has been covered since the agent looked: what
   // is under its center belongs to another app, or sits in a dialog, sheet,
   // menu or popover the control isn't in. Then a click meant for it would
@@ -3620,6 +3628,10 @@ static partial class Desk {
     try {
       var hit = Uia.Automation.ElementFromPoint(new Native.POINT { X = x, Y = y });
       Func<IUIAutomationElement, int> pid = element => (int)Uia.Number(element.GetCurrentPropertyValue(Uia.ProcessId));
+      if (at != null && at.Shell && hit != null && Policy.SurfaceCovers(at.Pid, pid(hit), screen.Pid))
+        throw new Refusal(FileOf(at.Id != null ? at.Id.Image : "").ToLowerInvariant() == "shellexperiencehost.exe"
+          ? "A notification covers that control. It goes away by itself: look again in a few seconds."
+          : "The taskbar or another part of Windows covers that control now. Describe the screen again.", "retry");
       if (hit != null && pid(hit) == screen.Pid && Policy.CoveredControl<IUIAutomationElement>(hit, control.Element,
           element => { try { return Uia.Walker.GetParentElement(element); } catch (Exception) { return null; } },
           (a, b) => Uia.Automation.CompareElements(a, b) != 0, (a, b) => pid(a) == pid(b),

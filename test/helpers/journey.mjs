@@ -407,6 +407,9 @@ export async function phone(t, computer, { name = t.name, kind = "iPhone", ip = 
     mobile: true,
     screenWidth: device.width,
     screenHeight: device.height,
+    // Held as its size says: without this Chrome reports the computer's
+    // landscape, and Screen turns to fullscreen by itself.
+    screenOrientation: device.width > device.height ? { type: "landscapePrimary", angle: 90 } : { type: "portraitPrimary", angle: 0 },
   });
   await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   await tab.send("Page.addScriptToEvaluateOnNewDocument", { source: PAGE_TRACE });

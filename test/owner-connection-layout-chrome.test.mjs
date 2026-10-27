@@ -103,7 +103,12 @@ createRoot(document.getElementById("root")).render(<App/>);
   await tab.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
   const evidence = [];
   for (const [width, height] of [[320, 740], [390, 844], [768, 1024]]) {
-    await tab.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
+    // A phone held as its size says: without an orientation Chrome reports
+    // the computer's (landscape), and Screen then turns to fullscreen by
+    // itself and fades its bars, the tab bar with them, on a slow machine
+    // before the next tap (macOS CI: Home never came back from Screen).
+    await tab.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true,
+      screenOrientation: { type: width > height ? "landscapePrimary" : "portraitPrimary", angle: width > height ? 90 : 0 } });
     const safeTop = width < 600 ? 44 : 24;
     await tab.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: safeTop, bottom: 34, left: 0, right: 0 } });
     await tab.navigate(`http://${host}:${server.address().port}/`);

@@ -19,6 +19,16 @@ static class DesktopChecks {
   }
   static List<Win> List(params Win[] windows) { return new List<Win>(windows); }
 
+  // A shell surface really over a control (its window on top there, its own
+  // element under the point) takes the click; one of its clear windows doesn't.
+  static void Covering() {
+    int browser = 501, notifications = 77;
+    Check(Policy.SurfaceCovers(notifications, notifications, browser), "a notification over the page's button");
+    Check(!Policy.SurfaceCovers(notifications, browser, browser), "a clear shell window over the page: the page takes the click");
+    Check(!Policy.SurfaceCovers(notifications, 0, browser), "nothing answers under the point: no claim it's covered");
+    Check(!Policy.SurfaceCovers(browser, browser, browser), "the control's own app");
+  }
+
   static int Main() {
     Pixels();
     ViewMasks();
@@ -32,6 +42,7 @@ static class DesktopChecks {
     Typing();
     Automation();
     Launching();
+    Covering();
     if (failures == 0) Console.WriteLine("OK");
     return failures == 0 ? 0 : 1;
   }

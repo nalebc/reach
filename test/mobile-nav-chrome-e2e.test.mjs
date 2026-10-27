@@ -91,7 +91,7 @@ window.__nav.ready = true;
   const browser = await launchChrome(t, { binary });
   undo.push(() => browser.close());
   const tab = await openTab(browser);
-  await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await tab.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenOrientation: { type: "portraitPrimary", angle: 0 } });
   await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
   const frame = () => tab.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");

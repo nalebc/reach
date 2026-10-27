@@ -58,6 +58,10 @@ test("a numbered press re-finds its control; press and fill go through the same 
   assert.match(perform, /case "press":[\s\S]*?findControl\(candidates, name: wanted, role: action\["role"\] as\? String\)/);
   assert.match(perform, /case "fill":[\s\S]*?if rules\.mode != "full", control\.secure && !secret \{ try refuse\(secureReason\) \}[\s\S]*?\["type": "type", "text": text\]/);
   assert.match(perform, /if secret \|\| target\.element\.secure \{ rememberSecret\(text\) \}/, "a vault value typed is remembered");
+  // A system surface really over the control (a notification banner) stops
+  // the click before it's sent, and says so, before any pointer moves.
+  const click = source.split("func clickControl(")[1].split("\nfunc ")[0];
+  assert.match(click, /systemSurfaces\.contains\(lower\(window\.bundle\)\)[\s\S]*?surfaceCovers\(window\.pid, hit: under, control: screen\.pid\)[\s\S]*?A notification covers that control[\s\S]*?perform\(click, display, rules, expected\)/);
   assert.match(source.split("func readScreen(")[1].split("\nfunc elements(")[0], /hideSecrets\(String\(words\.prefix\(300\)\), typedSecrets\)[\s\S]*hideSecrets\(String\(value\.prefix\(120\)\), typedSecrets\)/, "text and field values");
   assert.match(source.split("func shot(")[1], /redacted\(image, rules\)/, "and screenshots");
 });
@@ -254,6 +258,13 @@ check(!covered(12, 10), "a link of the same page takes the click, as a real one 
 check(covered(20, 10), "a dialog's button over it")
 check(covered(2, 10), "a dialog over it")
 check(covered(300, 10), "another app's window over it")
+// A system surface really over a control (its window on top there, its own
+// element under the point) takes the click; one of its clear windows doesn't.
+let chrome: Int32 = 501, notifications: Int32 = 77
+check(surfaceCovers(notifications, hit: notifications, control: chrome), "a notification banner over the page's button")
+check(!surfaceCovers(notifications, hit: chrome, control: chrome), "a clear system window over the page: the page takes the click")
+check(!surfaceCovers(notifications, hit: nil, control: chrome), "nothing answers under the point: no claim it's covered")
+check(!surfaceCovers(chrome, hit: chrome, control: chrome), "the control's own app")
 // Naming a control: the same name, then one starting with it, then one
 // containing it; spacing and case don't matter.
 check(nameMatch("Add to cart", "add to cart") == 3 && nameMatch("Add to cart", "Add") == 2 && nameMatch("Add to cart", "cart") == 1, "name grades")
