@@ -846,8 +846,8 @@ static class Policy {
   }
   // The shell's own surfaces (a notification, the taskbar, Start, Search)
   // aren't another app, but one that's really over a control takes its click:
-  // on a Mac a notification over a page's cart button took the press and the
-  // agent was told it pressed the cart (Oct 26). Really over it: its window is
+  // on a Mac a notification over a page's button took an agent's press, and the
+  // agent was told the button was pressed (Oct 26). Really over it: its window is
   // on top there and what's under the point is its own.
   public static bool SurfaceCovers(int surface, int hit, int control) {
     return surface > 0 && surface != control && hit == surface;

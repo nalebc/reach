@@ -174,8 +174,8 @@ func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
 // click as a real one would.
 // The system's own surfaces (a notification, the Dock, Control Center,
 // Spotlight) aren't another app, but one that's really over a control takes
-// its click: a notification banner over a page's cart button took the press
-// and opened System Settings, the agent told it pressed the cart (Oct 26).
+// its click: a notification banner over a page's button took an agent's press,
+// and the agent was told the button was pressed (Oct 26).
 // Really over it: its window is on top there and what's under the point is
 // its own, never one of its clear windows across the screen.
 func surfaceCovers<P: Equatable>(_ surface: P, hit: P?, control: P) -> Bool {
