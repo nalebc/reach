@@ -243,6 +243,7 @@ test(
       mobile: true,
       screenWidth: 390,
       screenHeight: 844,
+      screenOrientation: { type: "portraitPrimary", angle: 0 },
     });
     await tab.send("WebAuthn.enable", { enableUI: false });
     await tab.send("WebAuthn.addVirtualAuthenticator", {

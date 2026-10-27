@@ -144,7 +144,7 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   workspace = true;
   const workspaceAddress = origin + '/'; // installed manifest's start_url
   await fresh();
-  await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenOrientation: { type: 'portraitPrimary', angle: 0 } });
   await tab.send('Page.navigate', { url: workspaceAddress });
   await wait('!!document.querySelector(".owner-connection-setup[open] a")');
   assert.match(await tab.evaluate('document.body.textContent'), /Connect securely in this browser/);
