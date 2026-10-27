@@ -172,6 +172,15 @@ func secureKeyAllowed(_ name: String, _ command: Bool) -> Bool {
 // land on that instead, so none is sent (batched actions included). Other
 // things of the same page under the point (a card's own link) take the
 // click as a real one would.
+// The system's own surfaces (a notification, the Dock, Control Center,
+// Spotlight) aren't another app, but one that's really over a control takes
+// its click: a notification banner over a page's cart button took the press
+// and opened System Settings, the agent told it pressed the cart (Oct 26).
+// Really over it: its window is on top there and what's under the point is
+// its own, never one of its clear windows across the screen.
+func surfaceCovers<P: Equatable>(_ surface: P, hit: P?, control: P) -> Bool {
+  surface != control && hit == surface
+}
 func coveredControl<T>(_ hit: T, _ target: T, parent: (T) -> T?, equal: (T, T) -> Bool,
                        sameApp: (T, T) -> Bool, overlay: (T) -> Bool) -> Bool {
   func chain(_ start: T) -> [T] {
@@ -1601,6 +1610,16 @@ func clickControl(_ control: Control, in screen: Screen, _ action: [String: Any]
   if let window = windowAt(center), window.pid > 0, window.pid != screen.pid,
      pointerIdentityKnown(window.bundle, window.name, window.path, Int(window.pid)), !systemSurfaces.contains(lower(window.bundle)) {
     try refuse("Another app's window now covers that control. Describe the screen again.", "retry")
+  }
+  if let window = windowAt(center), window.pid > 0, systemSurfaces.contains(lower(window.bundle)) {
+    var top: AXUIElement?
+    let under = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(center.x), Float(center.y), &top) == .success ? top.map(pidOf) : nil
+    if surfaceCovers(window.pid, hit: under, control: screen.pid) {
+      if lower(window.bundle) == "com.apple.notificationcenterui" {
+        try refuse("A notification covers that control. It goes away by itself: look again in a few seconds.", "retry")
+      }
+      try refuse("\(window.name.isEmpty ? "The system" : window.name) covers that control now. Describe the screen again.", "retry")
+    }
   }
   var hit: AXUIElement?
   if AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(center.x), Float(center.y), &hit) == .success, let hit, pidOf(hit) == screen.pid,

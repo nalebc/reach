@@ -88,6 +88,10 @@ test("the helper's own decisions pass their checks, compiled together with it", 
 });
 
 const body = (name) => source.split(`static Dictionary<string, object> ${name}(`)[1].split("\n  }\n")[0];
+test("a shell surface really over a control (a notification) stops the click before it's sent, as on a Mac", () => {
+  const click = body("ClickControl");
+  assert.match(click, /at\.Shell && hit != null && Policy\.SurfaceCovers\(at\.Pid, pid\(hit\), screen\.Pid\)[\s\S]*?A notification covers that control[\s\S]*?Perform\(click, display, rules, expected\)/);
+});
 test("a screenshot is masked before it's encoded, Full control lists no windows, and a picture taken while windows moved is black", () => {
   const shot = body("Shot");
   assert.match(shot, /InputDesktopName\(\) != "Default"\) throw new Refusal\(SecureDesktopReason, "paused"\)/, "not on a secure desktop");
