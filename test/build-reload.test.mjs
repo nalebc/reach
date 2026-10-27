@@ -11,12 +11,18 @@ import { startDom } from "./dom/harness.mjs";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
 
+// Node's own fetch, kept before the page harness replaces it.
+const realFetch = globalThis.fetch;
 let dom, reload;
 before(async () => {
   dom = await startDom({ mobile: true });
   reload = await dom.load("/src/build-reload.ts");
 });
 after(() => dom?.close());
+// These cases are a browser page Reach's offline copy serves, which may
+// reload at once. A page without one (the iPhone and Android apps) has its
+// own cases at the end.
+const withCopy = { offlineCopy: () => true };
 
 test("a page left open on an old phone interface reloads once Reach serves a new one, never mid-typing", () => {
   const { noteBuild, forgetBuild, busyHere } = reload;
@@ -24,6 +30,7 @@ test("a page left open on an old phone interface reloads once Reach serves a new
   let reloads = 0;
   const waits = [];
   const options = {
+    ...withCopy,
     reload: () => reloads++,
     busy: () => busyHere(dom.document),
     wait: (f) => waits.push(f),
@@ -63,6 +70,7 @@ test("a restored old Home Screen page updates even when its first presence packe
     busy = true;
   const waits = [];
   reload.noteBuild("new", {
+    ...withCopy,
     reload: () => reloads++,
     busy: () => busy,
     wait: (f) => waits.push(f),
@@ -127,7 +135,7 @@ test("held preparation rechecks typing and cannot reload a retired update genera
   for (const retired of [false, true]) {
     reload.forgetBuild();
     let finish, reloads = 0, busy = false; const waits = [];
-    const options = { busy: () => busy, wait: fn => waits.push(fn), reload: () => reloads++,
+    const options = { ...withCopy, busy: () => busy, wait: fn => waits.push(fn), reload: () => reloads++,
       prepare: () => new Promise(resolve => { finish = resolve; }), currentPage: async () => true };
     reload.noteBuild("old", options); await Promise.resolve(); reload.noteBuild("new", options);
     assert.equal(typeof finish, "function"); busy = true;
@@ -144,6 +152,7 @@ test("a failed initial page comparison retries on the next same-build presence p
   let checks = 0,
     reloads = 0;
   const options = {
+    ...withCopy,
     reload: () => reloads++,
     busy: () => false,
     currentPage: async () => (++checks === 1 ? null : false),
@@ -263,6 +272,7 @@ test("automatic checks retry after offline, expose waiting state, and apply only
     busy = true;
   const waits = [];
   const options = {
+    ...withCopy,
     currentPage: async () => (++checks === 1 ? null : false),
     reload: () => applied++,
     busy: () => busy,
@@ -333,4 +343,118 @@ test("a page in use waits for its update: until it's put away or left untouched 
   assert.equal(inUse(dom.document, now), true, "just scrolled: reading");
   assert.equal(inUse(dom.document, now + IDLE_MS + 1000), false, "untouched for a while");
   assert.equal(inUse({ hidden: true }, now), false, "in the background");
+});
+
+// The iPhone and Android apps' web view has no offline copy. A reload started
+// as the phone locked or woke, its network not back, failed there and left a
+// blank white page until the app was closed and opened again (Oct 26).
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+test("without an offline copy, a page put away never reloads; in front and free, only once the new page answers", async () => {
+  reload.forgetBuild();
+  let reloads = 0, away = true, answer = false, asked = 0;
+  const waits = [];
+  const options = {
+    offlineCopy: () => false,
+    away: () => away,
+    busy: () => false,
+    wait: (f) => waits.push(f),
+    reload: () => reloads++,
+    currentPage: async () => true,
+    answers: async () => { asked++; return answer; },
+  };
+  reload.noteBuild("old", options);
+  await Promise.resolve();
+  reload.noteBuild("new", options);
+  assert.equal(reloads, 0, "put away: no reload");
+  assert.equal(asked, 0, "nothing asked of the network while put away");
+  assert.equal(waits.length, 1);
+  assert.equal(reload.getUpdateState(), "waiting");
+  // Being put away again starts nothing more.
+  dom.document.dispatchEvent(new dom.window.Event("visibilitychange"));
+  assert.equal(waits.length, 1);
+  // In front, but the network isn't back yet: asked, kept, tried again later.
+  away = false;
+  waits.shift()();
+  await settle();
+  assert.equal(asked, 1);
+  assert.equal(reloads, 0, "no reload into a page that doesn't answer");
+  assert.equal(waits.length, 1);
+  // It answers: one reload.
+  answer = true;
+  waits.shift()();
+  await settle();
+  assert.equal(reloads, 1);
+  assert.equal(reload.getUpdateState(), "reloading");
+  reload.noteBuild("newer", options);
+  assert.equal(reloads, 1);
+});
+
+test("without an offline copy, a page put away or taken up while its new page answers keeps the old one for now", async () => {
+  for (const change of ["away", "busy"]) {
+    reload.forgetBuild();
+    let reloads = 0, away = false, busy = false, finish;
+    const waits = [];
+    const options = {
+      offlineCopy: () => false,
+      away: () => away,
+      busy: () => busy,
+      wait: (f) => waits.push(f),
+      reload: () => reloads++,
+      currentPage: async () => true,
+      answers: () => new Promise((resolve) => { finish = resolve; }),
+    };
+    reload.noteBuild("old", options);
+    await Promise.resolve();
+    reload.noteBuild("new", options);
+    assert.equal(typeof finish, "function", "the new page is asked for while in front and free");
+    if (change === "away") away = true;
+    else busy = true;
+    finish(true);
+    await settle();
+    assert.equal(reloads, 0, `${change}: no reload`);
+    assert.equal(waits.length, 1, `${change}: it waits`);
+    away = busy = false;
+    waits.shift()();
+    await settle();
+    finish(true);
+    await settle();
+    assert.equal(reloads, 1, `${change}: reloads once free and in front`);
+  }
+});
+
+test("a page with an offline copy still reloads as it's put away", () => {
+  reload.forgetBuild();
+  let reloads = 0;
+  const options = { offlineCopy: () => true, away: () => true, busy: () => false, wait: () => {}, reload: () => reloads++ };
+  reload.noteBuild("old", options);
+  reload.noteBuild("new", options);
+  assert.equal(reloads, 1);
+});
+
+test("the new page answers only when the computer serves it: not an error, not the offline copy, not a stalled or closed connection", async (t) => {
+  const http = await import("node:http");
+  let mode = "ok";
+  const asked = [];
+  const sockets = new Set();
+  const server = http.createServer((req, res) => {
+    asked.push(new URL(req.url, "http://x").searchParams.has("reach-update"));
+    if (mode === "stall") return;
+    if (mode === "error") return res.writeHead(503).end();
+    res.writeHead(200, mode === "copy" ? { "X-Reach-Cached-Shell": "1" } : {}).end("<!doctype html>");
+  });
+  server.on("connection", (socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const href = `http://127.0.0.1:${server.address().port}/files#pair=12345678`;
+  const close = () => new Promise((resolve) => { for (const s of sockets) s.destroy(); server.close(resolve); });
+  t.after(() => server.listening && close());
+  assert.equal(await reload.pageAnswers(href, realFetch), true, "served");
+  assert.deepEqual(asked, [true], "asked for the fresh page, as the reload will be");
+  mode = "error";
+  assert.equal(await reload.pageAnswers(href, realFetch), false, "an error page");
+  mode = "copy";
+  assert.equal(await reload.pageAnswers(href, realFetch), false, "the offline copy");
+  mode = "stall";
+  assert.equal(await reload.pageAnswers(href, realFetch, 200), false, "no reply in time");
+  await close();
+  assert.equal(await reload.pageAnswers(href, realFetch), false, "nothing listening");
 });
