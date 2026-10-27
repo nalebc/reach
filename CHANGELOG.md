@@ -8,6 +8,11 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-10-26
+
+Reach on an iPhone no longer comes back from sitting idle as a blank white
+page, whether it runs as a Home Screen web app or as the iPhone app.
+
 ### Fixed
 
 - A Home Screen web app on an iPhone no longer opens on a blank white page
@@ -15,12 +20,13 @@ release notes, so date the heading before tagging.
   "Reconnecting to Reach…" page, which retries the same link by itself; its
   worker is kept on every owner page, not only after the offline copy was
   saved or notifications were turned on. That page's "…" no longer shows as
-  "â€¦".
+  "â€¦". Open the Home Screen app once while online to pick this up.
 - An open phone page no longer reloads for a new interface while it's put
   away unless Reach's offline copy serves it; in front, it reloads only once
   the new page answers.
 - The iPhone app opens Reach's page again by itself, showing "Reconnecting to
-  your computer…", after iOS ends it while the computer can't be reached.
+  your computer…", after iOS ends it while the computer can't be reached. This
+  part needs a new build of the iPhone app.
 
 ## [0.4.3] — 2026-10-26
 
