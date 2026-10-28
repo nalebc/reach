@@ -8,6 +8,14 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- On an iPhone or iPad held upright, Screen's fullscreen button opens the
+  system's own fullscreen, as a YouTube video does: the whole screen, the
+  status bar gone, turning with the phone. It's for watching; its close
+  button comes back to Reach. Turned on its side, Reach's own fullscreen
+  keeps control.
+
 ## [0.4.4] — 2026-10-26
 
 Reach on an iPhone no longer comes back from sitting idle as a blank white

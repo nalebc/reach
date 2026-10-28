@@ -59,6 +59,7 @@ import "./settings-list.css";
 import "./screen-bar.css";
 import "./screen-chrome.css";
 import { MacPasswordField } from "./NeedsYou";
+import { prepareWatch, systemVideoFullscreen, type Watch } from "./watch-fullscreen";
 type Display = {
   id: string;
   name: string;
@@ -534,6 +535,21 @@ export default function Screen({
   if (stream.width > 0 && stream.height > 0)
     aspect.current = stream.width / stream.height;
   const chrome = useScreenChrome(viewer, fullscreen && !typing, aspect.current);
+  // An iPhone's own fullscreen, as a video plays (src/watch-fullscreen.ts):
+  // ready while the picture shows, for the Fullscreen button held upright.
+  // Turned on its side, Reach's own fullscreen takes over, with control.
+  const watch = useRef<Watch | null>(null);
+  const watchable = mobile && systemVideoFullscreen();
+  useEffect(() => {
+    const surface = stream.canvas.current;
+    if (!watchable || !stream.ready || !surface) return;
+    const prepared = prepareWatch(surface);
+    watch.current = prepared;
+    return () => {
+      prepared.stop();
+      if (watch.current === prepared) watch.current = null;
+    };
+  }, [watchable, stream.ready, stream.canvas]);
   // Turning a phone back closes its automatic fullscreen. Android can
   // still hide its browser's bars with a tap, so the button stays there.
   const turnToLeave = chrome?.placement === "overlay" && landscape && !nativeOffer;
@@ -1281,7 +1297,11 @@ export default function Screen({
                 <button
                   aria-label={fullscreen && !nativeOffer ? "Exit fullscreen" : "Enter fullscreen"}
                   aria-pressed={fullscreen && !nativeOffer}
-                  onClick={() => void toggleFullscreen()}
+                  onClick={() => {
+                    // Upright on an iPhone: the phone's own fullscreen.
+                    if (!fullscreen && !landscape && watch.current?.enter()) return;
+                    void toggleFullscreen();
+                  }}
                 >
                   {fullscreen && !nativeOffer ? <Minimize size={18} /> : <Maximize size={18} />}
                 </button>
