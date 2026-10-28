@@ -359,6 +359,30 @@ test("real Chrome rediscovers a moved private HTTPS gateway without replaying an
   const version = await browser.send("Browser.getVersion");
   t.diagnostic(JSON.stringify({ chrome: version.product, hostPlatform: process.platform }));
   const tab = await openTab(browser);
+  // Discovery turns a failed probe into a route choice, and the page sees
+  // only "Failed to fetch". Keep Chrome's own reason for each failed request
+  // and what each fixture server received, so a route assertion says whether
+  // the network or the route chose (Windows run 40590637748 chose public at
+  // the first check, with nothing recorded).
+  await tab.send("Network.enable");
+  const names = { [publicOrigin]: "public", [privateA]: "private-a", [privateB]: "private-b", [foreign]: "foreign" };
+  const sent = new Map(), chromeFailed = [];
+  browser.on("Network.requestWillBeSent", (event, session) => {
+    if (session !== tab.sessionId) return;
+    const url = new URL(event.request.url);
+    sent.set(event.requestId, { request: `${event.request.method} ${names[url.origin] || url.protocol} ${url.pathname}`, at: event.timestamp });
+  });
+  browser.on("Network.loadingFailed", (event, session) => {
+    if (session !== tab.sessionId) return;
+    const request = sent.get(event.requestId);
+    chromeFailed.push({ request: request?.request || event.requestId, chrome: event.errorText, canceled: !!event.canceled,
+      blocked: event.blockedReason || null, cors: event.corsErrorStatus?.corsError || null,
+      afterMs: request ? Math.round((event.timestamp - request.at) * 1000) : null });
+  });
+  const discovery = () => JSON.stringify({
+    received: calls.filter(call => ["/reach-start.json", "/api/health"].includes(call.path)).map(call => `${call.way} ${call.path}`),
+    chromeFailed,
+  });
   await tab.navigate(publicOrigin + "/");
   const receiptId = await tab.evaluate(`(async () => {
     const f = window.fixture = { time: 0 };
@@ -369,11 +393,12 @@ test("real Chrome rediscovers a moved private HTTPS gateway without replaying an
     return f.state.receipt.requestId;
   })()`);
   auth.decideAgentAdmission(receiptId, "approve");
-  assert.equal(await tab.evaluate(`(async () => {
+  const first = await tab.evaluate(`(async () => {
     const f = window.fixture;
     f.state = await f.client.status(f.state); f.peer = f.state.session.peer;
     return (await (await f.client.request(f.peer, "/api/browser")).json()).way;
-  })()`), "private-a");
+  })()`);
+  assert.equal(first, "private-a", `the first discovery chose ${first}: ${discovery()}`);
   await tab.evaluate(`{ const f = window.fixture; f.held = f.client.request(f.peer, "/api/browser?hold=1").then(response => response.json()); "started"; }`);
   await heldAtServer;
   assert.equal(await tab.evaluate(`(async () => {
@@ -386,10 +411,11 @@ test("real Chrome rediscovers a moved private HTTPS gateway without replaying an
   assert.equal(await tab.evaluate(`(async () => { const f = window.fixture; f.time = 15001; return (await (await f.client.request(f.peer, "/api/browser")).json()).way; })()`), "public", "closed discovery assets do not close an independently authorized gateway");
   metadataOpen = true;
   advertised = privateB;
-  assert.deepEqual(await tab.evaluate(`(async () => {
+  const moved = await tab.evaluate(`(async () => {
     const f = window.fixture; f.time = 30002;
     return Promise.all(Array.from({ length: 3 }, async () => (await (await f.client.request(f.peer, "/api/browser")).json()).way));
-  })()`), ["private-b", "private-b", "private-b"]);
+  })()`);
+  assert.deepEqual(moved, ["private-b", "private-b", "private-b"], `rediscovery chose ${moved}: ${discovery()}`);
   releaseHeld();
   assert.deepEqual(await tab.evaluate("window.fixture.held"), { way: "private-a" }, "the old-route response remains attached to its original request");
   assert.equal(dispatched.filter(call => call.method === "POST").length, 1, "the unknown action was never replayed through either replacement route");
