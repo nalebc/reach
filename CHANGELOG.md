@@ -8,6 +8,19 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Added
+
+- When the phone's page stops answering (a freeze, a tap that arrives late or
+  never becomes a click, taps that land on something lying over the page, or
+  a page closed while frozen), it tells the computer, which keeps a short,
+  bounded record of what kind, how long, which page and route, and the Reach
+  names of what was tapped. Never the page's text or labels.
+
+### Fixed
+
+- A guest saved without folders no longer makes every request fail with an
+  error; it has no folders.
+
 ## [0.4.4] — 2026-10-26
 
 Reach on an iPhone no longer comes back from sitting idle as a blank white
