@@ -1,4 +1,5 @@
 import { useLayoutEffect, type RefObject } from "react";
+import { holdPage } from "./page-hold";
 
 // Pins an element to the part of the screen the phone keyboard leaves visible.
 // iOS Safari shrinks visualViewport, not the layout viewport, when the
@@ -11,23 +12,9 @@ export function useViewportBox(
   useLayoutEffect(() => {
     const box = element.current;
     if (!active || !box) return;
-    const body = document.body;
-    const saved = body.style.cssText;
-    const x = window.scrollX,
-      y = window.scrollY;
-    // iOS Safari draws a fixed element shifted by however far the page was
-    // scrolled once the page underneath is frozen (a chat opened from a list
-    // scrolled down showed up half way down the screen, its composer off it).
-    // Freeze the page from its top instead; it goes back where it was after.
-    if (x || y) window.scrollTo({ left: 0, top: 0, behavior: "instant" });
-    // Stop the page underneath from scrolling when the keyboard opens.
-    Object.assign(body.style, {
-      position: "fixed",
-      top: "0px",
-      left: "0px",
-      width: "100%",
-      overflow: "hidden",
-    });
+    // The page underneath frozen from its top (src/page-hold.ts), shared
+    // with every other hold: it goes back where it was once the last lets go.
+    const letGo = holdPage({ fromTop: true });
     const viewport = window.visualViewport;
     let frame = 0;
     let last = "";
@@ -87,8 +74,7 @@ export function useViewportBox(
       for (const name of ["top", "height", "left", "width"])
         box.style.removeProperty(`--${prefix}-${name}`);
       delete box.dataset.compactViewport;
-      body.style.cssText = saved;
-      window.scrollTo({ left: x, top: y, behavior: "instant" });
+      letGo();
     };
   }, [element, active, prefix]);
 }
