@@ -3,6 +3,7 @@ import "./storage-fallback";
 import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
+import { watchStalls } from "./stall-watch";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
 import FallbackSetup, { FallbackNotice } from "./FallbackSetup";
@@ -602,6 +603,21 @@ function ReachWorkspace() {
   const pageAt = useRef(0);
   const pageNow = useRef(page);
   pageNow.current = page;
+  // When this page stops answering, the computer keeps a note of it
+  // (src/stall-watch.ts): only on the owner's own private connection.
+  const stallPeer = useRef(peer);
+  stallPeer.current = peer;
+  useEffect(() => watchStalls(async (reports) => {
+    const target = stallPeer.current;
+    if (!target || connectionWay(target) === "public") return "later";
+    try {
+      await request(target, "/api/reach/stalls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reports }), signal: AbortSignal.timeout(10000) });
+      return "taken";
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      return status === 401 || status === 403 || status === 400 ? "refused" : "later";
+    }
+  }, { page: () => pageNow.current || "", route: () => (stallPeer.current ? connectionWay(stallPeer.current) : "") }), []);
   const afterStep = useRef<(() => void) | null>(null);
   // A root-tab switch discards that section's deeper entries before moving
   // on. Ordinary page navigation keeps them, so Back restores the exact
