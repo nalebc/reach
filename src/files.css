@@ -435,7 +435,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   border-radius: 11px;
   background: color-mix(in srgb, var(--kind) 15%, transparent);
   color: var(--kind);
-  transition: transform 0.12s ease;
+  transition: transform var(--t-tap);
 }
 /* Native icons are already shaped like files and folders: no tile. */
 .file-kind.is-native {
@@ -621,7 +621,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   width: 76px;
   height: 76px;
   margin-bottom: 2px;
-  transition: transform 0.12s ease;
+  transition: transform var(--t-tap);
 }
 .file-tile-icon .file-kind {
   width: 60px;

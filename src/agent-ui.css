@@ -9,7 +9,7 @@
   --ag-raised: #1a221e;
   --ag-field: #0f1612;
   --ag-danger: #ff8a7a;
-  --ag-amber: #f2c46b;
+  --ag-amber: var(--needs-you, #f2c46b);
 }
 
 /* ---- Avatar ------------------------------------------------------------ */

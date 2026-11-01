@@ -294,10 +294,10 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .sheet-page.is-forward {
-    animation: sheet-page-forward 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: sheet-page-forward var(--t-move);
   }
   .sheet-page.is-back {
-    animation: sheet-page-back 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: sheet-page-back var(--t-move);
   }
 }
 @keyframes sheet-page-forward {
@@ -365,7 +365,7 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .screen-popup.reach-sheet[open] {
-    animation: reach-sheet-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: reach-sheet-in var(--t-move);
   }
 }
 @keyframes reach-sheet-in {

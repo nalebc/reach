@@ -233,8 +233,8 @@
   .key-tile,
   .key-chip {
     transition:
-      background-color 0.12s ease,
-      transform 0.12s ease;
+      background-color var(--t-tap),
+      transform var(--t-tap);
   }
   .key-tile:active:not(:disabled),
   .key-chip:active:not(:disabled) {

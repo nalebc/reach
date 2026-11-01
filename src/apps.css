@@ -88,7 +88,7 @@
   place-items: center;
   width: 64px;
   height: 64px;
-  transition: transform 0.12s ease;
+  transition: transform var(--t-tap);
 }
 .app-tile:active .app-tile-logo {
   transform: scale(0.92);
