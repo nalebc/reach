@@ -2,9 +2,11 @@
 import "./storage-fallback";
 import "./reconnect-url";
 import { openReach } from "./app-boot";
+import { keepPageRecovery } from "./page-recovery";
 // Keeps the browser's install prompt from page load (Add to Home Screen).
 import "./home-screen";
 
 // Keep a visible startup state even when a cached or unavailable chunk cannot
 // load. React's boundary takes over after the application starts rendering.
+keepPageRecovery();
 void openReach(() => import("./main"));

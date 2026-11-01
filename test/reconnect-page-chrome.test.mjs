@@ -34,7 +34,7 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   const navigations = [];
   app.use((req, res, next) => {
     if (req.path !== "/") return next();
-    navigations.push({ url: req.url, mode: navigationMode });
+    navigations.push({ url: req.url, mode: navigationMode, method: req.method });
     if (navigationMode === "headers-stall") return;
     if (navigationMode === "body-stall") {
       res.writeHead(200, { "Content-Type": "text/html" });
@@ -62,19 +62,57 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   const browser = await launchChrome(t, { binary, hosts: [host], spki: cert.spki });
   t.after(() => browser.close());
   const tab = await openTab(browser);
+  await tab.send("Page.bringToFront");
+  // Headless Chrome can keep even its selected tab hidden. Emulate focus
+  // for foreground checks; the renderer itself is really frozen below.
+  await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   const origin = `https://${host}:${port}`;
   const until = async (expression, what, ms = 20000) => {
     const end = Date.now() + ms;
     for (;;) {
       const value = await tab.evaluate(expression).catch(() => null);
       if (value) return value;
-      if (Date.now() > end) assert.fail(`${what}: ${JSON.stringify({ page: await tab.evaluate("({ url: location.href, title: document.title, text: document.body?.innerText.slice(0, 200) })").catch((error) => error.message), navigations })}`);
+      if (Date.now() > end) assert.fail(`${what}: ${JSON.stringify({ page: await tab.evaluate("({ url: location.href, title: document.title, hidden: document.hidden, text: document.body?.innerText.slice(0, 200) })").catch((error) => error.message), navigations })}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
   await tab.navigate(origin + "/");
   await until("!!navigator.serviceWorker?.controller", "Reach's worker took the page");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.offline-shell.enabled')"), null, "no offline copy was saved");
+
+  // An existing document can lose its rendered app without a navigation.
+  // Keep scripts alive, suspend the real renderer, then return to that same
+  // empty page. Recovery must not depend on a new document-load failure.
+  await until("!!document.getElementById('root')?.textContent.trim()", "the initial workspace rendered");
+  await tab.evaluate("localStorage.setItem('reach.recovery.fixture', 'saved'); history.replaceState(history.state, '', '/?view=fixture#saved-view')");
+  await tab.send("Emulation.setFocusEmulationEnabled", { enabled: false });
+  await tab.evaluate("document.getElementById('root').replaceChildren(); document.documentElement.dataset.emptyFixture = 'true'");
+  await tab.send("Page.setWebLifecycleState", { state: "frozen" });
+  const beforeResume = navigations.length;
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  assert.equal(navigations.length, beforeResume, "suspended pages do not navigate in the background");
+  await tab.send("Page.setWebLifecycleState", { state: "active" });
+  await tab.send("Page.bringToFront");
+  await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await until("!document.hidden", "the restored fixture is foregrounded");
+  await until("!document.documentElement.dataset.emptyFixture && !!document.getElementById('root')?.textContent.trim()", "the same page recovers after its renderer resumes", 15000);
+  await until("!new URL(location.href).searchParams.has('reach-reconnect')", "the saved address is restored");
+  assert.equal(await tab.evaluate("location.pathname + location.search + location.hash"), "/?view=fixture#saved-view");
+  assert.equal(await tab.evaluate("localStorage.getItem('reach.recovery.fixture')"), "saved");
+
+  // A successful response can stall after its headers. The recovery read
+  // must time out through its body, keep feedback visible, and retry later.
+  navigationMode = "body-stall";
+  await tab.evaluate("document.getElementById('root').replaceChildren(); document.documentElement.dataset.emptyFixture = 'true'");
+  await until("!!document.querySelector('[data-reach-page-recovery]')", "a stalled foreground check keeps recovery visible");
+  const stalledReads = navigations.length;
+  await until("!!document.querySelector('[data-reach-page-recovery]')", "the recovery cover stays attached");
+  await new Promise(resolve => setTimeout(resolve, 6500));
+  navigationMode = "healthy";
+  await tab.evaluate("window.dispatchEvent(new Event('online'))");
+  await until("!document.documentElement.dataset.emptyFixture && !!document.getElementById('root')?.textContent.trim()", "a later read recovers after the body timeout", 15000);
+  assert.ok(navigations.length > stalledReads, "the stalled read did not latch recovery off");
+  assert.ok(navigations.every(request => request.method === "GET"), "document recovery never replays an action");
 
   await down();
   await tab.navigate(origin + "/");
