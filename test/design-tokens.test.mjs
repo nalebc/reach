@@ -117,7 +117,11 @@ test("cards and sheets are lifted from the page, not outlined", () => {
   for (const [file, selector, lift] of [
     ["settings-list.css", ".gs-group", "--lift"],
     ["tools-page.css", ".tools-list", "--lift"],
-    ["tools-page.css", ".home-pinned .shortcut-open", "--lift"],
+    [
+      "tools-page.css",
+      ".home-pinned .shortcut-open > .shortcut-icon",
+      "--lift",
+    ],
     ["tools-page.css", ".tools-manage > .tool-open", "--lift"],
     ["app-style.css", "  .app-shell .home-hero", "--lift"],
     ["screen-popup.css", ".screen-popup", "--lift-float"],

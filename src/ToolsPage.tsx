@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  ArrowUpRight,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -189,10 +188,11 @@ export function PinnedTools({
               className="shortcut-open"
               onClick={() => onNavigate(id)}
             >
-              <Icon size={22} aria-hidden="true" />
+              <i className="shortcut-icon" aria-hidden="true">
+                <Icon size={22} />
+              </i>
               <span>{label}</span>
               <small>{description}</small>
-              <ArrowUpRight size={15} aria-hidden="true" />
             </button>
           ))}
         </div>
