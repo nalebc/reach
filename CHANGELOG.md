@@ -8,6 +8,15 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+### Fixed
+
+- Returning from suspension restores a stale live connection even when its
+  socket still reports open or the browser omitted its visibility event.
+  Existing work stays mounted, saved approvals stay bound to their device,
+  and no command or action is replayed.
+- Cancelling a browser-relay response also ends its pending body read, so a
+  suspended relay cannot hold foreground recovery indefinitely.
+
 ## [0.4.4] — 2026-10-26
 
 Reach on an iPhone no longer comes back from sitting idle as a blank white
