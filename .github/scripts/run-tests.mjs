@@ -62,6 +62,8 @@ export const suites = {
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
+    // Home Screen resume and stalled document recovery on every host.
+    "build-reload", "app-boot-ui", "page-recovery-ui", "reconnect-page-chrome",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
