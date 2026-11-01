@@ -27,13 +27,15 @@ const run = (command, home) => new Promise((resolve) =>
 test("the join command installs only the runtime its invitation names", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-pin-"));
   let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
-  const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
+  const archive = new Map();
+  const server = http.createServer((req, res) => res.end(archive.get(req.url) || (/^\/agent-runtimes\/[a-f0-9]{64}\.mjs$/.test(req.url) ? served : "")));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
   const start = `http://127.0.0.1:${server.address().port}`;
   const link = "https://mac.t.ts.net/agent#i=x";
   const runtime = path.join(home, ".reach-agent", "agent.mjs");
   const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+  archive.set(`/agent-runtimes/${sha(served)}.mjs`, served);
 
   // As named: installed, then run with the link.
   const ok = await run(toolsCommand(start, link, sha(served)), home);
@@ -44,6 +46,9 @@ test("the join command installs only the runtime its invitation names", { skip: 
   // Something else served: refused, and the agent keeps the runtime it had.
   const before = fs.readFileSync(runtime, "utf8");
   served = 'console.log("swapped");\n';
+  const afterUpdate = await run(toolsCommand(start, link, sha(before)), home);
+  assert.equal(afterUpdate.code, 0, afterUpdate.stderr);
+  assert.match(afterUpdate.stdout, /runtime v2: join/, "the original invitation still installs its pinned runtime after a host update");
   const refused = await run(toolsCommand(start, link, sha("what the invitation named")), home);
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /not the runtime your invitation names/);
@@ -63,13 +68,15 @@ test("the join command installs only the runtime its invitation names", { skip: 
 test("Windows: the join command in PowerShell installs only the runtime its invitation names", { skip: process.platform !== "win32", timeout: 120000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-pin-"));
   let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
-  const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
+  const archive = new Map();
+  const server = http.createServer((req, res) => res.end(archive.get(req.url) || (/^\/agent-runtimes\/[a-f0-9]{64}\.mjs$/.test(req.url) ? served : "")));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
   const start = `http://127.0.0.1:${server.address().port}`;
   const link = "https://mac.t.ts.net/agent#i=x";
   const runtime = path.join(home, ".reach-agent", "agent.mjs");
   const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+  archive.set(`/agent-runtimes/${sha(served)}.mjs`, served);
 
   const ok = await agentPowerShell(windowsToolsCommand(start, link, sha(served)), home);
   assert.equal(ok.code, 0, ok.stderr);
@@ -79,6 +86,9 @@ test("Windows: the join command in PowerShell installs only the runtime its invi
 
   const before = fs.readFileSync(runtime, "utf8");
   served = 'console.log("swapped");\n';
+  const afterUpdate = await agentPowerShell(windowsToolsCommand(start, link, sha(before)), home);
+  assert.equal(afterUpdate.code, 0, afterUpdate.stderr);
+  assert.match(afterUpdate.stdout, /runtime v2: join/, "PowerShell keeps the original invitation usable after a host update");
   const refused = await agentPowerShell(windowsToolsCommand(start, link, sha("what the invitation named")), home);
   assert.doesNotMatch(refused.stdout, /swapped/, `never run: ${refused.stderr}`);
   assert.equal(fs.readFileSync(runtime, "utf8"), before, "the runtime it had stays");
@@ -155,7 +165,7 @@ test("an admitted agent is told the runtime's hash and may fetch exactly those b
 test("Windows: the join in PowerShell, checked the same way; the runtime's pipe and quoting", async () => {
   const start = "https://mac.t.ts.net", link = "https://mac.t.ts.net/agent#i=x&t=funnel", sha = "a".repeat(64);
   const pinned = windowsToolsCommand(start, link, sha);
-  assert.equal(pinned, `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`);
+  assert.equal(pinned, `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent-runtimes/${sha}.mjs -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`);
   assert.throws(() => windowsToolsCommand(start, link), /Update Reach on that computer/, "an older computer: no unchecked command");
   assert.doesNotMatch(pinned, /join '/, "the link goes in on standard input");
   const { socketOf, quote } = await import("../scripts/agent-remote.mjs");
