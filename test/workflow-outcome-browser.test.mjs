@@ -6,6 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { scriptString } from "./helpers/script-string.mjs";
 import {
   findChrome,
   launchChrome,
@@ -113,7 +114,7 @@ window.showScenario('successful');
         "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))",
       );
     const findButton = (text) =>
-      `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${JSON.stringify(text)}))`;
+      `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${scriptString(text)}))`;
     const key = async (name, code, virtual) => {
       await tab.send("Input.dispatchKeyEvent", {
         type: "keyDown",
@@ -161,7 +162,7 @@ window.showScenario('successful');
         "stale",
         "accepted",
       ]) {
-        await tab.evaluate(`window.showScenario(${JSON.stringify(state)})`);
+        await tab.evaluate(`window.showScenario(${scriptString(state)})`);
         await frame();
         await wait(`!!${findButton("Accept result")}`);
         const layout = await tab.evaluate(

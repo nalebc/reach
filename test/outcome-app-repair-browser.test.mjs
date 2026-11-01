@@ -8,6 +8,7 @@ import { build } from 'esbuild';
 import { syntheticAppRepair, outcomeTuple } from './helpers/synthetic-app-repair.mjs';
 import { outcomeHttp } from './helpers/outcome-http.mjs';
 import { findChrome, launchChrome, openTab } from './helpers/headless-chrome.mjs';
+import { scriptString } from './helpers/script-string.mjs';
 
 // Real Chrome + real owner HTTP routes + actual fixture check subprocesses.
 // Provider turns/review/isolation are simulated. The test-only same-origin
@@ -71,7 +72,7 @@ window.refreshOutcome();
     const deadline = Date.now() + 10000;
     while (!(await page.evaluate(expression))) { if (Date.now() > deadline) assert.fail(`Synthetic browser timed out: ${expression}`); await new Promise(r => setTimeout(r, 20)); }
   };
-  const button = text => `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${JSON.stringify(text)}))`;
+  const button = text => `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${scriptString(text)}))`;
   const touch = async expression => {
     await tab.send('Page.bringToFront');
     const point = await tab.evaluate(`(() => { const e = ${expression}; e.scrollIntoView({block:'center'}); const r = e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);

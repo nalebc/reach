@@ -59,7 +59,7 @@ export const suites = {
     "result-evidence", "outcomes", "outcomes-routes", "workflow-result-evidence", "outcome-coordinator", "workflow-outcome-ui", "workflow-outcome-browser", "outcome-navigation-ui", "outcome-open-app-ui", "outcome-notifications", "workflows", "workflows-openclaw", "relays",
     // Synthetic app bytes/check subprocesses through workflow, owner HTTP and
     // real-browser decisions. Provider turns and isolation remain simulated.
-    "workflow-app-repair", "outcome-app-repair-routes", "outcome-app-repair-browser", "outcome-scheduling",
+    "workflow-app-repair", "outcome-app-repair-routes", "outcome-app-repair-browser", "outcome-scheduling", "browser-script-string",
     // Ordinary workflow progress and retained run results on phone layouts.
     "workflow-run-ui", "workflow-run-browser",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
