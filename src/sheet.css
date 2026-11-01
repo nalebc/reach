@@ -5,7 +5,7 @@
    list.css) and one lime pill pinned to the bottom. Two classes everywhere:
    the older .screen-popup and field rules load after this file. */
 .screen-popup.reach-sheet {
-  --sheet-bg: #121814;
+  --sheet-bg: var(--surface-float);
   width: min(440px, calc(100vw - 28px));
   max-height: min(720px, calc(100dvh - 40px));
   border: 0;
