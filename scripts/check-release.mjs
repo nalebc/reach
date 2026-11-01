@@ -25,9 +25,26 @@ if (!privateWords.some((w) => w.length >= 4)) console.error("Note: no private id
 const publicIdentities = new Map([
   ["contributors@example.invalid", "Reach Contributors"],
   ["54943684+nalebc@users.noreply.github.com", "nalebc"],
-  ["nassimlbd@gmail.com", "Nassim"], // the owner chose to keep this attribution (Oct 10, 2026)
   ["49699333+dependabot[bot]@users.noreply.github.com", "dependabot[bot]"],
   ["41898282+github-actions[bot]@users.noreply.github.com", "github-actions[bot]"],
+]);
+// Existing public history is immutable without a separately approved rewrite.
+// Pin only the previously published commits; never exempt a name or address
+// from new commits or source files. Credential checks still cover all history.
+const historicalAttribution = new Set([
+  "137dd363c215ec7f5b37eb52f9afeef521310c78",
+  "e369211ce954009a43518bd4c35ad278de582851",
+  "79b51f6bcd4034894af55af3cb6ba2679ac020ee",
+  "e4f431459eb36ed43a13323b879b7feee2ad6500",
+  "58b14663baafcf32c32359580c7528c365b48f14",
+  "d4f2f5f3d1dbf9c5d94affd2ad22500ca167f5ca",
+  "3029d1c5ef8c9a106c8851b16406189594630ef9",
+  "6295101112d7328f4a9fdab197dee099a850aaad",
+  "2879afa4651dd22dabdce8092b1faca4d029380b",
+  "ac405670c3763d1fc26edea3ef1548bcd3168527",
+  "6cd3d7c778214690247b4e4f95c8d4da4fcdfc7c",
+  "a635e1b0c3d2370fe0620dd2e56d318b614f8ea0",
+  "419f83385f08fbdb1d40e9767788fdb306f18b7d",
 ]);
 const patterns = [
   ["private key", new RegExp("-----BEGIN " + "(?:RSA |EC |OPENSSH )?PRIVATE KEY-----")],
@@ -47,7 +64,7 @@ try {
     const identities = [[author, authorEmail], [committer, committerEmail]];
     if (identities.some(pair => patterns.some(([, pattern]) => pair.some(value => pattern.test(value)))))
       findings.push([where, "credential in author or committer"]);
-    if (identities.some(([name, email]) => publicIdentities.get(email.toLowerCase()) !== name &&
+    if (!historicalAttribution.has(sha) && identities.some(([name, email]) => publicIdentities.get(email.toLowerCase()) !== name &&
       privateWords.some(word => `${name}\n${email}`.toLowerCase().includes(word.toLowerCase()))))
       findings.push([where, "private identifier in author or committer"]);
   }
