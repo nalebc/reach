@@ -19,7 +19,11 @@
   line-height: 1.5;
 }
 .tools-list {
-  border-block: 1px solid var(--border);
+  padding-inline: 8px;
+  border-block: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--surface-raised);
+  box-shadow: var(--lift);
 }
 .tool-row {
   display: flex;
@@ -122,6 +126,14 @@
 .tools-manage {
   margin-top: 32px;
 }
+/* Agents & people: a card of its own, its icon in line with the tools'. */
+.tools-manage > .tool-open {
+  margin-top: 10px;
+  padding-inline: 14px;
+  border-radius: var(--r-xl);
+  background: var(--surface-raised);
+  box-shadow: var(--lift);
+}
 .tools-manage h2,
 .home-pinned h2 {
   margin: 0 0 10px;
@@ -213,8 +225,10 @@
   row-gap: 2px;
   min-height: 68px;
   padding: 12px;
+  border-color: transparent;
   border-radius: var(--r-lg);
-  background: #ffffff05;
+  background: var(--surface-raised);
+  box-shadow: var(--lift);
   font: inherit;
   font-size: 15px;
   text-align: left;
