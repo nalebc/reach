@@ -33,6 +33,13 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   let navigationMode = "healthy";
   const navigations = [];
   app.use((req, res, next) => {
+    // The initial HTML is not a mounted app. Keep that distinction visible
+    // even on a fast machine, as on a cold or busy browser after reopening.
+    if (/^\/assets\/r2-main-.*\.js$/.test(req.path)) {
+      const timer = setTimeout(next, 1000);
+      res.once("close", () => clearTimeout(timer));
+      return;
+    }
     if (req.path !== "/") return next();
     navigations.push({ url: req.url, mode: navigationMode, method: req.method });
     if (navigationMode === "headers-stall") return;
@@ -62,11 +69,18 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   const browser = await launchChrome(t, { binary, hosts: [host], spki: cert.spki });
   t.after(() => browser.close());
   const tab = await openTab(browser);
+  await tab.send("Network.enable");
+  await tab.send("Network.setCacheDisabled", { cacheDisabled: true });
+  let documentLoads = 0;
+  browser.on("Page.frameNavigated", (event, session) => {
+    if (session === tab.sessionId && !event.frame.parentId) documentLoads++;
+  });
   await tab.send("Page.bringToFront");
   // Headless Chrome can keep even its selected tab hidden. Emulate focus
   // for foreground checks; the renderer itself is really frozen below.
   await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   const origin = `https://${host}:${port}`;
+  const appReady = "!!document.getElementById('root')?.querySelector('button') && !document.getElementById('reach-startup')";
   const until = async (expression, what, ms = 20000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -83,19 +97,22 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   // An existing document can lose its rendered app without a navigation.
   // Keep scripts alive, suspend the real renderer, then return to that same
   // empty page. Recovery must not depend on a new document-load failure.
-  await until("!!document.getElementById('root')?.textContent.trim()", "the initial workspace rendered");
-  await tab.evaluate("localStorage.setItem('reach.recovery.fixture', 'saved'); history.replaceState(history.state, '', '/?view=fixture#saved-view')");
+  await until(appReady, "the initial workspace mounted");
+  await tab.evaluate("localStorage.setItem('reach.recovery.fixture', 'saved'); history.replaceState(history.state, '', '/?view=fixture#saved-view'); window.__resumeTicks = 0; window.setInterval(() => window.__resumeTicks++, 50)");
   await tab.send("Emulation.setFocusEmulationEnabled", { enabled: false });
   await tab.evaluate("document.getElementById('root').replaceChildren(); document.documentElement.dataset.emptyFixture = 'true'");
   await tab.send("Page.setWebLifecycleState", { state: "frozen" });
-  const beforeResume = navigations.length;
+  const beforeResume = documentLoads;
+  const beforeTicks = await tab.evaluate("window.__resumeTicks");
+  assert.ok(Number.isSafeInteger(beforeTicks), "the frozen document retains its heartbeat");
   await new Promise(resolve => setTimeout(resolve, 2500));
-  assert.equal(navigations.length, beforeResume, "suspended pages do not navigate in the background");
+  assert.equal(await tab.evaluate("window.__resumeTicks"), beforeTicks, "the renderer's timers are actually frozen");
+  assert.equal(documentLoads, beforeResume, "suspended pages do not navigate in the background");
   await tab.send("Page.setWebLifecycleState", { state: "active" });
   await tab.send("Page.bringToFront");
   await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   await until("!document.hidden", "the restored fixture is foregrounded");
-  await until("!document.documentElement.dataset.emptyFixture && !!document.getElementById('root')?.textContent.trim()", "the same page recovers after its renderer resumes", 15000);
+  await until(`!document.documentElement.dataset.emptyFixture && (${appReady})`, "the same page recovers after its renderer resumes", 15000);
   await until("!new URL(location.href).searchParams.has('reach-reconnect')", "the saved address is restored");
   assert.equal(await tab.evaluate("location.pathname + location.search + location.hash"), "/?view=fixture#saved-view");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.recovery.fixture')"), "saved");
@@ -110,7 +127,7 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   await new Promise(resolve => setTimeout(resolve, 6500));
   navigationMode = "healthy";
   await tab.evaluate("window.dispatchEvent(new Event('online'))");
-  await until("!document.documentElement.dataset.emptyFixture && !!document.getElementById('root')?.textContent.trim()", "a later read recovers after the body timeout", 15000);
+  await until(`!document.documentElement.dataset.emptyFixture && (${appReady})`, "a later read recovers after the body timeout", 15000);
   assert.ok(navigations.length > stalledReads, "the stalled read did not latch recovery off");
   assert.ok(navigations.every(request => request.method === "GET"), "document recovery never replays an action");
 
@@ -123,7 +140,7 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
 
   // The computer answers again: the page retries by itself, at the same link.
   await up();
-  await until("document.title !== 'Reconnecting to Reach' && !!document.getElementById('root')", "back on Reach once the computer answers", 20000);
+  await until(`document.title !== 'Reconnecting to Reach' && (${appReady})`, "back on Reach once the computer answers", 20000);
   assert.equal(await tab.evaluate("location.origin"), origin);
 
   // A connection may stay open without delivering headers or its body.
@@ -135,7 +152,7 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
     await until("document.title === 'Reconnecting to Reach'", `${mode}: visible recovery`, 15000);
     assert.equal(await tab.evaluate("location.href"), href, `${mode}: retain the saved link`);
     navigationMode = "healthy";
-    await until("document.title !== 'Reconnecting to Reach' && !!document.getElementById('root') && !new URL(location.href).searchParams.has('reach-reconnect')", `${mode}: automatic recovery`, 15000);
+    await until(`document.title !== 'Reconnecting to Reach' && (${appReady}) && !new URL(location.href).searchParams.has('reach-reconnect')`, `${mode}: automatic recovery`, 15000);
     assert.equal(await tab.evaluate("location.href"), href, `${mode}: preserve the view and connection parameters after retry`);
   }
 });
