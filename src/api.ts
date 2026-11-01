@@ -387,6 +387,7 @@ export const whenReachable = (signal?: AbortSignal) =>
     check();
   });
 export const retryable = (e: unknown) => {
+  if ((e as { retryable?: boolean })?.retryable === false) return false;
   const status = (e as { status?: number })?.status;
   return !status || status >= 500 || status === 408 || status === 429;
 };

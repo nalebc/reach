@@ -7,11 +7,29 @@ import { serveMcp, toolsFor } from "../scripts/mcp-server.mjs";
 import { missingKeepUp } from "../scripts/build-agent.mjs";
 import { permittedPath } from "../server/funnel-agent.mjs";
 import { presetRouteAllowed } from "../server/agent-presets.mjs";
+import { browserToolRequest } from "../server/browser-tools.mjs";
 import { createAgentRuntimes, fromBrowserPage, updateNotice } from "../server/agent-runtimes.mjs";
 
 // An agent's copy offers the tools Reach has now, not the ones it was built
 // with: Reach lists them and plans each call with its own code (Oct 10: Grok's
 // copy, built without its self-update, never saw reach_tool_batch).
+
+test("advertised desktop reads pass the signed and hosted gateway without broadening preset access", () => {
+  const access = { preset: "full", screen: true, control: true, open: true, roots: [], terminals: [] };
+  const policy = approvedFullPolicy();
+  const scopes = ["browser:read", "browser:screen", "browser:control", "browser:open"];
+  const full = { kind: "agent", policy, scopes };
+  const readonly = { kind: "agent", policy: { ...policy, preset: "readonly", fullControlVersion: undefined }, scopes: ["browser:read", "browser:screen"] };
+  for (const [name, args] of [["reach_windows", {}], ["reach_menus", { menu: "File" }], ["reach_read_page", { offset: 12000 }], ["reach_mac_shortcuts", {}]]) {
+    const plan = browserToolRequest(name, args, access);
+    const route = permittedPath(plan.method, plan.route);
+    assert.equal(presetRouteAllowed(full, plan.method, route), true, name);
+    assert.equal(presetRouteAllowed(readonly, plan.method, route), name === "reach_windows", name);
+    assert.throws(() => permittedPath("POST", plan.route), { status: 403 }, name);
+  }
+  for (const route of ["/api/browser/desktop/unknown", "/api/agents", "/api/notifications"])
+    assert.throws(() => permittedPath("GET", route), { status: 403 });
+});
 
 // The MCP server over pipes, one message at a time.
 async function serve(api, messages, scopes = ["browser:read"]) {
