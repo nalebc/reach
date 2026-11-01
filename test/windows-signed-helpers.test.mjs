@@ -89,3 +89,11 @@ test("release source fingerprints cover every shipped C# helper and its auxiliar
     if (helper.kind === "screen-video") assert.ok(source.files.includes("scripts/native/agent-desktop.cs"));
   }
 });
+
+test("real Windows reads the native publisher of its system PowerShell", { skip: process.platform !== "win32" }, async () => {
+  const system = process.env.SystemRoot || process.env.SYSTEMROOT;
+  const file = path.win32.join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const verdict = (await authenticodeSignatures([file])).get(file);
+  assert.equal(verdict.status, "Valid");
+  assert.ok(verdict.publisher.length > 0, "Windows supplies the certificate publisher directly");
+});
