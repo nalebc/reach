@@ -7,7 +7,17 @@
 
   /* Surfaces, darkest first, and the text on them. */
   --surface-0: #101311; /* the page */
-  --surface-2: #191e1b; /* panels, cards, grouped lists */
+  --surface-2: #191e1b; /* panels */
+  /* Cards and grouped lists sit a step above the page, lit from the top and
+     casting a soft shadow, not outlined. Sheets, popups and the bottom bar
+     float a step above that. */
+  --surface-raised: #1d2620; /* muted text 6.7:1 */
+  --surface-float: #232d26; /* muted text 6.1:1 */
+  --lift:
+    inset 0 1px 0 rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.35),
+    0 10px 24px -16px rgb(0 0 0 / 0.8);
+  --lift-float:
+    inset 0 1px 0 rgb(255 255 255 / 0.08), 0 30px 80px -20px rgb(0 0 0 / 0.85);
   --line: #dbe9d416;
   --ink: #eff1e6; /* 14.8:1 on --surface-2 */
   --ink-2: #9fae9f; /* muted text, 7.3:1 on --surface-2 */
