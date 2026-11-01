@@ -24,7 +24,7 @@ async function fixture(t) {
   fs.mkdirSync(shared);
   // Synthetic bytes and desktop observations only. No native screen capture,
   // input, provider calls or real Tailscale process are used by this fixture.
-  const state = { bytes: AGENT_SCREEN_RESPONSE_BYTES, ordinary: false, calls: [] };
+  const state = { bytes: AGENT_SCREEN_RESPONSE_BYTES, ordinary: false, missing: false, fronts: 0, calls: [] };
   const image = () => Buffer.alloc(state.bytes, 0x7f);
   const reach = await createReach({
     name: "Image fixture", roots: [shared], dataDir: path.join(dir, "state"),
@@ -44,6 +44,8 @@ async function fixture(t) {
       },
       front: async (_client, authorize) => {
         authorize();
+        state.fronts++;
+        if (state.missing) return undefined;
         return { app: "Fixture", title: state.ordinary ? "x".repeat(AGENT_SCREEN_RESPONSE_BYTES + 1) : "Synthetic observation" };
       },
       cancelClient() {},
@@ -168,6 +170,17 @@ test("large MCP screenshots keep their image budget through hosted and signed Fu
     assert.equal(response.body.result?.isError, true);
     assert.match(response.body.result.content[0].text, /transport limit|too large|exceeds 8 MiB/);
     await assert.rejects(f.api(CALL, "POST", body), /transport limit|exceeds 8 MiB/);
+  });
+  await t.test("missing dispatched results become valid tool errors on hosted and signed connections without re-execution", async () => {
+    f.state.missing = true;
+    const before = f.state.fronts, body = { name: "reach_front", arguments: {} };
+    const response = await f.hostedCall(body);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.result.isError, true);
+    assert.match(response.body.result.content[0].text, /invalid tool result.*Check its state before retrying/);
+    assert.equal(typeof response.body.result.content[0].text, "string");
+    await assert.rejects(f.api(CALL, "POST", body), /invalid tool result/);
+    assert.equal(f.state.fronts - before, 2, "each client dispatched once");
   });
   assert.ok(f.state.calls.length >= 7, "the real tools reached only the synthetic screenshot implementation");
 });

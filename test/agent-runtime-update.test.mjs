@@ -21,6 +21,72 @@ const newer = {
   callTool: async (_api, name) => ({ called: name, by: "newer" }),
 };
 
+test("the host's current tools and calls stay usable while an agent runtime update is stalled", { timeout: 5000 }, async t => {
+  const input = new PassThrough(), output = new PassThrough();
+  const loading = Promise.withResolvers(), started = Promise.withResolvers();
+  const listed = Promise.withResolvers(), called = Promise.withResolvers();
+  const routes = [];
+  output.on("data", chunk => {
+    for (const line of chunk.toString().trim().split("\n")) {
+      const message = JSON.parse(line);
+      if (message.id === 1) listed.resolve(message.result);
+      if (message.id === 2) called.resolve(message.result);
+    }
+  });
+  const runtime = { current: OLD, update: () => { started.resolve(); return loading.promise; } };
+  const run = serveMcp({ input, output, scopes: ["browser:read"], runtime, upgradeWaitMs: 10000, api: async route => {
+    routes.push(route.split("?")[0]);
+    if (route.startsWith("/api/browser/mcp/tools")) return { tools: newer.toolsFor(), dispatch: true, list: "current", runtime: NEW };
+    if (route.startsWith("/api/browser/mcp/call")) return { result: { ok: true }, runtime: NEW };
+    assert.fail("Tool discovery needs no separate device or browser read: " + route);
+  } });
+  t.after(async () => { loading.resolve(newer); input.end(); await run; });
+  input.write(JSON.stringify({ id: 1, method: "tools/list" }) + "\n");
+  await started.promise;
+  const expired = Promise.withResolvers();
+  const timeout = setTimeout(() => expired.reject(Error("Tool discovery or execution waited for the runtime download")), 1500);
+  t.after(() => clearTimeout(timeout));
+  assert.deepEqual((await Promise.race([listed.promise, expired.promise])).tools, newer.toolsFor());
+  input.write(JSON.stringify({ id: 2, method: "tools/call", params: { name: "reach_new_tool", arguments: {} } }) + "\n");
+  assert.deepEqual(JSON.parse((await Promise.race([called.promise, expired.promise])).content[0].text), { ok: true });
+  assert.deepEqual(routes, ["/api/browser/mcp/tools", "/api/browser/mcp/call"]);
+});
+
+test("overlapping catalog refreshes cannot replace a newer runtime with an older download", { timeout: 5000 }, async t => {
+  const input = new PassThrough(), output = new PassThrough();
+  const first = Promise.withResolvers(), started = Promise.withResolvers(), second = Promise.withResolvers();
+  const latest = "c".repeat(64), attempts = [], results = [];
+  let advertised = NEW, active = 0, maximum = 0;
+  const newest = { ...newer, toolsFor: () => [{ ...newer.toolsFor()[0], name: "reach_latest_tool" }] };
+  output.on("data", chunk => {
+    for (const line of chunk.toString().trim().split("\n")) {
+      const message = JSON.parse(line);
+      results.push(message);
+      if (message.id === 2) second.resolve(message.result);
+    }
+  });
+  const runtime = { current: OLD, update: async sha => {
+    attempts.push(sha); maximum = Math.max(maximum, ++active);
+    if (sha === NEW) { started.resolve(); await first.promise; }
+    active--;
+    return sha === NEW ? newer : newest;
+  } };
+  const run = serveMcp({ input, output, runtime, scopes: ["exec"], api: async () => ({ access: { scopes: ["exec"] }, runtime: advertised }) });
+  t.after(async () => { first.resolve(); input.end(); await run; });
+  input.write(JSON.stringify({ id: 1, method: "tools/list" }) + "\n");
+  await started.promise;
+  advertised = latest;
+  input.write(JSON.stringify({ id: 2, method: "tools/list" }) + "\n");
+  await new Promise(resolve => setImmediate(resolve));
+  first.resolve();
+  assert.deepEqual((await second.promise).tools, newest.toolsFor());
+  input.end(JSON.stringify({ id: 3, method: "tools/list" }) + "\n");
+  await run;
+  assert.equal(maximum, 1, "downloads that replace the same runtime file must never overlap");
+  assert.deepEqual(attempts, [NEW, latest]);
+  assert.deepEqual(results.find(message => message.id === 3).result.tools, newest.toolsFor());
+});
+
 // The MCP server over pipes; `messages` in order, answers by id plus any
 // notifications.
 async function serve({ runtime, device, browser, messages, upgradeWaitMs, pause = 0, routes = [] }) {
@@ -113,7 +179,7 @@ test("each agent says which runtime it runs: its own, then the newer one once lo
   input.end(JSON.stringify({ id: 1, method: "tools/list" }) + "\n");
   await served;
   // Reach's own tool list first (a computer without one answers no tools), then the access.
-  assert.deepEqual(quiet, [`/api/device?runtime=${OLD}`, `/api/browser/mcp/tools?runtime=${OLD}`, `/api/browser?runtime=${OLD}`]);
+  assert.deepEqual(quiet, [`/api/browser/mcp/tools?runtime=${OLD}`, `/api/device?runtime=${OLD}`, `/api/browser?runtime=${OLD}`]);
   // A source checkout says nothing.
   const plain = [];
   await serve({ device: () => ({ access: { scopes: ["exec"] } }), messages: [{ id: 1, method: "tools/list" }], routes: plain });
@@ -147,6 +213,19 @@ test("fails closed: a runtime that doesn't load leaves the tools as they are, an
   assert.deepEqual(results.get(1).tools.map((t) => t.name), own);
 });
 
+test("a runtime download rejected during a restart retries on the next use of the same connection", async t => {
+  let asked = 0;
+  t.mock.method(console, "error", () => {});
+  const runtime = { current: OLD, update: async () => {
+    if (++asked === 1) throw Object.assign(Error("Reach is restarting"), { status: 503 });
+    return newer;
+  } };
+  const { results } = await serve({ runtime, device: () => ({ access: { scopes: ["exec"] }, runtime: NEW }),
+    messages: [{ id: 1, method: "tools/list" }, { id: 2, method: "tools/list" }], pause: 20 });
+  assert.equal(asked, 2);
+  assert.deepEqual(results.get(2).tools, newer.toolsFor());
+});
+
 // The real thing: the bundle an agent downloads, replaced by a newer one the
 // computer serves, checked byte for byte.
 test("the bundle takes the computer's newer runtime: checked, loaded from its own copy, saved for the next start", { timeout: 60000 }, async (t) => {
@@ -168,7 +247,7 @@ test("the bundle takes the computer's newer runtime: checked, loaded from its ow
   const served = original + "\n// rebuilt on the computer\n";
   let answer = { sha256: sha(served), text: served };
   const lines = [];
-  const updater = runtimeUpdater({ home, api: async (route) => { assert.equal(route, "/api/device/runtime"); return answer; }, file, bundle: true, env: {}, log: (line) => lines.push(line) });
+  const updater = runtimeUpdater({ home, api: async (route) => { assert.equal(route, "/api/device/runtime"); if (answer instanceof Error) throw answer; return answer; }, file, bundle: true, env: {}, log: (line) => lines.push(line) });
   assert.equal(updater.current, sha(original));
 
   // Not what it named: refused, nothing written or loaded.
@@ -178,6 +257,10 @@ test("the bundle takes the computer's newer runtime: checked, loaded from its ow
   await assert.rejects(updater.update(sha(served)), /didn't match/);
   assert.equal(fs.readFileSync(file, "utf8"), original);
   assert.equal(fs.existsSync(path.join(home, "runtime", `agent-${sha(served).slice(0, 16)}.mjs`)), false);
+
+  answer = Error("The download timed out");
+  await assert.rejects(updater.update(sha(served)), { code: "EREACHRUNTIMEFETCH" });
+  assert.equal(fs.readFileSync(file, "utf8"), original, "a failed download retains the installed runtime for the next attempt");
 
   // As named: its tools, from its own copy; this file replaced for next time.
   answer = { sha256: sha(served), text: served };

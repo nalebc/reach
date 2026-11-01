@@ -42,6 +42,17 @@ test("only exact successful MCP image calls get the bounded base64 envelope budg
   ]) assert.equal(agentJsonResponseLimit(path, method, body, status), AGENT_JSON_RESPONSE_BYTES);
 });
 
+test("direct and tailnet dispatch reject missing tool results without emitting malformed MCP content", async t => {
+  const fixture = await adapters(t);
+  for (const value of [null, [], {}, { list: "current" }]) {
+    fixture.answer(value);
+    for (const api of fixture.clients)
+      await assert.rejects(api(route, "POST", { name: "reach_front", arguments: {} }), /invalid tool result.*Check its state before retrying/);
+  }
+  fixture.answer({ result: null });
+  for (const api of fixture.clients) assert.deepEqual(await api(route, "POST", { name: "reach_front" }), { result: null });
+});
+
 test("direct and tailnet MCP dispatch accept a 2 MiB screenshot through full and compact tool calls", async t => {
   const fixture = await adapters(t), value = envelope(2 * 1024 * 1024);
   fixture.answer(value);

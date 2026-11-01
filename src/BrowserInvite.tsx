@@ -102,7 +102,7 @@ const pinnedRuntime = (runtime?: string) => {
 export const toolsCommand = (start: string, link: string, runtime?: string) => {
   const sha = pinnedRuntime(runtime);
   const join = `printf '%s\\n' '${link}' | node ~/.reach-agent/agent.mjs join`;
-  return `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${sha} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && ${join}`;
+  return `curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent-runtimes/${sha}.mjs && node -e 'const [f,h]=process.argv.slice(1);if(require("crypto").createHash("sha256").update(require("fs").readFileSync(f)).digest("hex")!==h)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")' ~/.reach-agent/agent.mjs.new ${sha} && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && ${join}`;
 };
 // The same for Windows, in PowerShell (5.1 and later ship with Windows 10
 // and 11): download, check its SHA-256, then the link on standard input.
@@ -110,7 +110,7 @@ export const windowsToolsCommand = (start: string, link: string, runtime?: strin
   const sha = pinnedRuntime(runtime);
   const check = `if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne '${sha}') { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; `;
   // Windows PowerShell 5.1 may not offer TLS 1.2 on its own.
-  return `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; ${check}Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`;
+  return `[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent-runtimes/${sha}.mjs -OutFile "$d\\agent.mjs.new"; ${check}Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; '${link}' | node "$d\\agent.mjs" join`;
 };
 // The "Always" duration: access until the owner ends it.
 const ALWAYS = 0;

@@ -371,7 +371,9 @@ export function toContent(result) {
       { type: "text", text: JSON.stringify(rest, null, 2) },
     ];
   }
-  return [{ type: "text", text: JSON.stringify(result, null, 2) }];
+  const text = JSON.stringify(result, null, 2);
+  if (typeof text !== "string") throw Error("Reach returned no tool result. Check its state before retrying.");
+  return [{ type: "text", text }];
 }
 // The scope each tool needs; a tool missing here is never offered.
 const TOOL_SCOPES = {
@@ -498,17 +500,27 @@ export function serveMcp({
     ]).catch(() => "").finally(() => clearTimeout(timer));
   };
   const tried = new Map(); // sha256 → when it was last tried
+  let updating = Promise.resolve();
   // Fails closed: a runtime that can't be fetched, doesn't match its hash or
   // doesn't load leaves this one's tools as they are.
   const upgrade = async (sha, waitMs = 0) => {
     if (!runtime || typeof sha !== "string" || !SHA256.test(sha) || sha === current) return;
     if (tried.has(sha) && now() - tried.get(sha) < UPGRADE_RETRY_MS) return;
     tried.set(sha, now());
-    const loaded = Promise.resolve()
+    // Runtime updates replace the same file. Keep different announced
+    // versions in order even when tools/list and calls overlap.
+    const loaded = updating
       .then(() => runtime.update(sha))
       .then((next) => (typeof next?.toolsFor === "function" && typeof next?.callTool === "function"
         ? { toolsFor: next.toolsFor, callTool: next.callTool, ...(typeof next.toContent === "function" ? { toContent: next.toContent } : {}) } : null))
-      .catch((error) => { console.error(`Reach: kept this runtime; the computer's newer one didn't load (${error?.message || error}).`); return null; });
+      .catch((error) => {
+        // A sleep, restart or network outage must not suppress updates for
+        // ten minutes after the connection is healthy again.
+        if (error?.status >= 500 || error?.unreachable || /^(EREACHRUNTIMEFETCH|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)$/.test(error?.code || "")) tried.delete(sha);
+        console.error(`Reach: kept this runtime; the computer's newer one didn't load (${error?.message || error}).`);
+        return null;
+      });
+    updating = loaded.then(() => {});
     const swap = (next) => { if (!next) return false; impl = next; current = sha; tried.delete(sha); return true; };
     const later = () => loaded.then((next) => { if (swap(next)) write({ method: "notifications/tools/list_changed" }); });
     if (!waitMs) return void later();
@@ -549,17 +561,26 @@ export function serveMcp({
       else if (r.method === "resources/templates/list") result = { resourceTemplates: [] };
       else if (r.method === "prompts/list") result = { prompts: [] };
       else if (r.method === "tools/list") {
-        const device = liveScopes ? await api(said("/api/device")) : undefined;
-        currentScopes = device?.access?.scopes || scopes || [];
-        // A newer runtime on the computer: its tools, in this answer if it
-        // loads in time.
-        await upgrade(device?.runtime, upgradeWaitMs);
-        // Reach's own list when it has one: every tool it has now.
-        const served = currentScopes.includes("browser:read") ? await computerTools(api, said, profile) : null;
+        // The computer's catalog already uses its current permissions and
+        // implementation. Return it in one round trip; downloading a runtime
+        // must not delay an agent that can dispatch directly to the computer.
+        const asked = currentScopes.includes("browser:read");
+        let served = asked ? await computerTools(api, said, profile) : null;
+        let device;
+        if (!served) {
+          device = liveScopes ? await api(said("/api/device")) : undefined;
+          currentScopes = device?.access?.scopes || scopes || [];
+          if (!asked && currentScopes.includes("browser:read")) served = await computerTools(api, said, profile);
+        }
         listed = served?.list;
         dispatch = served?.dispatch === true;
-        if (served) result = { tools: served.tools };
+        if (served) {
+          void upgrade(served.runtime);
+          result = { tools: served.tools };
+        }
         else {
+          // Older computers still need this runtime's own tool handlers.
+          await upgrade(device?.runtime, upgradeWaitMs);
           const access = currentScopes.includes("browser:read") ? await api(said("/api/browser")) : undefined;
           result = { tools: profile === "compact" && access?.preset !== undefined ? compactTools(impl.toolsFor(currentScopes, access)) : impl.toolsFor(currentScopes, access) };
         }

@@ -342,7 +342,13 @@ test("every connection says it the same way: act and see, up to 10 at once, wait
   input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) + "\n");
   input.end(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
   await run;
-  const [init, list] = text.trim().split("\n").map((line) => JSON.parse(line));
+  // Catalog discovery can finish before the initialization guide. JSON-RPC
+  // replies are matched by request ID, regardless of their completion order.
+  const replies = new Map(text.trim().split("\n").map((line) => {
+    const message = JSON.parse(line);
+    return [message.id, message];
+  }));
+  const init = replies.get(1), list = replies.get(2);
   assert.ok(init.result.instructions.includes(GO_FAST), init.result.instructions);
   assert.deepEqual(list.result.tools.map((tool) => tool.description), served.map((tool) => tool.description));
 });

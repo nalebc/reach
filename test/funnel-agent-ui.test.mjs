@@ -149,6 +149,33 @@ const approved = () => ({
   device,
 });
 
+test("browser signing waits until private-route startup finishes after a sleep", async () => {
+  const f = fixture(payload => payload.operation === "claim" ? reply(receipt(), 202) : payload.operation === "status" ? reply(approved()) : reply({ ok: true }));
+  const client = createFunnelAgent({ ...f.options, gateway: { endpoint: async () => { f.advance(61_000); return origin; }, failed() {} } });
+  let state = await client.prepare(invitation);
+  state = await client.status(await client.claim(state));
+  assert.equal((await client.request(state.session.peer, "/api/browser")).status, 200);
+  assert.equal(f.calls.length, 3, "route startup never sends a stale proof");
+});
+
+test("a browser signs again only when a restart refusal explicitly proves no action ran", async () => {
+  let attempts = 0;
+  const f = fixture(payload => {
+    if (payload.operation === "claim") return reply(receipt(), 202);
+    if (payload.operation === "status") return reply(approved());
+    if (++attempts === 1) return new Response("{}", { status: 400, headers: { "Reach-Not-Run": "1", "Reach-Retry": "fresh-signature" } });
+    return reply({ ok: true });
+  });
+  const state = await f.client.status(await f.client.claim(await f.client.prepare(invitation)));
+  const result = await f.client.request(state.session.peer, "/api/browser/desktop/input", { method: "POST", body: JSON.stringify({ action: { type: "key", key: "tab" } }) });
+  assert.equal(result.status, 200);
+  assert.equal(attempts, 2);
+  const requests = f.calls.filter(call => call.payload.operation === "request");
+  assert.deepEqual(requests[0].payload.body, requests[1].payload.body);
+  assert.equal(requests[0].payload.token, requests[1].payload.token);
+  assert.notEqual(requests[0].payload.nonce, requests[1].payload.nonce);
+});
+
 test("claim, approval and binary workspace requests are signed with a persisted nonextractable key", async () => {
   const f = fixture((payload) =>
     payload.operation === "claim"
@@ -411,7 +438,8 @@ test("strict rendering claims once, displays the owner's comparison code, and re
 test("file downloads cannot fall back to bearer requests when a signed browser session is missing", async () => {
   let calls = 0;
   globalThis.fetch = dom.window.fetch = async () => { calls++; return reply({}); };
-  await assert.rejects(fileBlob({ ...device, url: origin, token: "agent-session-token", transport: "funnel", sessionId: "missing" }, "report.pdf", 0));
+  await assert.rejects(fileBlob({ ...device, url: origin, token: "agent-session-token", transport: "funnel", sessionId: "missing" }, "report.pdf", 0,
+    { signal: AbortSignal.timeout(1000) }), { status: 503, retryable: false });
   assert.equal(calls, 0, "no unsigned request or token leak");
 });
 
