@@ -3,8 +3,8 @@
    as Home draws the way between devices. */
 .reach-native,
 .relay-strip {
-  --reach-bg: #101512;
-  --reach-panel: #171e19;
+  --reach-bg: var(--surface-0);
+  --reach-panel: var(--surface-2);
   --reach-line: #2b332d;
   --reach-route: #3a4a3f;
   --reach-muted: #93a096;
@@ -63,7 +63,7 @@
   width: 48px;
   height: 48px;
   border: 1px solid var(--reach-line);
-  border-radius: 15px;
+  border-radius: var(--r-lg);
   background: var(--reach-panel);
 }
 .relay-node.dim .relay-node-tile {
@@ -100,7 +100,7 @@
   margin: 0 0 10px;
   padding: 11px 13px;
   border: 1px solid var(--reach-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--reach-panel);
   font-size: 13.5px;
   line-height: 1.5;
@@ -124,7 +124,7 @@
   min-height: 32px;
   padding: 0 11px;
   border: 1px solid var(--reach-line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--reach-muted);
   font: inherit;
@@ -147,7 +147,7 @@
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--reach-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--reach-panel);
   color: var(--reach-ink);
   font: inherit;
@@ -172,7 +172,7 @@
   flex: 1 1 0;
   min-height: 36px;
   border: 1px solid var(--reach-line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--reach-muted);
   font: inherit;
@@ -208,7 +208,7 @@
   margin: -4px 0 12px;
   overflow-y: auto;
   border: 1px solid var(--reach-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 .relay-chat {
   display: flex;
@@ -245,7 +245,7 @@
   width: 100%;
   min-height: 46px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--reach-mint);
   color: var(--reach-mint-ink);
   font: inherit;
@@ -274,8 +274,8 @@
   min-height: 40px;
   padding: 4px 6px 4px 10px;
   border: 1px solid var(--reach-line, #2b332d);
-  border-radius: 12px;
-  background: var(--reach-bg, #101512);
+  border-radius: var(--r-md);
+  background: var(--reach-bg, var(--surface-0));
   color: var(--reach-ink, #eef4ef);
   font-size: 13px;
   line-height: 1.35;
@@ -316,7 +316,7 @@
   min-height: 30px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--reach-mint, #b9efd4);
   font: inherit;
@@ -331,7 +331,7 @@
   min-height: 36px;
   padding: 0 12px 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--as-muted, inherit);
   font: inherit;
@@ -354,8 +354,8 @@
   margin: 0 6px 8px;
   padding: 0 12px;
   border: 1px solid #2b332d;
-  border-radius: 999px;
-  background: #101512;
+  border-radius: var(--r-pill);
+  background: var(--surface-0);
   color: #eef4ef;
   font: inherit;
   font-size: 12.5px;
@@ -370,7 +370,7 @@
   min-height: 48px;
   padding: 8px 10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: none;
   color: inherit;
   font: inherit;
@@ -411,7 +411,7 @@
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--cs-line);
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: var(--cs-group);
   list-style: none;
 }
@@ -452,7 +452,7 @@
   flex: none;
   width: 34px;
   height: 34px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--cs-field);
 }
 .continue-text {
@@ -513,7 +513,7 @@
 .continue-priority label:has(input:focus-visible) {
   outline: 2px solid var(--lime, #b9efd4);
   outline-offset: 2px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
 }
 .continue-box {
   display: grid;
@@ -541,7 +541,7 @@
   height: 40px;
   padding: 0;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--cs-muted);
 }
@@ -586,7 +586,7 @@
   min-height: 50px;
   margin-top: 4px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--cs-white);
   color: var(--cs-white-ink);
   font: inherit;
@@ -596,7 +596,7 @@
 .continue-go:disabled {
   opacity: 0.4;
 }
-.relay-off { width: 100%; min-height: 46px; margin-top: 8px; border: 0; border-radius: 999px; background: var(--cs-field, none); color: var(--cs-ink, inherit); font: inherit; font-weight: 600; }
+.relay-off { width: 100%; min-height: 46px; margin-top: 8px; border: 0; border-radius: var(--r-pill); background: var(--cs-field, none); color: var(--cs-ink, inherit); font: inherit; font-weight: 600; }
 .relay-off:disabled { opacity: .45; }
 .continue-note {
   margin: 10px 4px 0;
@@ -612,7 +612,7 @@
 /* Plain, always-visible choices for a handoff; extra steps are optional. */
 .handoff-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font-size: 13px; color: var(--reach-ink); }
 .handoff-field small, .handoff-help { color: var(--reach-muted); }
-.handoff-field > select, .handoff-field > input { width: 100%; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid var(--reach-line); border-radius: 10px; background: var(--reach-panel); color: var(--reach-ink); font-size: 16px; }
+.handoff-field > select, .handoff-field > input { width: 100%; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid var(--reach-line); border-radius: var(--r-md); background: var(--reach-panel); color: var(--reach-ink); font-size: 16px; }
 .handoff-help { margin: 0 0 10px; font-size: 13px; line-height: 1.45; }
 .handoff-followups { margin: 0 0 10px; border-block: 1px solid var(--reach-line); font-size: 13px; }
 .handoff-followups summary { min-height: 44px; padding: 12px 0; cursor: pointer; }
@@ -631,8 +631,8 @@
   margin: 0 auto 8px;
   padding: 6px 12px;
   border: 1px solid var(--reach-line, #2b332d);
-  border-radius: 999px;
-  background: var(--reach-bg, #101512);
+  border-radius: var(--r-pill);
+  background: var(--reach-bg, var(--surface-0));
   color: var(--reach-muted, #93a096);
   font-size: 12.5px;
   animation: relay-hint 4s ease forwards;

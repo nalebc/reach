@@ -1,14 +1,4 @@
 /* Mobile workspace: one computer, clear actions, motion with a purpose. */
-:root {
-  color-scheme: dark;
-  --bg: #0c1015;
-  --panel: #141a22;
-  --border: #ffffff12;
-  --muted: #9ca9b9;
-  --lime: #b9efd4;
-  --lime-ink: #16362a;
-  color: #eef4f7;
-}
 .ambient-network > svg {
   display: none;
 }
@@ -46,7 +36,7 @@
   flex: 0 0 40px;
   width: 40px;
   height: 40px;
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: #b8ceff0a;
   color: #bacce6;
 }
@@ -95,7 +85,7 @@
     flex: 1;
     min-width: 0;
     min-height: 48px;
-    border-radius: 14px;
+    border-radius: var(--r-lg);
     padding: 7px 4px;
     font-size: 10px;
     gap: 5px;
@@ -144,7 +134,7 @@
   background: #17202a;
   border-color: var(--border);
   color: #a8c4d9;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
 }
 .location.selected {
   background: #b9f7e80b;
@@ -163,7 +153,7 @@
     ellipse at 50% 42%,
     #1b303c,
     #101923 50%,
-    #0c1015 85%
+    var(--surface-0) 85%
   );
 }
 @media (max-width: 650px) {
@@ -213,7 +203,7 @@
   text-align: center;
   padding: 20px 12px;
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: var(--r-xl);
 }
 .connection-approval > svg {
   color: #83e3cb;
@@ -241,7 +231,7 @@
 .tailscale-help {
   padding: 18px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: var(--r-xl);
 }
 .tailscale-help ol {
   padding-left: 22px;
@@ -317,7 +307,7 @@
     padding: 7px 5px;
     z-index: 25;
     border: 1px solid #d1f3fa1c;
-    border-radius: 24px;
+    border-radius: var(--r-2xl);
     background: #101922f2;
     /* 95% opaque, so a blur can't be seen, but it re-renders on every
        scroll frame on phones. */
@@ -337,7 +327,7 @@
     background: transparent;
     color: #98a8b9;
     font-size: 10px;
-    border-radius: 16px;
+    border-radius: var(--r-lg);
   }
   .app-shell .mobile-nav button.active {
     color: #b9f7e8;
@@ -398,7 +388,7 @@
   opacity: 1;
 }
 .home-invite {
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   min-height: 44px;
   gap: 7px;
 }
@@ -416,7 +406,7 @@
   background: linear-gradient(115deg, #16312d, #141c26);
   color: #c8fff0;
   padding: 22px;
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
   margin-bottom: 24px;
 }
 .invite-banner > span {
@@ -461,7 +451,7 @@
   line-height: 1.7;
 }
 .page-settings .settings-panel {
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
 }
 .page-settings .settings-panel h2 {
   font-size: 17px;
@@ -489,7 +479,7 @@
   .page-chat .chat-list button {
     min-width: 190px;
     max-width: 230px;
-    border-radius: 13px;
+    border-radius: var(--r-md);
     margin: 0;
   }
   .page-chat .chat-list button span {
@@ -556,7 +546,7 @@
   max-width: 230px;
   padding: 9px 13px;
   border: 1px solid #ffffff10;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   color: #a7b5c3;
   background: #101920;
   font-size: 12px;
@@ -582,7 +572,7 @@
   overflow: hidden;
   padding: 22px;
   border: 1px solid #b5e9dc20;
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   background:
     radial-gradient(ellipse at 50% 75%, #22473e30, transparent 65%), #0d171d;
 }
@@ -595,7 +585,7 @@
 .fleet-mesh h2 {
   font-size: 17px;
   line-height: 1.4;
-  font-weight: 550;
+  font-weight: 600;
   margin: 6px 0 0;
 }
 .fleet-live {
@@ -624,7 +614,7 @@
   color: #a6b8c0;
   background: #ffffff02;
   border: 1px solid transparent;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
 }
 .fleet-computer .device-signal {
   width: 100%;
@@ -639,7 +629,7 @@
 }
 .fleet-computer strong {
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
   max-width: 100%;
   overflow-wrap: anywhere;
 }
@@ -668,7 +658,7 @@
   position: absolute;
   width: 3px;
   height: 7px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   background: #baffdf;
   left: -2px;
   top: 0;
@@ -695,14 +685,14 @@
   width: 42px;
   height: 42px;
   border: 1px solid #affbd046;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   color: #b7f2d9;
   background: #18342d;
 }
 .fleet-self strong {
   display: block;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .fleet-self small {
   font-size: 11px;
@@ -783,7 +773,7 @@
   }
   .fleet-mesh {
     padding: 18px 14px;
-    border-radius: 20px;
+    border-radius: var(--r-xl);
   }
   .fleet-mesh h2 {
     font-size: 15px;
@@ -825,7 +815,7 @@
   width: 100%;
   min-height: 42px;
   border: 1px solid #ffffff18;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 10px;
   color: #deede7;
   background: #101c22;
@@ -838,7 +828,7 @@
   padding: 10px;
   text-align: left;
   border: 1px solid #ffffff0c;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #ffffff02;
   color: #c4d8d0;
 }
@@ -909,7 +899,7 @@
   height: 44px;
   border: 1px solid #a9edcf40;
   color: #bde9d5;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #1b353133;
 }
 .single-peer strong {
@@ -943,7 +933,7 @@
   width: fit-content;
   padding: 4px 6px;
   border: 1px solid #aaccc425;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-size: 9px;
   line-height: 1.3;
   color: #a7ccbe;

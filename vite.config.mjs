@@ -48,6 +48,8 @@ export default defineConfig({
     // What this build made (dist/.vite/manifest.json): what's current, for
     // removing earlier builds' files once they're old (scripts/prune-assets.mjs).
     manifest: true,
+    // Fonts are always files: CSP's font-src 'self' refuses data: URLs.
+    assetsInlineLimit: (file) => (/\.(?:woff2?|ttf|otf)$/i.test(file) ? false : undefined),
     // Vite 6's default. Vite 8's (Safari 16.4) would stop rewriting newer
     // syntax for the iPhones still supported (iOS 15, src/abort-polyfill.ts).
     target: ["es2020", "edge88", "firefox78", "chrome87", "safari14"],

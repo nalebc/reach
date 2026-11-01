@@ -1,0 +1,61 @@
+/* Reach's design tokens, in one place. styles.css and start.css import this
+   first, so the app, the start page and an agent's page share them. No
+   other stylesheet sets these on :root (test/design-tokens.test.mjs); a
+   component may still scope its own value under its class. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest first, and the text on them. */
+  --surface-0: #101311; /* the page */
+  --surface-2: #191e1b; /* panels, cards, grouped lists */
+  --line: #dbe9d416;
+  --ink: #eff1e6; /* 14.8:1 on --surface-2 */
+  --ink-2: #9fae9f; /* muted text, 7.3:1 on --surface-2 */
+  --mint: #b9efd4; /* what's on or active */
+  --mint-ink: #16362a; /* text on mint */
+
+  /* Something is waiting for you (Needs you, a chat's question or approval):
+     one amber everywhere, 11:1 on the page. Usage warnings keep their own
+     softer gold. */
+  --needs-you: #f2c46b;
+  --needs-you-ink: #252419;
+  --usage-warn: #d6c38f; /* usage near its limit (usage.ts) */
+  --usage-out: #f1a08d; /* and out of it */
+
+  /* Corners, on a 4px scale. Inside a padded parent, a child's radius is the
+     parent's minus the padding, so the curves stay parallel. Circles use
+     50%; nothing uses another length. */
+  --r-xs: 4px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --r-2xl: 24px;
+  --r-3xl: 28px;
+  --r-pill: 999px;
+
+  /* Weights: 400 text, 500 medium, 600 titles and buttons, 700 display.
+     Nothing in between: on a phone a 550 can't be told from a 600. */
+
+  /* Motion: a press answers at once; pages and sheets glide. Reduced motion
+     turns both off (styles.css). */
+  --t-tap: 120ms cubic-bezier(0.2, 0, 0, 1);
+  --t-move: 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Inter for text, Manrope for page titles (type.css), the platform's own
+     interface font wherever they don't cover a character. */
+  --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: Manrope, var(--font-body);
+
+  /* The earlier names, read by most rules: the same tokens. */
+  --bg: var(--surface-0);
+  --panel: var(--surface-2);
+  --border: var(--line);
+  --muted: var(--ink-2);
+  --lime: var(--mint);
+  --lime-ink: var(--mint-ink);
+  --radius: var(--r-xl);
+
+  color: var(--ink);
+  background: var(--surface-0);
+}

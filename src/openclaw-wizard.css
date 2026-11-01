@@ -30,7 +30,7 @@
   min-height: 36px;
   padding: 0 12px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--claw-muted);
   font: inherit;
@@ -70,7 +70,7 @@
   min-height: 52px;
   padding: 0 22px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--claw-white);
   color: var(--claw-white-ink);
   font: inherit;
@@ -141,7 +141,7 @@
   place-items: center;
   width: 88px;
   height: 88px;
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
   background: radial-gradient(
     ellipse at 50% 70%,
     color-mix(in srgb, var(--lime, #b9efd4) 16%, transparent),
@@ -158,7 +158,7 @@
   place-items: center;
   width: 64px;
   height: 64px;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--claw-field);
   color: var(--claw-ink);
 }
@@ -183,7 +183,7 @@
 .claw-setup-code {
   margin: 6px 0 2px;
   padding: 14px 22px;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: var(--claw-field);
   color: var(--claw-ink);
   font: 600 28px/1 ui-monospace, "SF Mono", Menlo, monospace;
@@ -197,7 +197,7 @@
   gap: 8px;
   min-height: 48px;
   padding: 0 22px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--claw-white);
   color: var(--claw-white-ink);
   font-size: 16px;
@@ -234,7 +234,7 @@
   margin: 22px 0 0;
   overflow: hidden;
   border: 1px solid var(--claw-line);
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
   background: var(--claw-group);
 }
 .claw-setup-option {
@@ -328,7 +328,7 @@
   min-height: 46px;
   margin: 20px 0 -8px;
   padding: 0 14px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--claw-field);
   color: var(--claw-muted);
 }
@@ -353,7 +353,7 @@
   margin: 22px 0 0;
   padding: 0 16px;
   border: 1px solid var(--claw-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   box-shadow: none;
   background: var(--claw-field);
   color: var(--claw-ink);
@@ -425,7 +425,7 @@
 }
 .claw-setup-note code {
   padding: 1px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--claw-field);
   font: 0.86em/1.5 ui-monospace, "SF Mono", Menlo, monospace;
 }
@@ -436,7 +436,7 @@
 .claw-setup-commands code {
   display: block;
   padding: 11px 14px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   overflow-x: auto;
   white-space: pre;
 }

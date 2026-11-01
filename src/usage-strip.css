@@ -11,7 +11,7 @@
   align-items: center;
   gap: 2px 8px;
   padding: 10px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--as-card);
   background: color-mix(in srgb, var(--as-text) 3%, var(--as-bg));
 }
@@ -51,7 +51,7 @@
   min-height: 44px;
   padding: 0 4px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--as-text);
   font: inherit;
@@ -61,7 +61,7 @@
 }
 .usage-strip-actions > .primary {
   padding: 0 12px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--as-text);
   color: var(--as-bg);
 }
@@ -100,7 +100,7 @@
   min-height: 44px;
   padding: 0 4px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--as-text);
   font: inherit;
@@ -182,7 +182,7 @@
 /* "Your Mac needs you" (AgentSession.tsx): a small sign in the chat's header. */
 .as-page .as-bar-pill .as-icon.as-mac-needs {
   position: relative;
-  color: #d6c38f;
+  color: var(--needs-you);
 }
 .as-page .as-bar-pill .as-icon.as-mac-needs small {
   position: absolute;
@@ -190,8 +190,8 @@
   right: 0;
   min-width: 15px;
   padding: 0 4px;
-  border-radius: 999px;
-  background: #d6c38f;
+  border-radius: var(--r-pill);
+  background: var(--needs-you);
   color: #1b1b1b;
   font-size: 10px;
   font-weight: 700;

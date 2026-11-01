@@ -16,7 +16,7 @@
   margin-bottom: 22px;
   background: #1a211d;
   border: 1px solid #d1e5cf19;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   color: #91a698;
 }
 .apps-search:focus-within {
@@ -46,7 +46,7 @@
   width: 34px;
   height: 34px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: none;
   color: #c2d9c5;
 }
@@ -75,7 +75,7 @@
   min-width: 0;
   padding: 8px 2px 6px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--text, #e9eee9);
   font: inherit;
@@ -88,7 +88,7 @@
   place-items: center;
   width: 64px;
   height: 64px;
-  transition: transform 0.12s ease;
+  transition: transform var(--t-tap);
 }
 .app-tile:active .app-tile-logo {
   transform: scale(0.92);
@@ -131,14 +131,14 @@
   width: 51px;
   height: 51px;
   margin: 6.5px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #ffffff0b;
 }
 .app-tile.skeleton .app-tile-name {
   width: 56px;
   height: 10px;
   margin-top: 3px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: #ffffff08;
 }
 @media (max-width: 520px) {
@@ -189,7 +189,7 @@
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--line, #ffffff1a);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #000;
 }
 .apps-running-shot img {

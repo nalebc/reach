@@ -9,7 +9,7 @@
   --ag-raised: #1a221e;
   --ag-field: #0f1612;
   --ag-danger: #ff8a7a;
-  --ag-amber: #f2c46b;
+  --ag-amber: var(--needs-you, #f2c46b);
 }
 
 /* ---- Avatar ------------------------------------------------------------ */
@@ -25,7 +25,7 @@
     inset 0 1px 0 rgb(255 255 255 / 0.14),
     inset 0 0 0 1px hsl(var(--hue) 40% 60% / 0.22);
   color: hsl(var(--hue) 60% 88%);
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1;
   letter-spacing: -0.2px;
 }
@@ -40,7 +40,7 @@
   margin: 4px 2px 8px;
   color: var(--ag-muted);
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-quiet {
   margin: 0;
@@ -60,7 +60,7 @@
   color: var(--lime);
   font: inherit;
   font-size: 13.5px;
-  font-weight: 550;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -69,7 +69,7 @@
   display: grid;
   overflow: hidden;
   border: 1px solid var(--ag-line);
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: var(--ag-surface);
 }
 .ag-row + .ag-row {
@@ -167,7 +167,7 @@ input.ag-switch[type="checkbox"] {
   width: 44px;
   height: 27px;
   margin: 0;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background: #ffffff1c;
   cursor: pointer;
   transition: background 0.2s ease;
@@ -250,7 +250,7 @@ input.ag-switch[type="checkbox"]:disabled {
   gap: 12px;
   padding: 12px 14px;
   border: 1px solid var(--ag-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--ag-field);
   cursor: pointer;
   transition:
@@ -291,7 +291,7 @@ input.ag-switch[type="checkbox"]:disabled {
 }
 .ag-choice-text strong {
   font-size: 14.5px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-choice-text small {
   color: var(--ag-muted);
@@ -305,7 +305,7 @@ input.ag-switch[type="checkbox"]:disabled {
   flex-wrap: wrap;
   gap: 4px;
   padding: 4px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #ffffff0a;
 }
 .ag-segments button {
@@ -313,12 +313,12 @@ input.ag-switch[type="checkbox"]:disabled {
   min-height: 36px;
   padding: 0 10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--ag-muted);
   font: inherit;
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
   transition:
@@ -343,7 +343,7 @@ input.ag-switch[type="checkbox"]:disabled {
   gap: 8px;
   height: 42px;
   padding: 0 12px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #ffffff0d;
   color: var(--ag-muted);
 }
@@ -444,7 +444,7 @@ input.ag-switch[type="checkbox"]:disabled {
   gap: 6px;
   height: 34px;
   padding: 0 4px 0 6px;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--lime) 10%, #ffffff08);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime) 22%, transparent);
   font-size: 13.5px;
@@ -534,11 +534,11 @@ input.ag-switch[type="checkbox"]:disabled {
   gap: 6px;
   height: 24px;
   padding: 0 9px;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background: #ffffff0f;
   color: var(--ag-muted);
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   white-space: nowrap;
 }
 .ag-pill::before {
@@ -571,7 +571,7 @@ input.ag-switch[type="checkbox"]:disabled {
   min-height: 48px;
   padding: 0 18px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   font: inherit;
   font-size: 15px;
   font-weight: 600;
@@ -608,7 +608,7 @@ input.ag-switch[type="checkbox"]:disabled {
 .ag-small {
   min-height: 36px;
   padding: 0 14px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   font-size: 13.5px;
 }
 
@@ -650,7 +650,7 @@ input.ag-switch[type="checkbox"]:disabled {
 .ag-manage-apps {
   padding: 2px 14px;
   border: 1px solid var(--ag-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--ag-surface);
 }
 select.ag-mode {
@@ -660,7 +660,7 @@ select.ag-mode {
   min-height: 32px;
   padding: 0 26px 0 12px;
   border: 0;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background:
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2393a198' stroke-width='1.6' fill='none'/%3E%3C/svg%3E")
       no-repeat right 10px center,
@@ -674,7 +674,7 @@ select.ag-mode {
   display: grid;
   gap: 10px;
   padding: 12px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--ag-amber) 9%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ag-amber) 22%, transparent);
 }
@@ -791,7 +791,7 @@ dialog.screen-popup.agent-admission-review {
   min-height: 44px;
   padding: 0 12px;
   border: 1px solid var(--ag-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--ag-field);
   color: var(--ag-text);
   font: inherit;
@@ -807,7 +807,7 @@ dialog.screen-popup.agent-admission-review {
   min-height: 32px;
   padding: 0 12px;
   border: 0;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background: #ffffff10;
   color: var(--ag-text);
   font: inherit;
@@ -837,7 +837,7 @@ dialog.screen-popup.agent-admission-review {
   max-width: 100%;
   padding: 6px 14px 6px 10px;
   border: 1px solid var(--ag-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #ffffff08;
   color: var(--ag-text);
   font: inherit;
@@ -875,7 +875,7 @@ dialog.screen-popup.agent-admission-review {
 .ag-option-text strong {
   overflow: hidden;
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
   white-space: nowrap;
   text-overflow: ellipsis;
 }

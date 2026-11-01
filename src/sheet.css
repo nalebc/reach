@@ -9,7 +9,7 @@
   width: min(440px, calc(100vw - 28px));
   max-height: min(720px, calc(100dvh - 40px));
   border: 0;
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   background:
     radial-gradient(
       140% 50% at 50% 0%,
@@ -45,7 +45,7 @@
 .screen-popup.reach-sheet .screen-popup-body > header h2 {
   min-width: 0;
   overflow: hidden;
-  font: 650 18px/1.25 system-ui, -apple-system, sans-serif;
+  font: 600 18px/1.25 var(--font-display);
   letter-spacing: -0.2px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -104,8 +104,8 @@
 .screen-popup.reach-sheet .button.full.big {
   min-height: 50px;
   border: 0;
-  border-radius: 999px;
-  font: 600 16px system-ui, -apple-system, sans-serif;
+  border-radius: var(--r-pill);
+  font: 600 16px var(--font-body);
 }
 .screen-popup.reach-sheet .button.primary:disabled {
   opacity: 0.4;
@@ -127,7 +127,7 @@
 .screen-popup.reach-sheet .gs-row:focus-visible {
   outline: 2px solid var(--lime);
   outline-offset: -2px;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
 }
 .screen-popup.reach-sheet .gs-label small {
   display: block;
@@ -151,7 +151,7 @@
   box-shadow: none;
   outline: none;
   color: var(--text-strong, #eef4ef);
-  font: 400 16px system-ui, -apple-system, sans-serif;
+  font: 400 16px var(--font-body);
 }
 .screen-popup.reach-sheet .gs-row > input::placeholder {
   color: #7f8c83;
@@ -203,7 +203,7 @@
 }
 .screen-popup.reach-sheet .error {
   margin: 12px 0 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
 }
 
 /* A few one-tap choices under a row: pills that wrap, never a sideways
@@ -222,11 +222,11 @@
   min-height: 36px;
   padding: 0 14px 0 11px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(255 255 255 / 0.06);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
   color: #dfe7e1;
-  font: 500 14px system-ui, -apple-system, sans-serif;
+  font: 500 14px var(--font-body);
   cursor: pointer;
 }
 .sheet-chip > span {
@@ -294,10 +294,10 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .sheet-page.is-forward {
-    animation: sheet-page-forward 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: sheet-page-forward var(--t-move);
   }
   .sheet-page.is-back {
-    animation: sheet-page-back 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: sheet-page-back var(--t-move);
   }
 }
 @keyframes sheet-page-forward {
@@ -321,7 +321,7 @@
     width: 100%;
     max-width: none;
     max-height: calc(100dvh - 35px - env(safe-area-inset-top));
-    border-radius: 24px 24px 0 0;
+    border-radius: var(--r-2xl) var(--r-2xl) 0 0;
   }
   .screen-popup.reach-sheet.is-page {
     height: calc(100dvh - 35px - env(safe-area-inset-top));
@@ -355,7 +355,7 @@
     width: 36px;
     height: 5px;
     margin: 9px auto 0;
-    border-radius: 5px;
+    border-radius: var(--r-xs);
     background: #78927d55;
   }
   .reach-sheet-foot {
@@ -365,7 +365,7 @@
 }
 @media (prefers-reduced-motion: no-preference) {
   .screen-popup.reach-sheet[open] {
-    animation: reach-sheet-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: reach-sheet-in var(--t-move);
   }
 }
 @keyframes reach-sheet-in {
@@ -389,7 +389,7 @@
   gap: 8px;
   margin: 0 0 14px;
   color: var(--muted, #93a096);
-  font: 500 13px system-ui, -apple-system, sans-serif;
+  font: 500 13px var(--font-body);
 }
 .screen-popup.reach-sheet.pair-sheet label > input {
   width: 100%;
@@ -397,11 +397,11 @@
   margin: 0;
   padding: 0 16px;
   border: 0;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #161e1a;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
   color: var(--text-strong, #eef4ef);
-  font: 400 16px system-ui, -apple-system, sans-serif;
+  font: 400 16px var(--font-body);
 }
 .screen-popup.reach-sheet.pair-sheet label > input:focus {
   box-shadow: inset 0 0 0 1.5px
@@ -427,7 +427,7 @@
 }
 .screen-popup.reach-sheet .connection-approval {
   border: 0;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--group-bg, rgb(255 255 255 / 0.045));
   box-shadow: inset 0 0 0 1px var(--group-edge, rgb(255 255 255 / 0.05));
 }
@@ -445,7 +445,7 @@
 .screen-popup.reach-sheet .tailscale-help {
   padding: 16px 16px 14px;
   border: 0;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--group-bg, rgb(255 255 255 / 0.045));
   box-shadow: inset 0 0 0 1px var(--group-edge, rgb(255 255 255 / 0.05));
 }
@@ -454,7 +454,7 @@
 }
 .screen-popup.reach-sheet .tailscale-help h3 {
   margin: 8px 0 6px;
-  font: 600 16px/1.3 system-ui, -apple-system, sans-serif;
+  font: 600 16px/1.3 var(--font-body);
 }
 .screen-popup.reach-sheet .tailscale-help ol {
   margin: 8px 0;
@@ -472,7 +472,7 @@
 .screen-popup.reach-sheet .tailscale-help .button.full {
   min-height: 44px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(255 255 255 / 0.08);
   color: #eef4ef;
 }

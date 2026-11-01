@@ -77,7 +77,7 @@
 }
 .aw-device strong {
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -112,7 +112,7 @@
   align-items: center;
   gap: 7px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   padding: 9px 12px;
   min-height: 40px;
   color: var(--aw-muted);
@@ -148,7 +148,7 @@
   padding: 6px;
   background: var(--aw-panel);
   border: 1px solid var(--aw-line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   box-shadow: 0 12px 35px #0005;
 }
 .aw-menu button {
@@ -159,7 +159,7 @@
 }
 .aw-menu button:last-child[aria-label="Reload page"] {
   border-top: 1px solid var(--aw-line);
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
   margin-top: 4px;
 }
 .aw-content {
@@ -199,7 +199,7 @@
 .aw-section-heading h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .aw-section-heading button {
   display: inline-flex;
@@ -237,7 +237,7 @@
   align-self: start;
   padding: 3px 8px;
   border: 1px solid var(--aw-line);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   color: var(--aw-accent);
   font-size: 11px;
   white-space: nowrap;

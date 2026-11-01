@@ -24,7 +24,7 @@
   gap: 10px;
   padding: 20px 18px 18px;
   border: 1px solid #2f2f2f;
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
   background: #121212;
 }
 .mac-dialog .agent-logo {
@@ -52,7 +52,7 @@
 .mac-dialog-buttons span {
   flex: 1;
   padding: 9px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #2c2c2c;
   font-size: 15px;
   text-align: center;
@@ -65,7 +65,7 @@
   align-self: center;
   max-width: 280px;
   width: 100%;
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
 }
 .mac-prompt-note {
   margin: 0;
@@ -84,7 +84,7 @@
   margin: 0 0 12px;
   padding: 10px 14px 10px 10px;
   border: 0;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: rgb(255 255 255 / 0.05);
   box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 0.12);
   color: #f2f2f2;

@@ -32,7 +32,7 @@
   border: 0;
   background: none;
   color: #eef4ef;
-  font: 500 16px system-ui, -apple-system, sans-serif;
+  font: 500 16px var(--font-body);
   cursor: pointer;
 }
 .sub-page-action.is-danger {
@@ -43,7 +43,7 @@
 }
 .sub-page > h1 {
   margin: 0 4px 6px;
-  font: 650 26px/1.15 system-ui, -apple-system, sans-serif;
+  font: 600 26px/1.15 var(--font-display);
   letter-spacing: -0.6px;
   color: #f1f6f2;
   outline: none;

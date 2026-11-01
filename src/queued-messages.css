@@ -7,7 +7,7 @@
   padding: 6px 6px 9px;
   border: 1px solid var(--as-composer-line, var(--border));
   border-bottom: 0;
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
   background: var(--as-composer);
   color: var(--as-text);
 }
@@ -27,7 +27,7 @@
   gap: 2px;
   min-height: 40px;
   padding: 0 2px 0 8px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   touch-action: pan-y;
 }
 .qm-text {
@@ -133,7 +133,7 @@
   gap: 4px;
   box-sizing: border-box;
   padding: 0 12px 0 4px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--as-composer);
   color: var(--as-text);
   box-shadow: 0 10px 28px rgb(0 0 0 / 0.32), 0 0 0 1px color-mix(in srgb, var(--as-text) 12%, transparent);
@@ -221,7 +221,7 @@
   width: 100%;
   padding: 8px 10px;
   border: 1px solid rgb(255 255 255 / 0.16);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: rgb(0 0 0 / 0.25);
   color: inherit;
   font: inherit;
@@ -237,7 +237,7 @@
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid rgb(255 255 255 / 0.16);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: inherit;
   font: inherit;

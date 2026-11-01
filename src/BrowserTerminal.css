@@ -1,4 +1,4 @@
-.browser-command-terminal { overflow: hidden; border: 1px solid var(--hairline, #ffffff15); border-radius: 12px; background: #080d0b; color: #dce8df; }
+.browser-command-terminal { overflow: hidden; border: 1px solid var(--hairline, #ffffff15); border-radius: var(--r-md); background: #080d0b; color: #dce8df; }
 .browser-command-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #ffffff10; }
 .browser-command-header > div { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .browser-command-header select { max-width: 150px; min-height: 30px; width: auto; padding: 5px 8px; font-size: 12px; }

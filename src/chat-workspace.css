@@ -48,7 +48,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--as-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--as-bg);
   box-shadow: 0 24px 80px #0006;
 }
@@ -85,7 +85,7 @@
   height: 34px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #ffffff06;
   color: var(--as-muted);
 }
@@ -142,11 +142,11 @@
 }
 /* Reach's new-chat sheet: context above, room to write, quiet round tools. */
 .chat-create-sheet {
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
 }
 .chat-create-sheet .chat-sheet-heading h2 {
   font-size: 20px;
-  font-weight: 550;
+  font-weight: 600;
 }
 /* Its heading: the app as one pill; tapped, its list drops under it. */
 .chat-create-sheet .chat-sheet-heading h2 {
@@ -166,7 +166,7 @@
   min-height: 44px;
   padding: 6px 12px 6px 8px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-strong);
   font: inherit;
@@ -201,7 +201,7 @@
   width: min(280px, calc(100vw - 40px));
   padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--panel);
   box-shadow: 0 12px 32px #0009;
   font-size: 15px;
@@ -215,7 +215,7 @@
   min-height: 48px;
   padding: 8px 10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--text-strong);
   font: inherit;
@@ -283,7 +283,7 @@
   margin-left: 4px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--lime) 18%, transparent);
   color: var(--text-strong);
   font: inherit;
@@ -303,7 +303,7 @@
   margin: 0 0 10px;
   padding: 8px 10px;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--text-strong);
   font: inherit;
@@ -333,7 +333,7 @@ button.chat-new-context:hover,
   --as-user-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   padding: 8px;
   gap: 4px;
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   background: var(--panel);
   box-shadow: inset 0 0 0 1px var(--border);
 }
@@ -417,7 +417,7 @@ button.chat-new-context:hover,
   max-width: 160px;
   padding: 3px 5px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--as-muted);
   font: inherit;
@@ -473,7 +473,7 @@ button.chat-new-context:hover,
   gap: 6px;
   padding: 6px 12px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--as-text);
   color: var(--as-bg);
   font: inherit;
@@ -497,7 +497,7 @@ button.chat-new-context:hover,
   justify-content: space-between;
   gap: 10px;
   padding: 6px 6px 6px 14px;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: color-mix(in srgb, var(--as-text) 6%, transparent);
   line-height: 1.35;
 }
@@ -525,7 +525,7 @@ button.chat-new-context:hover,
   justify-content: space-between;
   gap: 10px;
   padding: 6px 6px 6px 14px;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: color-mix(in srgb, var(--as-text) 6%, transparent);
   line-height: 1.35;
 }
@@ -549,7 +549,7 @@ button.chat-new-context:hover,
 /* Review requests retain their complete context and original actions. */
 .reach-chat-sheet .needs-track {
   scroll-snap-type: x mandatory;
-  border-radius: 10px;
+  border-radius: var(--r-md);
 }
 .reach-chat-sheet .need-card {
   display: flex;
@@ -558,7 +558,7 @@ button.chat-new-context:hover,
   gap: 12px;
   padding: 16px;
   align-content: flex-start;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #ffffff03;
   box-shadow: inset 0 0 0 1px var(--as-line);
 }
@@ -593,7 +593,7 @@ button.chat-new-context:hover,
 }
 .reach-chat-sheet .need-actions button {
   min-height: 38px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 12px;
 }
 .reach-chat-sheet .need-actions button.primary {
@@ -627,7 +627,7 @@ button.chat-new-context:hover,
 .as-page.chat-redesign {
   max-width: 940px;
   margin-top: 16px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
 }
 .chat-redesign .as-bar {
   min-height: 58px;
@@ -640,7 +640,7 @@ button.chat-new-context:hover,
 .chat-redesign .as-bar-pill .as-icon {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   box-shadow: none;
 }
@@ -681,7 +681,7 @@ button.chat-new-context:hover,
 .chat-redesign .as-user {
   max-width: 86%;
   padding: 10px 14px;
-  border-radius: 14px 14px 4px 14px;
+  border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg);
   background: var(--as-bubble);
   font-size: 14px;
   line-height: 1.6;
@@ -725,7 +725,7 @@ button.chat-new-context:hover,
   max-width: 100%;
   padding: 5px 9px;
   border: 1px solid #dbc89126;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: none;
   color: #d6c38f;
   font-size: 11px;
@@ -740,7 +740,7 @@ button.chat-new-context:hover,
 .chat-redesign .as-review-body .as-consent {
   margin: 0;
   padding: 12px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 .chat-redesign .as-prompt header strong {
   font-size: 13px;
@@ -756,7 +756,7 @@ button.chat-new-context:hover,
 }
 .chat-redesign .as-prompt-actions button {
   min-height: 36px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 12px;
 }
 .chat-redesign .as-disclaimer {
@@ -772,7 +772,7 @@ button.chat-new-context:hover,
     width: min(100%, 580px);
     max-height: min(90dvh, calc(var(--sheet-height, 100dvh) - 8px));
     padding: 18px 20px max(22px, env(safe-area-inset-bottom));
-    border-radius: 18px 18px 0 0;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
   }
   /* New chat on a phone: the whole screen, like a chat (the keyboard takes
      half of it; a sheet's rounded top and the list behind cost the rest). */
@@ -835,13 +835,13 @@ button.chat-new-context:hover,
 }
 
 .chat-heading-actions { display: flex; align-items: center; gap: 8px; }
-.chat-refresh { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 8px; color: var(--muted); background: transparent; }
+.chat-refresh { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--muted); background: transparent; }
 .chat-refresh:hover { background: color-mix(in srgb, var(--muted) 10%, transparent); }
 .chat-setup { margin: 10px 0 24px; padding: 16px 0; color: var(--text-strong); font-size: 14px; }
-.chat-setup strong { font-weight: 550; }
+.chat-setup strong { font-weight: 600; }
 .chat-setup p { max-width: 440px; margin: 8px 0 14px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .chat-setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.chat-setup a, .chat-setup button { display: inline-flex; align-items: center; min-height: 36px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-strong); font-size: 12px; text-decoration: none; }
+.chat-setup a, .chat-setup button { display: inline-flex; align-items: center; min-height: 36px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: transparent; color: var(--text-strong); font-size: 12px; text-decoration: none; }
 .chat-setup a { background: var(--lime); border-color: var(--lime); color: var(--lime-ink); }
 .chat-library > .access { margin: 10px 0 24px; }
 
@@ -912,7 +912,7 @@ button.chat-new-context:hover,
   padding: 10px 12px;
   margin-bottom: 10px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--panel);
 }
 .chat-new-settings-heading {
@@ -936,7 +936,7 @@ button.chat-new-context:hover,
   margin: 6px 0 10px;
   padding: 8px 10px;
   overflow-x: auto;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--as-code-bg, rgba(127, 127, 127, 0.12));
   font: 12px "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
   white-space: pre-wrap;
@@ -972,9 +972,9 @@ button.chat-new-context:hover,
 .chat-add-agents li.open { padding-bottom: 12px; }
 .chat-add-row { display: flex; align-items: center; gap: 12px; min-height: 56px; }
 .chat-add-row > span:not(.agent-logo) { display: grid; flex: 1; min-width: 0; gap: 2px; }
-.chat-add-row b { font-weight: 550; font-size: 14px; }
+.chat-add-row b { font-weight: 600; font-size: 14px; }
 .chat-add-row small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.chat-add-row .agent-logo { flex: none; border-radius: 8px; }
+.chat-add-row .agent-logo { flex: none; border-radius: var(--r-sm); }
 .chat-setup .chat-add-row button,
-.chat-setup .chat-add-row a { flex: none; gap: 4px; min-height: 32px; padding: 6px 14px; border-radius: 999px; border-color: transparent; background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--text-strong); font-weight: 550; }
+.chat-setup .chat-add-row a { flex: none; gap: 4px; min-height: 32px; padding: 6px 14px; border-radius: var(--r-pill); border-color: transparent; background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--text-strong); font-weight: 600; }
 .chat-setup .chat-add-check { border: 0; padding: 8px 0; color: var(--muted); }

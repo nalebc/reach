@@ -15,7 +15,7 @@
   margin: 0 6px 8px;
   padding: 8px 10px;
   border: 1px solid var(--reach-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--reach-bg);
   color: var(--reach-ink);
   font-size: 13px;
@@ -45,7 +45,7 @@
   min-height: 36px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--reach-muted);
   font: inherit;
@@ -116,7 +116,7 @@
   margin: 6px 10px 0;
   padding: 7px 10px;
   border: 1px solid var(--reach-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--reach-bg);
   color: var(--reach-ink);
   font: inherit;

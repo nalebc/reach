@@ -1,17 +1,10 @@
+@import "./tokens.css";
 :root {
-  color-scheme: dark;
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
-  background: #101512;
-  color: #e9eee9;
+  font-family: var(--font-body);
 }
 body {
   margin: 0;
-  background: #101512;
+  background: var(--surface-0);
 }
 .start {
   min-height: 100dvh;
@@ -35,7 +28,7 @@ body {
 .start h1 {
   margin: 0;
   font-size: 22px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.25;
 }
 .start p {
@@ -48,11 +41,11 @@ body {
   display: block;
   padding: 14px 18px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #b9efd4;
   color: #19250f;
   font: inherit;
-  font-weight: 650;
+  font-weight: 600;
   text-decoration: none;
 }
 .start-action[aria-busy="true"] {
@@ -78,7 +71,7 @@ body {
 .start-diagnostics pre {
   padding: 12px;
   border: 1px solid #2b332d;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font:
@@ -106,8 +99,8 @@ body {
   max-width: calc(100% - 32px);
   padding: 7px 12px;
   border: 1px solid #2b332d;
-  border-radius: 999px;
-  background: #171e19;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
   color: #e9eee9;
   font:
     13px/1.2 -apple-system,

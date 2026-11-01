@@ -6,7 +6,7 @@
   flex: none;
   align-self: center;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--muted) 10%, transparent);
   color: var(--muted);
   font-size: 11px;
@@ -20,7 +20,7 @@
   min-height: 26px;
   padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--muted);
   font: inherit;
@@ -54,7 +54,7 @@
   padding: 0;
   list-style: none;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: var(--panel);
 }
 .claw-spend-row {
@@ -105,7 +105,7 @@
   min-height: 34px;
   padding: 4px 8px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: var(--bg);
   color: var(--text-strong);
   font: inherit;
@@ -127,7 +127,7 @@
   gap: 8px;
   padding: 6px 6px 6px 14px;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: var(--panel);
   color: var(--muted);
 }
@@ -149,7 +149,7 @@
   margin-top: 10px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: var(--panel);
   font-size: 13px;
 }
@@ -180,7 +180,7 @@
 }
 .claw-spend-changes strong {
   color: var(--text-strong);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .claw-spend-page .claw-gateway-body {

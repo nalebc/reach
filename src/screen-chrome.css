@@ -42,7 +42,7 @@
   );
   min-height: 0;
   padding: 7px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(11 16 18 / 0.74);
   pointer-events: none;
   transform: none;

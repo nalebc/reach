@@ -57,7 +57,7 @@
   margin-bottom: 8px;
   padding: 10px 12px;
   border: 1px solid var(--as-float-line, var(--as-field-line, #ffffff1a));
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--as-float, var(--as-card));
   color: var(--as-text);
   font-size: 13px;
@@ -74,7 +74,7 @@
   width: 24px;
   height: 24px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--as-muted);
 }
@@ -117,7 +117,7 @@
   margin: 2px 0 4px;
   padding: 2px 4px 2px 10px;
   border: 1px solid var(--as-field-line, #ffffff1a);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   color: var(--as-accent);
   font-size: 12.5px;
 }
@@ -127,7 +127,7 @@
   width: 20px;
   height: 20px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--as-muted);
 }

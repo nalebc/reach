@@ -8,7 +8,7 @@
   overflow: hidden;
   background: #0c110f;
   border: 1px solid var(--border, #2b332d);
-  border-radius: 18px;
+  border-radius: var(--r-xl);
 }
 @media (max-width: 1024px), (pointer: coarse) {
   /* Phones and tablets: cover the app chrome and follow the keyboard. */
@@ -51,7 +51,7 @@
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: none;
   color: #e9f0ec;
 }
@@ -74,10 +74,10 @@
   gap: 7px;
   height: 40px;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: none;
   color: #e9f0ec;
-  font: 600 15px system-ui, sans-serif;
+  font: 600 15px var(--font-body);
 }
 .terminal-switch span,
 .terminal-switch small {
@@ -139,7 +139,7 @@
   flex-direction: column;
   padding: 6px;
   border: 1px solid #ffffff1f;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #121a17;
   box-shadow: 0 18px 50px #000a;
 }
@@ -150,10 +150,10 @@
   min-height: 48px;
   padding: 6px 10px;
   border: 0;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: none;
   color: #e9f0ec;
-  font: 500 15px system-ui, sans-serif;
+  font: 500 15px var(--font-body);
   text-align: left;
 }
 .terminal-menu button:active,
@@ -215,7 +215,7 @@
 .terminal-segments span {
   flex: 1;
   height: 2px;
-  border-radius: 2px;
+  border-radius: var(--r-xs);
   background: #ffffff26;
 }
 .terminal-segments span.active {
@@ -246,10 +246,10 @@
   height: 38px;
   padding: 0 12px;
   border: 1px solid #ffffff1f;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: #ffffff12;
   color: #e9f0ec;
-  font: 600 13px system-ui, sans-serif;
+  font: 600 13px var(--font-body);
 }
 .terminal-paste button[type="submit"]:not(:disabled) {
   background: var(--lime, #b9efd4);
@@ -297,7 +297,7 @@
 }
 h1.terminal-switch {
   margin: 0;
-  font: 600 16px system-ui, sans-serif;
+  font: 600 16px var(--font-body);
 }
 /* Touches pass through: the first swipe both switches and dismisses it. */
 .terminal-swipe-hint {
@@ -313,12 +313,12 @@ h1.terminal-switch {
   gap: 8px;
   padding: 14px 22px 16px;
   border: 1px solid #ffffff1f;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #0c110fd9;
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   color: #e9f0ec;
-  font: 600 14px system-ui, sans-serif;
+  font: 600 14px var(--font-body);
   white-space: nowrap;
   animation: terminal-swipe-in 0.3s 0.4s ease-out both;
 }
@@ -390,7 +390,7 @@ h1.terminal-switch {
   min-height: 40px;
   padding: 0 14px;
   border: 1px solid #ffffff26;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #1c2a23;
   color: #dce5dd;
   box-shadow: 0 4px 16px #0004;
