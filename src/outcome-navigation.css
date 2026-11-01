@@ -1,6 +1,6 @@
-.outcome-entry { margin: 12px 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.outcome-entry { margin: 12px 0; border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
 .outcome-entry button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 12px 14px; color: inherit; background: none; border: 0; text-align: left; cursor: pointer; }
-.outcome-entry button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.outcome-entry button:focus-visible { outline: 2px solid var(--mint); outline-offset: -3px; }
 .outcome-entry-head > span { margin-left: auto; font-size: 12px; color: var(--muted); }
 .outcome-entry .outcome-entry-row { border-top: 1px solid var(--border); }
 .outcome-entry-row > span { flex: 1; min-width: 0; }

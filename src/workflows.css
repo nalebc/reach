@@ -31,7 +31,7 @@
   margin: 14px 0 8px;
   padding: 16px;
   border: 1px solid var(--as-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--wf-group);
 }
 .wf-run-overview h3, .wf-task-result h4 { margin: 0 0 8px; font-size: 16px; }
@@ -48,14 +48,14 @@
 .wf-report-text { color: var(--as-text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 .wf-report-text > :first-child { margin-top: 0; }
 .wf-report-text p { white-space: pre-wrap; }
-.wf-report-text pre, .wf-result-details pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; border-radius: 8px; background: var(--wf-field); font-size: 12px; }
+.wf-report-text pre, .wf-result-details pre { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; border-radius: var(--r-sm); background: var(--wf-field); font-size: 12px; }
 .wf-report-text table { display: block; max-width: 100%; overflow-x: auto; }
 .wf-result-details { margin: 12px 0; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
 .wf-result-details summary { cursor: pointer; padding: 8px 0; }
 .wf-result-details ul { padding-left: 20px; }
 .wf-recorded-command { padding-bottom: 10px; border-bottom: 1px solid var(--as-line); }
 .wf-result-attempt { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; font-size: 13px; }
-.wf-result-attempt select { max-width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--as-line); background: var(--wf-field); color: var(--as-text); }
+.wf-result-attempt select { max-width: 100%; padding: 8px; border-radius: var(--r-sm); border: 1px solid var(--as-line); background: var(--wf-field); color: var(--as-text); }
 .wf-result-error { margin: 8px 0; color: var(--wf-danger); font-size: 13px; }
 
 /* A step: its label, then its tasks in one rounded section. */
@@ -175,7 +175,7 @@ button.wf-item-main:not(:disabled):active {
   opacity: 0.5;
 }
 .wf-paused svg {
-  color: #f5c26b;
+  color: var(--needs-you);
 }
 .wf-paused .wf-item-title {
   display: -webkit-box;
@@ -499,7 +499,7 @@ button.wf-item-main:not(:disabled):active {
 }
 .wf-flow.paused .wf-flow-icon,
 .wf-flow.paused .wf-item-value {
-  color: #f5c26b;
+  color: var(--needs-you);
 }
 .wf-none {
   margin: 8px 6px 18px;
@@ -757,14 +757,14 @@ button.wf-item-main:not(:disabled):active {
 .wf-outcome p { margin: 8px 0; line-height: 1.5; }
 .wf-outcome-card {
   min-width: 0; margin: 10px 0; padding: 12px;
-  border: 1px solid var(--as-line); border-radius: 14px; background: var(--wf-group);
+  border: 1px solid var(--as-line); border-radius: var(--r-lg); background: var(--wf-group);
 }
 .wf-outcome summary { min-height: 44px; align-content: center; cursor: pointer; }
 .wf-outcome :is(summary, pre):focus-visible { outline: 2px solid var(--as-text); outline-offset: 3px; }
 .wf-outcome label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
 .wf-outcome :is(input:not([type="checkbox"]), textarea, select) {
   width: 100%; min-width: 0; max-width: 100%; min-height: 44px; box-sizing: border-box;
-  border: 1px solid var(--as-line); border-radius: 10px; padding: 10px;
+  border: 1px solid var(--as-line); border-radius: var(--r-sm); padding: 10px;
   background: var(--wf-field); color: var(--as-text); font: inherit; font-size: 16px;
 }
 .wf-outcome textarea { min-height: 90px; resize: vertical; }
@@ -775,10 +775,10 @@ button.wf-item-main:not(:disabled):active {
 .wf-outcome :is(.wf-pill, .wf-primary) { min-height: 44px; white-space: normal; height: auto; padding: 10px 14px; overflow-wrap: anywhere; }
 .wf-outcome .wf-pill { margin: 4px 4px 4px 0; }
 .wf-outcome-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.wf-outcome-facts > div { padding: 12px; border-radius: 12px; background: var(--wf-field); min-width: 0; }
+.wf-outcome-facts > div { padding: 12px; border-radius: var(--r-md); background: var(--wf-field); min-width: 0; }
 .wf-outcome-facts dt { color: var(--as-muted); font-size: 13px; }
 .wf-outcome-facts dd { margin: 6px 0 0; }
-.wf-outcome-warning { color: #f5c26b; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wf-outcome-warning { color: var(--needs-you); white-space: pre-wrap; overflow-wrap: anywhere; }
 .wf-outcome-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .wf-outcome-actions p { flex-basis: 100%; color: var(--as-muted); font-size: 13px; }
 .wf-outcome .file-code { min-width: 0; max-width: 100%; }
