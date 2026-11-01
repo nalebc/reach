@@ -11,7 +11,7 @@
   justify-content: center;
   gap: 8px;
   min-height: 48px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--lime);
   color: #0d1a14;
   font-weight: 600;
@@ -57,7 +57,7 @@
   max-width: 100%;
   overflow-wrap: anywhere;
   padding: 3px 8px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: rgb(255 255 255 / 0.07);
   color: #eef4ef;
   user-select: all;

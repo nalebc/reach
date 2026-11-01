@@ -25,7 +25,7 @@
   margin: clamp(48px, 12vh, 120px) auto 0;
   padding: 32px;
   border: 1px solid #ffffff14;
-  border-radius: 28px;
+  border-radius: var(--r-3xl);
   background: #1b1c1c;
   text-align: center;
 }
@@ -35,7 +35,7 @@
   width: 52px;
   height: 52px;
   margin: 0 auto 24px;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #b8ddc714;
   color: #c0d9cb;
 }
@@ -154,7 +154,7 @@
   border-radius: 50%;
   background: #ffffff10;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 /* Take the access back from another browser: one clear, full-width action. */
 .funnel-agent-use-here {
@@ -162,11 +162,11 @@
   min-height: 48px;
   margin: 4px 0 14px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--lime, #b9efd4);
   color: #0d1410;
   font: inherit;
-  font-weight: 650;
+  font-weight: 600;
   cursor: pointer;
 }
 .funnel-agent-use-here:focus-visible {

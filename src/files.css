@@ -29,7 +29,7 @@
   min-height: 32px;
   padding: 2px 8px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: none;
   color: #b7c9bb;
   font: inherit;
@@ -57,7 +57,7 @@
   height: 40px;
   margin-left: -10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: none;
   color: #cfe2d4;
 }
@@ -122,7 +122,7 @@ h1.files-title {
   height: 38px;
   padding: 0;
   border: 1px solid #d3ead21a;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #e2f2e005;
   color: #bfd3c4;
 }
@@ -168,7 +168,7 @@ h1.files-title {
   margin-top: 10px;
   padding: 0 4px 0 13px;
   border: 1px solid #b9efd440;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #1a211d;
   color: #91a698;
   animation: files-open 0.14s ease-out;
@@ -196,7 +196,7 @@ h1.files-title {
   width: 34px;
   height: 34px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: none;
   color: #c2d9c5;
 }
@@ -209,7 +209,7 @@ h1.files-title {
   display: grid;
   padding: 4px;
   border: 1px solid #d3ead214;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #151c17;
 }
 .files-row {
@@ -230,7 +230,7 @@ h1.files-title {
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #ffffff0b;
 }
 .files-segment button {
@@ -242,7 +242,7 @@ h1.files-title {
   min-height: 32px;
   padding: 0 11px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   color: #a9bdb0;
   font-size: 13px;
@@ -262,7 +262,7 @@ input.files-switch[type="checkbox"] {
   margin: 0 5px 0 0;
   padding: 0 !important;
   border: 0 !important;
-  border-radius: 999px !important;
+  border-radius: var(--r-pill) !important;
   background: #ffffff1f !important;
   appearance: none;
   -webkit-appearance: none;
@@ -311,7 +311,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   min-width: 0;
   padding: 11px 4px 10px;
   border: 1px solid #d3ead214;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #e2f2e006;
   color: #cfdfd2;
   font-size: 12.5px;
@@ -339,7 +339,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   min-height: 34px;
   padding: 0 12px;
   border: 1px solid #d3ead21c;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #e2f2e006;
   color: #cfdfd2;
   font-size: 13px;
@@ -368,7 +368,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   gap: 8px;
   margin-top: 12px;
   padding: 8px 6px 8px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #e8c56d14;
   color: #ecdcb0;
   font-size: 13px;
@@ -384,7 +384,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   width: 30px;
   height: 30px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   color: inherit;
 }
@@ -432,7 +432,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   flex-shrink: 0;
   width: 42px;
   height: 42px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: color-mix(in srgb, var(--kind) 15%, transparent);
   color: var(--kind);
   transition: transform var(--t-tap);
@@ -508,7 +508,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   line-height: 1.3;
 }
 .file-name mark {
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   background: #b9efd440;
   color: inherit;
 }
@@ -561,7 +561,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   display: block;
   width: 28%;
   height: 10px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: #ffffff0b;
   animation: files-pulse 1.2s ease-in-out infinite alternate;
 }
@@ -593,7 +593,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   min-width: 0;
   padding: 8px 4px 6px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--text, #eef1e5);
   font: inherit;
@@ -626,7 +626,7 @@ input.files-switch[type="checkbox"]:focus-visible {
 .file-tile-icon .file-kind {
   width: 60px;
   height: 60px;
-  border-radius: 15px;
+  border-radius: var(--r-lg);
 }
 .file-tile-icon .file-kind.is-native {
   width: 76px;
@@ -644,7 +644,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   line-height: 1.25;
 }
 .file-tile-name mark {
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   background: #b9efd440;
   color: inherit;
 }
@@ -662,7 +662,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   width: 70%;
   height: 9px;
   margin-top: 3px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: #ffffff0b;
   animation: files-pulse 1.2s ease-in-out infinite alternate;
 }
@@ -690,7 +690,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   width: min(520px, calc(100vw - 24px));
   padding: 8px 8px 12px 12px;
   border: 1px solid #d3ead21f;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #18201b;
   box-shadow: 0 14px 40px #00000080;
   transform: translateX(-50%);
@@ -699,7 +699,7 @@ input.files-switch[type="checkbox"]:focus-visible {
 .files-actionbar .file-kind {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .files-actionbar strong {
   overflow: hidden;
@@ -741,7 +741,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   margin: 14px 0 6px;
   padding: 0 16px;
   border: 1px solid #d3ead21c;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #e2f2e006;
   color: #b7c9bb;
   font-size: 13px;
@@ -753,7 +753,7 @@ input.files-switch[type="checkbox"]:focus-visible {
 
 /* Dropping files from the desktop. */
 .files-view.is-dropping .files-list {
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   outline: 2px dashed #b9efd499;
   outline-offset: 6px;
 }
@@ -766,10 +766,10 @@ input.files-switch[type="checkbox"]:focus-visible {
   align-items: center;
   gap: 9px;
   padding: 12px 18px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--lime);
   color: var(--lime-ink);
-  font-weight: 650;
+  font-weight: 600;
   transform: translateX(-50%);
   pointer-events: none;
 }
@@ -783,7 +783,7 @@ input.files-switch[type="checkbox"]:focus-visible {
     margin-top: 16px;
     padding: 4px 6px;
     border: 1px solid #d3ead214;
-    border-radius: 14px;
+    border-radius: var(--r-lg);
     background: #151c17;
   }
   .files-columns {
@@ -801,7 +801,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   }
   .file-item {
     padding-right: 10px;
-    border-radius: 9px;
+    border-radius: var(--r-sm);
   }
   .file-item:last-child {
     border-bottom: 0;
@@ -822,7 +822,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   .file-main .file-kind {
     width: 34px;
     height: 34px;
-    border-radius: 9px;
+    border-radius: var(--r-sm);
   }
   .file-main .file-kind svg {
     width: 18px;
@@ -1091,7 +1091,7 @@ input.files-switch[type="checkbox"]:focus-visible {
 .file-viewer-markdown .md code {
   padding: 1px 5px;
   border: 1px solid #2a332d;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   background: #141a16;
   font:
     0.86em "SF Mono",
@@ -1105,7 +1105,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   padding: 10px 12px;
   overflow-x: auto;
   border: 1px solid #2a332d;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #141a16;
   white-space: pre;
   overflow-wrap: normal;
@@ -1152,7 +1152,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   min-height: 34px;
   padding: 0 10px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: none;
   color: #c5d5cd;
   font: inherit;
@@ -1299,7 +1299,7 @@ input.files-switch[type="checkbox"]:focus-visible {
 .file-viewer-empty .file-kind {
   width: 64px;
   height: 64px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
 }
 .file-viewer-empty p {
   margin: 0;
@@ -1335,7 +1335,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   font-size: 15px;
 }
 .files-text-tool.is-strong {
-  font-weight: 650;
+  font-weight: 600;
 }
 .file-pick {
   display: grid;
@@ -1374,7 +1374,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   max-height: min(640px, 86dvh);
   padding: 0;
   border: 1px solid #d3ead21f;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #121915;
   color: var(--text, #eef1e5);
   box-shadow: 0 20px 60px #00000099;
@@ -1424,7 +1424,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   gap: 11px;
   min-height: 52px;
   padding: 6px 8px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   cursor: pointer;
 }
 .files-send-list label:hover {
@@ -1475,7 +1475,7 @@ input.files-switch[type="checkbox"]:focus-visible {
   min-height: 44px;
   padding: 10px 12px;
   border: 1px solid #d3ead21f;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #0c110e;
   color: inherit;
   font: inherit;
@@ -1500,7 +1500,7 @@ input.files-switch[type="checkbox"]:focus-visible {
     height: min(840px, 90vh);
     margin: auto;
     border: 1px solid #d3ead21f;
-    border-radius: 16px;
+    border-radius: var(--r-lg);
     overflow: hidden;
   }
   .file-viewer header {

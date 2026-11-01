@@ -2,7 +2,7 @@
   max-width: 720px;
   margin: 12px auto 0;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   font-size: 14px;
 }
 .owner-connection-setup > summary {

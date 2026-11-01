@@ -11,7 +11,7 @@
   margin: 0 16px 10px;
   color: var(--claw-muted, #a1a1a1);
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .claw-skill-group h3 span {
   opacity: 0.7;
@@ -19,7 +19,7 @@
 .claw-skill-rows {
   overflow: hidden;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
   background: var(--claw-group, #ffffff0b);
 }
 .claw-skill + .claw-skill {
@@ -62,7 +62,7 @@
   max-width: 100%;
   overflow: hidden;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--claw-muted, #a1a1a1) 10%, transparent);
   color: var(--claw-muted, #a1a1a1);
   font-size: 12px;
@@ -99,7 +99,7 @@
   min-height: 44px;
   padding: 4px 12px;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--claw-ink, #ececec);
   font-size: 13px;
@@ -130,7 +130,7 @@
   margin-top: -8px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   cursor: pointer;
 }
@@ -180,7 +180,7 @@
   overflow: auto;
   padding: 24px 20px calc(20px + env(safe-area-inset-bottom));
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 28px 28px 0 0;
+  border-radius: var(--r-3xl) var(--r-3xl) 0 0;
   background: #242424;
   box-shadow: 0 -12px 60px #0004;
 }
@@ -234,7 +234,7 @@
 }
 .claw-skill-facts code {
   padding: 2px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--claw-muted, #a1a1a1) 10%, transparent);
   font-size: 13px;
 }
@@ -263,7 +263,7 @@
   min-height: 44px;
   padding: 4px 12px;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--claw-ink, #ececec);
   font-size: 16px;

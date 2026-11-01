@@ -3,11 +3,11 @@
    state is written out and every action has a visible result. */
 .agent-page { --ag-ink: var(--ag-text, #e9eee9); --ag-ink-2: var(--ag-muted, #93a198); --ag-surface-2: var(--ag-raised, #1a221e); --ag-accent: var(--lime, #b9efd4); max-width: 1120px; margin: 0 auto; padding: 16px 16px 40px; display: grid; gap: 14px; color: var(--ag-ink); }
 .ap-abilities { margin: 0; font-size: 15px; line-height: 1.45; }
-.ap-status { margin: 0; padding: 10px 12px; border-radius: 10px; font-size: 15px; background: var(--ag-surface-2, #f3f4f6); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.08)); }
+.ap-status { margin: 0; padding: 10px 12px; border-radius: var(--r-md); font-size: 15px; background: var(--ag-surface-2, #f3f4f6); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.08)); }
 .ap-status.is-done { background: rgba(47, 158, 111, 0.1); border-color: rgba(47, 158, 111, 0.3); }
 .ap-status.is-wait { background: rgba(217, 158, 0, 0.12); border-color: rgba(217, 158, 0, 0.35); }
 .ap-status.is-blocked { background: rgba(180, 35, 44, 0.08); border-color: rgba(180, 35, 44, 0.3); }
-.ap-card { display: grid; min-width: 0; gap: 10px; padding: 14px; border-radius: 14px; background: var(--ag-surface, #fff); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.08)); }
+.ap-card { display: grid; min-width: 0; gap: 10px; padding: 14px; border-radius: var(--r-lg); background: var(--ag-surface, #fff); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.08)); }
 .ap-card > * { min-width: 0; }
 .ap-card h2 { margin: 0; font-size: 16px; display: inline-flex; align-items: center; gap: 8px; }
 .ap-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
@@ -23,11 +23,11 @@
 .ap-screen-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .ap-hint { margin: 0; flex: 1 1 220px; min-width: 0; font-size: 13px; color: var(--ag-ink-2, #4b5563); }
 .ap-brief { font-size: 13px; color: var(--ag-ink-2, #4b5563); }
-.ap-stage .ap-brief[open] { position: absolute; z-index: 3; top: 44px; right: 6px; max-width: min(420px, calc(100% - 12px)); padding: 10px 12px; border-radius: 14px; background: rgba(25, 33, 28, 0.97); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.ap-stage .ap-brief[open] { position: absolute; z-index: 3; top: 44px; right: 6px; max-width: min(420px, calc(100% - 12px)); padding: 10px 12px; border-radius: var(--r-lg); background: rgba(25, 33, 28, 0.97); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 .ap-brief summary { cursor: pointer; color: var(--ag-ink, #e9eee9); font-weight: 600; }
 .ap-brief ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 2px; }
 /* The agent's instructions (server/agent-guide.mjs): one row a line, folded to a pill once read. */
-.ap-guide { justify-self: start; max-width: 720px; border-radius: 14px; background: var(--ag-surface-2, #1a221e); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); font-size: 14px; }
+.ap-guide { justify-self: start; max-width: 720px; border-radius: var(--r-lg); background: var(--ag-surface-2, #1a221e); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); font-size: 14px; }
 .ap-guide summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 14px; cursor: pointer; list-style: none; font-weight: 600; color: var(--ag-ink, #e9eee9); }
 .ap-guide summary::-webkit-details-marker { display: none; }
 .ap-guide summary svg:first-child { color: var(--ag-accent, #b9efd4); }
@@ -40,10 +40,10 @@
 .ap-guide-list { margin: 0; padding: 0; list-style: none; display: grid; font-size: 14px; }
 .ap-guide-list li { padding: 9px 0; border-top: 1px solid var(--ag-line, rgba(255, 255, 255, 0.06)); line-height: 1.4; }
 .ap-guide-list li:first-child { border-top: 0; }
-.ap-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 13px; line-height: 1.2; }
+.ap-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 12px; border-radius: var(--r-pill); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 13px; line-height: 1.2; }
 .ap-pill[aria-pressed="true"] { border-color: var(--ag-accent, #b9efd4); color: var(--ag-accent, #b9efd4); }
 .ap-pill.is-primary { background: var(--ag-accent, #b9efd4); border-color: transparent; color: #10221a; font-weight: 600; }
-.ap-stage { position: relative; display: grid; place-items: center; min-height: 200px; border-radius: 12px; overflow: hidden; background: #0b0d10; }
+.ap-stage { position: relative; display: grid; place-items: center; min-height: 200px; border-radius: var(--r-md); overflow: hidden; background: #0b0d10; }
 /* As wide as the stage, unless the window's height is the limit; the stage
    shrinks to the picture so the status line stays right under it. */
 .ap-frame { --ap-aspect: 1.6; position: relative; display: grid; place-items: center; width: min(100%, calc((100dvh - var(--ap-chrome)) * var(--ap-aspect))); aspect-ratio: var(--ap-aspect); min-height: 200px; touch-action: none; user-select: none; -webkit-user-select: none; }
@@ -51,8 +51,8 @@
 .ap-frame img, .ap-frame canvas { display: block; width: 100%; height: 100%; pointer-events: none; -webkit-user-drag: none; }
 .ap-frame.can-act { cursor: crosshair; }
 .ap-keys { position: absolute; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; pointer-events: none; caret-color: transparent; }
-.ap-sheet { position: absolute; z-index: 2; top: 8px; left: 8px; right: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; border-radius: 16px; background: rgba(25, 33, 28, 0.97); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
-.ap-sheet input { padding: 7px 12px; border-radius: 999px; border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.12)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 14px; }
+.ap-sheet { position: absolute; z-index: 2; top: 8px; left: 8px; right: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; border-radius: var(--r-lg); background: rgba(25, 33, 28, 0.97); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.08)); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.ap-sheet input { padding: 7px 12px; border-radius: var(--r-pill); border: 1px solid var(--ag-line, rgba(255, 255, 255, 0.12)); background: var(--ag-surface-2, #202a23); color: inherit; font-size: 14px; }
 .ap-sheet .ap-inline input { width: 110px; }
 .ap-screen-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .ap-screen-foot:empty { display: none; }
@@ -72,7 +72,7 @@
 .ap-row-label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; min-width: 128px; }
 .ap-inline { display: inline-flex; flex-wrap: wrap; min-width: 0; max-width: 100%; align-items: center; gap: 6px; }
 .ap-inline label { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; }
-.ap-inline input, .ap-type input { padding: 8px 10px; border-radius: 9px; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.14)); font: inherit; font-size: 14px; }
+.ap-inline input, .ap-type input { padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.14)); font: inherit; font-size: 14px; }
 .ap-inline input { width: 64px; }
 .ap-type input { flex: 1 1 260px; min-width: 0; max-width: 100%; box-sizing: border-box; }
 .ap-card .ag-search { min-width: 0; max-width: 100%; box-sizing: border-box; }
@@ -80,19 +80,19 @@
 .ap-card .ag-changes-new input { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .ap-quiet { margin: 0; font-size: 14px; color: var(--ag-ink-2, #4b5563); }
 .ap-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 14px; }
-.ap-crumbs button { background: none; border: 0; padding: 4px 6px; border-radius: 6px; font: inherit; color: inherit; cursor: pointer; }
+.ap-crumbs button { background: none; border: 0; padding: 4px 6px; border-radius: var(--r-sm); font: inherit; color: inherit; cursor: pointer; }
 .ap-crumbs button[aria-current="location"] { font-weight: 600; }
 .ap-crumb { display: inline-flex; align-items: center; gap: 2px; }
 .ap-file-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .ap-file-list li { display: flex; flex-wrap: wrap; min-width: 0; align-items: center; gap: 8px; }
-.ap-file-list li > button:first-child { flex: 1 1 180px; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; border: 1px solid transparent; background: var(--ag-surface-2, #f3f4f6); font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.ap-file-list li > button:first-child { flex: 1 1 180px; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid transparent; background: var(--ag-surface-2, #f3f4f6); font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .ap-file-list li > button:first-child[aria-current="true"] { border-color: var(--ag-accent, #2f9e6f); }
 .ap-file-list li > button:first-child span { flex: 1; min-width: 0; display: grid; overflow-wrap: anywhere; }
 .ap-file-list li > button:first-child small { font-size: 12px; color: var(--ag-ink-2, #4b5563); }
 .ap-file-list em { font-style: normal; font-size: 13px; color: var(--ag-ink-2, #4b5563); }
-.ap-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 13px; color: inherit; background: none; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.14)); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+.ap-download { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 13px; color: inherit; background: none; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.14)); border-radius: var(--r-sm); padding: 6px 8px; cursor: pointer; }
 .ap-file h3 { margin: 10px 0 6px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
-.ap-file pre { margin: 0; padding: 10px; border-radius: 10px; background: var(--ag-surface-2, #f3f4f6); font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-height: 420px; overflow: auto; }
+.ap-file pre { margin: 0; padding: 10px; border-radius: var(--r-md); background: var(--ag-surface-2, #f3f4f6); font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-height: 420px; overflow: auto; }
 .ap-foot { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ag-ink-2, #4b5563); }
 @media (max-width: 640px) { .ap-row-label { min-width: 0; width: 100%; } }
 
@@ -110,17 +110,17 @@
    it in full screen. Caption lines sit just above it. */
 .ap-dock { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .ap-dock .ap-live { font-size: 12px; }
-.ap-dock .ap-status { max-width: min(560px, 100%); padding: 5px 12px; border-radius: 999px; font-size: 13px; }
+.ap-dock .ap-status { max-width: min(560px, 100%); padding: 5px 12px; border-radius: var(--r-pill); font-size: 13px; }
 .ap-screen .screen-bar { --lime-ink: #10221a; }
 .ap-screen.is-full .ap-dock { position: fixed; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 51; max-width: calc(100% - 24px); }
 .ap-screen.is-full { --ap-chrome: calc(72px + env(safe-area-inset-top)); }
 /* The caption keeps its own backdrop over the picture; the bottom strip is reserved for the dock. */
-.ap-screen.is-full .ap-dock .ap-live { padding: 3px 10px; border-radius: 999px; background: rgba(11, 13, 16, 0.82); color: #e9eee9; }
+.ap-screen.is-full .ap-dock .ap-live { padding: 3px 10px; border-radius: var(--r-pill); background: rgba(11, 13, 16, 0.82); color: #e9eee9; }
 .ap-keys-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
 .ap-options { display: grid; gap: 8px; margin-bottom: 12px; }
 
 /* Numbered labels: one per clickable thing, at its top-left corner. */
-.ap-label { position: absolute; z-index: 2; transform: translate(-2px, -2px); min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid rgb(0 0 0 / 0.55); border-radius: 6px; background: #ffd21e; color: #111; font: 700 11px/16px -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; cursor: pointer; box-shadow: 0 1px 3px rgb(0 0 0 / 0.45); }
+.ap-label { position: absolute; z-index: 2; transform: translate(-2px, -2px); min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid rgb(0 0 0 / 0.55); border-radius: var(--r-sm); background: #ffd21e; color: #111; font: 700 11px/16px -apple-system, BlinkMacSystemFont, sans-serif; text-align: center; cursor: pointer; box-shadow: 0 1px 3px rgb(0 0 0 / 0.45); }
 .ap-label.is-secure { background: #b9efd4; }
 .ap-label:hover, .ap-label:focus-visible { background: #fff; outline: 2px solid #ffd21e; z-index: 3; }
 .ap-label:disabled { opacity: 0.6; }

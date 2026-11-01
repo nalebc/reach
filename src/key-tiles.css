@@ -22,7 +22,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font: 600 13px system-ui, -apple-system, sans-serif;
+  font: 600 13px var(--font-body);
   color: var(--muted, #93a096);
 }
 /* "More" / "Less": quiet text, a 44px target without a taller row. */
@@ -35,10 +35,10 @@
   margin: -12px -4px -12px 0;
   padding: 0 6px 0 12px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--muted, #93a096);
-  font: 500 13px system-ui, -apple-system, sans-serif;
+  font: 500 13px var(--font-body);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -71,7 +71,7 @@
   margin: 0;
   padding: 14px 4px 10px;
   border: 0;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #161e1a;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
   color: #eef4ef;
@@ -90,7 +90,7 @@
   transform: scaleX(-1);
 }
 .key-glyph {
-  font: 600 15px/22px system-ui, -apple-system, sans-serif;
+  font: 600 15px/22px var(--font-body);
   letter-spacing: 0.2px;
 }
 .key-tile-label {
@@ -101,7 +101,7 @@
   -webkit-line-clamp: 2;
   line-clamp: 2;
   overflow-wrap: anywhere;
-  font: 500 11.5px/1.25 system-ui, -apple-system, sans-serif;
+  font: 500 11.5px/1.25 var(--font-body);
   color: var(--muted, #93a096);
   text-align: center;
 }
@@ -130,7 +130,7 @@
 }
 .key-preview {
   flex: none;
-  font: 600 13px system-ui, -apple-system, sans-serif;
+  font: 600 13px var(--font-body);
   color: var(--lime, #b9efd4);
   white-space: nowrap;
 }
@@ -150,11 +150,11 @@
   padding: 0 8px;
   overflow: hidden;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #161e1a;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
   color: #eef4ef;
-  font: 500 14px system-ui, -apple-system, sans-serif;
+  font: 500 14px var(--font-body);
   white-space: nowrap;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
@@ -181,10 +181,10 @@
   min-height: 44px;
   margin-top: 6px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--muted, #93a096);
-  font: 500 13px system-ui, -apple-system, sans-serif;
+  font: 500 13px var(--font-body);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -206,7 +206,7 @@
   gap: 0;
   min-height: 44px;
   padding: 0;
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 
 @container (min-width: 400px) {

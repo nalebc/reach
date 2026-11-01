@@ -49,7 +49,7 @@
 /* A real mark (an agent's logo) fills its circle. */
 .app-icon.real {
   overflow: hidden;
-  background: #101512;
+  background: var(--surface-0);
 }
 .app-icon.real > img,
 .app-icon.real > .app-logo {
@@ -62,7 +62,7 @@
   width: 24px;
   height: 24px;
   margin: 2px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
 }
 
 /* Online / offline, on a computer's icon. */
@@ -138,7 +138,7 @@
   padding: 3px;
   margin: 4px 0 18px;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--group-bg);
   box-shadow: inset 0 0 0 1px var(--group-edge);
 }
@@ -146,7 +146,7 @@
   flex: 1;
   min-height: 36px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--muted, #93a096);
   font:
@@ -191,7 +191,7 @@
 /* The computer: one card, like the top of More. */
 .settings-workspace .settings-general .settings-panel.computer-settings-card {
   padding: 14px;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background:
     radial-gradient(
       120% 140% at 0% 0%,
@@ -210,7 +210,7 @@
 .settings-workspace .settings-general .settings-device h2 {
   margin: 0 0 3px;
   font:
-    650 17px/1.2 system-ui,
+    600 17px/1.2 system-ui,
     -apple-system,
     sans-serif;
   letter-spacing: 0;
@@ -264,7 +264,7 @@
   margin: 0;
   padding: 11px 14px;
   border: 0;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--group-bg);
   box-shadow: inset 0 0 0 1px var(--group-edge);
   color: inherit;
@@ -316,15 +316,15 @@
   box-shadow: none;
 }
 .settings-workspace .access-entry:has(> .access-group-title) .client-row {
-  border-top-left-radius: 16px;
-  border-top-right-radius: 16px;
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
 }
 .settings-workspace
   .access-entry:has(+ .access-entry > .access-group-title)
   .client-row,
 .settings-workspace .access-entry:last-of-type .client-row {
-  border-bottom-left-radius: 16px;
-  border-bottom-right-radius: 16px;
+  border-bottom-left-radius: var(--r-lg);
+  border-bottom-right-radius: var(--r-lg);
   margin-bottom: 18px;
 }
 .settings-workspace .access-entry:not(:has(> .access-group-title)) .client-row {
@@ -356,7 +356,7 @@
    terminal, the full-screen Screen, app threads) keep their own. */
 @media (max-width: 1024px), (pointer: coarse) {
   .app-shell main .button:not(:is(.screen-expanded, .app-thread) *) {
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     padding-inline: 16px;
     font-size: 13px;
     font-weight: 600;
@@ -388,7 +388,7 @@
   .app-shell .files-select-tool {
     width: auto;
     padding-inline: 12px;
-    border-radius: 999px;
+    border-radius: var(--r-pill);
   }
   /* In a list, a row's action is a bare icon; glass is for the header. */
   .app-shell .files-tool.file-more {
@@ -406,7 +406,7 @@
   .app-shell .apps-search,
   .app-shell .files-header input {
     border-color: transparent;
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: rgb(255 255 255 / 0.05);
     box-shadow: inset 0 0 0 1px var(--hairline);
   }
@@ -417,7 +417,7 @@
   /* The computer chips: glass pills; the one you're on lit softly. */
   .app-shell .fleet-switcher button {
     border-color: transparent;
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: rgb(255 255 255 / 0.04);
     box-shadow: inset 0 0 0 1px var(--hairline);
     color: #b9c6bd;
@@ -437,7 +437,7 @@
   /* Cards: one dark green-black glass surface, no blue tint. */
   .app-shell .home-hero {
     border-color: transparent;
-    border-radius: 24px;
+    border-radius: var(--r-2xl);
     background:
       radial-gradient(
         ellipse at 50% 70%,
@@ -449,7 +449,7 @@
   }
   .app-shell main .simple-screen:not(.screen-expanded) {
     border-color: transparent;
-    border-radius: 22px;
+    border-radius: var(--r-2xl);
     background: #121714;
     box-shadow: inset 0 0 0 1px var(--hairline);
   }

@@ -29,7 +29,7 @@
   height: 44px;
   padding: 0 14px;
   border: 1px solid var(--ivt-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   color: var(--ivt-text);
   font: inherit;
@@ -49,7 +49,7 @@
   gap: 6px;
   height: 44px;
   padding: 0 18px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
@@ -88,7 +88,7 @@
   height: 44px;
   padding: 0 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   white-space: nowrap;
   cursor: pointer;
@@ -99,7 +99,7 @@
 .ivt-meta .ivt-menu-button {
   height: 32px;
   padding: 0 10px;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: transparent;
   font-size: 14px;
 }
@@ -113,7 +113,7 @@
   overflow: auto;
   padding: 6px;
   border: 1px solid var(--ivt-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--ivt-raised);
   box-shadow: 0 12px 32px #0008;
 }
@@ -132,7 +132,7 @@
   width: 100%;
   padding: 9px 10px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: none;
   text-align: left;
   cursor: pointer;
@@ -170,7 +170,7 @@
   gap: 2px;
   padding: 6px 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #ffffff05;
 }
 .ivt-toggle {
@@ -205,7 +205,7 @@
   width: 40px;
   height: 24px;
   margin: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #4a4a4a;
   cursor: pointer;
   transition: background 0.15s;
@@ -234,14 +234,14 @@
   gap: 2px;
   margin: 2px 0 8px;
   padding: 3px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
 }
 .ivt-segment button {
   height: 30px;
   padding: 0 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   font-size: 13.5px;
   cursor: pointer;
@@ -261,7 +261,7 @@
   height: 38px;
   margin-bottom: 4px;
   padding: 0 10px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   color: var(--ivt-muted);
 }
@@ -297,7 +297,7 @@
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--ivt-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--ivt-raised);
 }
 .ivt-link-head {
@@ -320,7 +320,7 @@
   height: 38px;
   padding: 0 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   color: var(--ivt-muted);
   font:
@@ -336,7 +336,7 @@
   width: 34px;
   height: 34px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--ivt-muted) !important;
   cursor: pointer;
@@ -365,7 +365,7 @@
   height: 38px;
   padding: 0 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   color: var(--ivt-text);
   font: inherit;
@@ -463,7 +463,7 @@
   max-width: 100%;
   height: 28px;
   padding: 0 4px 0 10px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #b9efd4;
   color: #0d0d0d;
   font-size: 13px;
@@ -500,7 +500,7 @@
   max-width: 180px;
   padding: 4px 6px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--ivt-muted) !important;
   overflow: hidden;
@@ -523,7 +523,7 @@
   height: 34px;
   padding: 0 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   font-size: 13.5px;
   cursor: pointer;
@@ -620,7 +620,7 @@
   min-height: 40px;
   padding: 0 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--ivt-muted) !important;
   font-size: 13.5px;
@@ -632,7 +632,7 @@
   margin: 0;
   padding: 10px 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 .ivt-setup-line strong {
   display: inline-flex;
@@ -647,7 +647,7 @@
   gap: 8px;
   padding: 12px 14px;
   border: 1px solid var(--ivt-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--ivt-raised);
 }
 .ivt-setup header,
@@ -668,7 +668,7 @@
 .ivt-steps i {
   width: 18px;
   height: 3px;
-  border-radius: 2px;
+  border-radius: var(--r-xs);
   background: #ffffff26;
 }
 .ivt-steps i.on {
@@ -705,7 +705,7 @@
   gap: 10px;
   padding: 14px;
   border: 1px solid var(--ivt-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
 }
 .ivt-policy-fix p {
@@ -726,7 +726,7 @@
   height: 40px;
   padding: 0 12px;
   border: 1px solid var(--ivt-line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ivt-field);
   color: var(--ivt-text);
   font: inherit;
@@ -807,7 +807,7 @@
 }
 .ivt-rows {
   overflow: visible;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: rgb(255 255 255 / 0.045);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
 }
@@ -890,7 +890,7 @@
   width: 100%;
   min-height: 48px;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   font-size: 15px !important;
   font-weight: 600 !important;
   color: #111 !important;
@@ -903,7 +903,7 @@
   opacity: 0.4;
 }
 .ivt-link {
-  border-radius: 18px;
+  border-radius: var(--r-xl);
 }
 .ivt :is(button, summary, select, input):focus-visible {
   outline: 2px solid #ededed;
@@ -935,12 +935,12 @@
    icon, a name, one line and a check (invite-menu.tsx). */
 .ivt-menu-list {
   padding: 6px;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   box-shadow: 0 16px 40px #000a;
 }
 .ivt-item {
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 .ivt-item > span:not(.ivt-item-icon) {
   flex: 1;
@@ -990,10 +990,10 @@
   height: 44px;
   padding: 0 16px 0 13px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #ededed;
   color: #111;
-  font: 600 14px system-ui, sans-serif;
+  font: 600 14px var(--font-body);
 }
 .invite-pill:active {
   background: #fff;

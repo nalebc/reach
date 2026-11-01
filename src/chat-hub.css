@@ -11,7 +11,7 @@
   flex-direction: column;
   margin: 8px 0 0;
   border: 1px solid var(--chat-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   overflow: hidden;
 }
 .hub-hit {
@@ -77,7 +77,7 @@
   margin: 0 16px 14px;
   padding: 12px 14px;
   border: 1px solid var(--chat-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--chat-ink) 4%, transparent);
 }
 .hub-card > header {
@@ -90,7 +90,7 @@
 .hub-card h2 {
   margin: 0;
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .hub-card header small {
   color: var(--chat-muted);
@@ -133,7 +133,7 @@
   gap: 8px;
   margin: 2px 0 8px;
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: color-mix(in srgb, var(--warning, #d6c38f) 14%, transparent);
   color: var(--chat-ink);
   font-size: 12.5px;
@@ -162,7 +162,7 @@
   overflow: hidden;
   padding: 0 7px;
   border: 1px solid var(--chat-line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   color: var(--chat-muted);
   font-size: 11px;
   font-weight: 600;

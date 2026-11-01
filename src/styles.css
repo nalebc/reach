@@ -1,33 +1,9 @@
 @import url("/fonts.css");
+@import "./tokens.css";
 :root {
   font-family: var(--font-body);
-  color: #e9eee9;
-  background: #101512;
   font-synthesis: none;
   font-size: 15px;
-  --bg: #101512;
-  --panel: #171e19;
-  --border: #2b332d;
-  --muted: #93a096;
-  --lime: #b9efd4;
-  --lime-ink: #16362a;
-  --radius: 14px;
-  /* Usage near its limit, and out of it (usage.ts). */
-  --usage-warn: #d6c38f;
-  --usage-out: #f1a08d;
-  /* Something is waiting for you (Needs you, a chat's question or approval):
-     one amber everywhere, 11:1 on the background. Usage warnings keep
-     their own softer gold above. */
-  --needs-you: #f2c46b;
-  --needs-you-ink: #252419;
-  /* Motion: a press answers at once; pages and sheets glide. Reduced motion
-     turns both off below (prefers-reduced-motion). */
-  --t-tap: 120ms cubic-bezier(0.2, 0, 0, 1);
-  --t-move: 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  /* Inter for text, Manrope for page titles (type.css), the platform's own
-     interface font wherever they don't cover a character. */
-  --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-display: Manrope, var(--font-body);
 }
 * {
   box-sizing: border-box;
@@ -94,7 +70,7 @@ textarea,
 select {
   background: #101612;
   border: 1px solid #39433b;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   padding: 12px 13px;
   color: #e9eee9;
   min-width: 0;
@@ -133,19 +109,19 @@ p {
   margin: 0;
 }
 h1 {
-  font-weight: 570;
+  font-weight: 600;
   font-size: 32px;
   line-height: 1.18;
   letter-spacing: -1.1px;
 }
 h2 {
   font-size: 18px;
-  font-weight: 570;
+  font-weight: 600;
   letter-spacing: -0.3px;
 }
 h3 {
   font-size: 18px;
-  font-weight: 550;
+  font-weight: 600;
 }
 p {
   line-height: 1.6;
@@ -200,7 +176,7 @@ svg {
   align-items: center;
   gap: 12px;
   font-size: 32px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -1.4px;
 }
 .brand-mark {
@@ -209,10 +185,10 @@ svg {
   width: 34px;
   height: 36px;
   background: var(--lime);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   color: var(--lime-ink);
   font-size: 36px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1;
   letter-spacing: -4px;
   padding-right: 4px;
@@ -227,7 +203,7 @@ svg {
 }
 .workspace-label {
   font-size: 10px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 1.8px;
   color: #75847a;
   margin: 0 13px 12px;
@@ -249,7 +225,7 @@ svg {
   gap: 13px;
   text-align: left;
   padding: 12px 14px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 14px;
   color: #a8b4ab;
   transition: background 0.15s;
@@ -269,7 +245,7 @@ svg {
   border: 1px solid #64834a;
   min-width: 21px;
   text-align: center;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   font-size: 11px;
 }
 .sidebar-devices {
@@ -313,7 +289,7 @@ svg {
   font-size: 12px;
   padding: 13px;
   border: 1px solid #34402f;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   margin-bottom: 17px;
   background: linear-gradient(120deg, #22301e, #192219);
 }
@@ -420,7 +396,7 @@ svg {
   min-width: 40px;
   min-height: 40px;
   padding: 8px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   color: #99ab9d;
 }
 .icon-button:hover {
@@ -462,10 +438,10 @@ svg {
   justify-content: center;
   gap: 8px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 11px 15px;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
   white-space: nowrap;
   min-height: 40px;
   transition:
@@ -512,9 +488,9 @@ svg {
   background: #263029;
   color: #b1bfb3;
   border: 1px solid #354238;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   font-size: 10px;
-  font-weight: 450;
+  font-weight: 500;
   white-space: nowrap;
 }
 .badge.green {
@@ -544,7 +520,7 @@ svg {
   color: #aaca8a;
   display: grid;
   place-items: center;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   margin-bottom: 7px;
 }
 .empty p {
@@ -578,7 +554,7 @@ svg {
   background: #442525;
   color: #f0b4ac;
   border: 1px solid #70443c;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 13px;
   line-height: 1.5;
   margin: 12px 0;
@@ -593,7 +569,7 @@ svg {
   align-items: center;
   gap: 10px;
   border: 1px solid #536644;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   padding: 15px 20px;
   z-index: 50;
   background: #2a3b24;
@@ -608,7 +584,7 @@ svg {
   gap: 13px;
   background: #18221b;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 17px;
   text-align: left;
   color: #a0b793;
@@ -635,7 +611,7 @@ svg {
   gap: 9px;
   background: #101812;
   border: 1px solid #344038;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 0 11px;
   color: #7c917f;
   flex: 1;
@@ -688,7 +664,7 @@ svg {
   width: 7px !important;
 }
 .xterm .xterm-scrollable-element > .scrollbar > .slider {
-  border-radius: 5px;
+  border-radius: var(--r-xs);
 }
 .terminal-keys {
   display: flex;
@@ -702,7 +678,7 @@ svg {
   background: #25332a;
   border: 1px solid #3d4b40;
   min-width: 40px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   padding: 7px;
   font-size: 11px;
   color: #bbcdbd;
@@ -722,7 +698,7 @@ svg {
   text-align: left;
   font-size: 12px;
   padding: 13px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   margin-bottom: 5px;
   color: #a9b7a5;
 }
@@ -747,7 +723,7 @@ svg {
   padding: 13px 17px;
   background: #2b3a24;
   border: 1px solid #405333;
-  border-radius: 12px 12px 2px 12px;
+  border-radius: var(--r-md) var(--r-md) var(--r-xs) var(--r-md);
 }
 .message.assistant {
   padding-right: 10px;
@@ -755,7 +731,7 @@ svg {
 .approval-card {
   background: #313721;
   border: 1px solid #777f44;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 18px;
   font-size: 13px;
   margin: 17px 0;
@@ -857,7 +833,7 @@ svg {
   background: #101811;
   border: 1px solid #31402e;
   padding: 12px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   color: #aec398;
@@ -888,7 +864,7 @@ svg {
 .pair-card {
   background: #1b261b;
   border: 1px solid #3d5134;
-  border-radius: 19px;
+  border-radius: var(--r-xl);
   padding: 30px;
   box-shadow: 0 20px 70px #0003;
 }
@@ -906,7 +882,7 @@ svg {
   font-size: 24px;
   letter-spacing: 8px;
   font-variant-numeric: tabular-nums;
-  font-weight: 450;
+  font-weight: 500;
 }
 .welcome footer {
   display: flex;
@@ -1214,7 +1190,7 @@ svg {
 .button.big {
   min-height: 54px;
   font-size: 16px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   padding: 14px 22px;
 }
 .button.ghost {
@@ -1253,7 +1229,7 @@ svg {
 }
 .welcome-hero h1 {
   font-size: clamp(36px, 5vw, 54px);
-  font-weight: 560;
+  font-weight: 600;
   line-height: 1.08;
   letter-spacing: -2px;
   margin: 4px 0 14px;
@@ -1289,7 +1265,7 @@ svg {
   background: linear-gradient(180deg, #1c281d, #131b15);
   border: 1px solid #3d5134;
   border-bottom: 0;
-  border-radius: 28px 28px 0 0;
+  border-radius: var(--r-3xl) var(--r-3xl) 0 0;
   padding: 26px 24px calc(26px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
@@ -1302,7 +1278,7 @@ svg {
     align-items: center;
   }
   .sheet {
-    border-radius: 26px;
+    border-radius: var(--r-3xl);
     border-bottom: 1px solid #3d5134;
   }
 }
@@ -1339,7 +1315,7 @@ svg {
   gap: 2px;
   background: #101812;
   border: 1px solid #2c3a2c;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   overflow: hidden;
 }
 .grant-list li {
@@ -1360,7 +1336,7 @@ svg {
 .agent-badge {
   width: 68px;
   height: 68px;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   display: grid;
   place-items: center;
   color: var(--lime-ink);
@@ -1408,7 +1384,7 @@ svg {
   flex-shrink: 0;
   width: 52px;
   height: 31px;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   border: 1px solid #3d4b40;
   background: #2a352c;
   position: relative;

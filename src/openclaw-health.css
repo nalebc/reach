@@ -7,7 +7,7 @@
   min-height: 36px;
   padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--muted);
   font: inherit;
@@ -77,7 +77,7 @@
   flex: none;
   width: 48px;
   height: 48px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   color: #b9efd4;
   background: #b9efd411;
 }
@@ -99,7 +99,7 @@
   margin: 4px 0 7px;
   font-size: 25px;
   line-height: 1.15;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.6px;
   color: #eef1e5;
 }
@@ -165,7 +165,7 @@
   padding: 16px 14px;
   text-align: left;
   border: 1px solid #d3ead21a;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #151c18;
   color: #bbcec2;
   font: inherit;
@@ -183,7 +183,7 @@
 .claw-action strong {
   color: #e2eae5;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .claw-action small {
   color: #91a097;
@@ -199,7 +199,7 @@
   margin-bottom: 24px;
   padding: 16px;
   border: 1px solid #d3ead226;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #151c18;
 }
 .claw-operation.failed {
@@ -223,7 +223,7 @@
 .claw-operation-heading strong {
   display: block;
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.5;
 }
 .claw-operation-heading small {
@@ -256,7 +256,7 @@
   min-height: 42px;
   padding: 8px 14px;
   border: 1px solid #d3ead226;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: #d3ead20a;
   color: #dbe6dd;
   font: inherit;
@@ -290,7 +290,7 @@
   width: 100%;
   padding: 16px;
   border: 1px solid #d3ead21a;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #151c18;
   color: #bbcec2;
   text-align: left;
@@ -320,14 +320,14 @@
   place-items: center;
   width: 60px;
   height: 60px;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #b9efd411;
   color: #b9efd4;
   margin-bottom: 24px;
 }
 .claw-confirm-body h2 {
   font-size: 24px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.5px;
   margin: 0 0 16px;
 }
@@ -361,13 +361,13 @@
   gap: 2px;
   flex: none;
   padding: 3px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #d3ead20a;
 }
 .claw-log-filter button {
   min-height: 38px;
   padding: 0 12px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   border: 0;
   background: none;
   color: #91a097;
