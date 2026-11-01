@@ -33,6 +33,7 @@ import {
 } from "./passkeys";
 import { bindPrivatePeer, installPrivateRouting, installTailnet, usePrivateWay, type TailnetNode } from "./tailnet-transport";
 import { watchNativeStart } from "./start-native";
+import reachMascot from "./assets/reach-mascot.svg";
 import {
   appLink,
   browserHostname,
@@ -80,6 +81,8 @@ function claimWorkspace() {
 function render(parts: {
   title: string;
   detail?: string;
+  busy?: boolean;
+  status?: string;
   action?: {
     label: string;
     href?: string;
@@ -98,10 +101,19 @@ function render(parts: {
   view.replaceChildren();
   const card = document.createElement("section");
   card.className = "start-card";
+  card.dataset.busy = String(!!parts.busy || !!parts.action?.busy);
+  card.setAttribute("aria-labelledby", "start-title");
   const mark = document.createElement("div");
   mark.className = "start-mark";
-  mark.textContent = "Reach";
+  mark.setAttribute("aria-hidden", "true");
+  const mascot = document.createElement("img");
+  mascot.src = reachMascot;
+  mascot.alt = "";
+  mascot.width = 84;
+  mascot.height = 84;
+  mark.append(mascot);
   const title = document.createElement("h1");
+  title.id = "start-title";
   title.textContent = parts.title;
   card.append(mark);
   if (parts.step) {
@@ -116,6 +128,14 @@ function render(parts: {
     p.textContent = parts.detail;
     card.append(p);
   }
+  if (parts.status) {
+    const status = document.createElement("p");
+    status.className = "start-status";
+    const dot = document.createElement("span");
+    dot.setAttribute("aria-hidden", "true");
+    status.append(dot, parts.status);
+    card.append(status);
+  }
   if (parts.action) {
     const a = parts.action;
     const el = document.createElement(a.href ? "a" : "button");
@@ -126,7 +146,10 @@ function render(parts: {
       (el as HTMLAnchorElement).target = "_blank";
       (el as HTMLAnchorElement).rel = "noopener noreferrer";
     }
-    if (a.busy) el.setAttribute("aria-busy", "true");
+    if (a.busy) {
+      el.setAttribute("aria-busy", "true");
+      if (!a.href) (el as HTMLButtonElement).disabled = true;
+    }
     if (a.onClick) el.addEventListener("click", a.onClick);
     card.append(el);
   }
@@ -263,7 +286,14 @@ async function browserMode(
   // then connect to Reach (Face ID or the code). Guests skip both, and so
   // does Face ID sign-in (one step: Face ID).
   const JOIN = guest || face ? undefined : "Step 1 of 2 · Join your network";
-  render({ title: `Connecting to ${config.name}…`, hint: !guest, step: JOIN });
+  render({
+    title: `Connecting to ${config.name}…`,
+    detail: "Keep this page open. Reach will continue when the connection is ready.",
+    busy: true,
+    status: "Starting secure connection",
+    hint: !guest,
+    step: JOIN,
+  });
   let node: TailnetNode;
   const guestJoin = guest
     ? guestConnection({
@@ -457,6 +487,9 @@ async function browserMode(
       } else if (state === "Starting")
         render({
           title: `Joining your network…`,
+          detail: "Finishing the secure connection. This page will continue automatically.",
+          busy: true,
+          status: "Connecting securely",
           hint: true,
           step: JOIN,
         });
@@ -502,11 +535,20 @@ async function faceMode(config: StartConfig, wasm: Promise<Response>) {
     render({
       title: `Open ${config.name}`,
       detail: note || "With Face ID on this phone. Nothing to install.",
-      action: {
-        label: ask ? "Continue with Face ID" : "Preparing Face ID…",
-        onClick: tap,
-        busy: !ask,
-      },
+      action: !ask && note
+        ? {
+            label: "Try again",
+            onClick: () => {
+              note = "";
+              show();
+              void load();
+            },
+          }
+        : {
+            label: ask ? "Continue with Face ID" : "Preparing Face ID…",
+            onClick: tap,
+            busy: !ask,
+          },
       secondary: {
         label: "Sign in with Tailscale instead",
         onClick: () => {
@@ -537,7 +579,12 @@ async function faceMode(config: StartConfig, wasm: Promise<Response>) {
     note = "";
     clearTimeout(renew);
     const answer = signWithFaceId(options); // first thing in the tap
-    render({ title: `Opening ${config.name}…` });
+    render({
+      title: `Opening ${config.name}…`,
+      detail: "Complete the sign-in prompt to continue.",
+      busy: true,
+      status: "Checking your sign-in",
+    });
     answer
       .then((credential) => post("/faceid/join", { id, credential }))
       .then(({ key, hostname, ticket }) => {
@@ -573,7 +620,12 @@ async function main() {
     });
     return;
   }
-  render({ title: "Opening Reach…" });
+  render({
+    title: "Opening Reach…",
+    detail: "Finding your computer and checking your saved access.",
+    busy: true,
+    status: "Checking connection",
+  });
   const config = await loadConfig();
   if (!config) {
     render({

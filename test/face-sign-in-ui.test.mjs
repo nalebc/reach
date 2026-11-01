@@ -56,16 +56,24 @@ after(async () => dom?.close());
 const json = (value, status = 200) => () => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 const button = (root, text) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
 
-test("the start page: a new browser opens with one Face ID button, and the tap goes straight to Face ID", async () => {
+test("the start page retries failed Face ID preparation, then the sign-in tap goes straight to Face ID", async () => {
   answers["/reach-start.json"] = json(CONFIG);
-  answers["/faceid/options"] = json({ id: "ask-1", options: { challenge: "Y2hhbGxlbmdl", rpId: "mac.t.ts.net", allowCredentials: [], userVerification: "required", timeout: 120000 } });
+  let preparations = 0;
+  answers["/faceid/options"] = () => ++preparations === 1
+    ? json({ error: "Sign-in is temporarily unavailable." }, 503)()
+    : json({ id: "ask-1", options: { challenge: "Y2hhbGxlbmdl", rpId: "mac.t.ts.net", allowCredentials: [], userVerification: "required", timeout: 120000 } })();
   answers["/faceid/join"] = json({ key: tskey("auth-kX-abc"), hostname: "rf-ab12-aaaaaaaaaa", ticket: "T".repeat(43) });
   answers["/tailnet/client.wasm"] = () => new Response("wasm");
   dom.document.body.insertAdjacentHTML("beforeend", '<main id="start"></main>');
   dom.window.fetch = globalThis.fetch; // a browser's window.fetch is its fetch
   await dom.load("/src/start.ts");
   const view = await dom.waitFor(() => dom.document.getElementById("start"));
+  const retry = await dom.waitFor(() => button(view, "Try again"));
+  assert.equal(retry.disabled, false, "failed preparation offers an action instead of a stuck busy button");
+  assert.equal(credentials.get.length, 0, "preparation never opens a sign-in prompt");
+  retry.click();
   const tap = await dom.waitFor(() => button(view, "Continue with Face ID"));
+  assert.equal(preparations, 2, "retry asks for fresh sign-in options");
   assert.match(view.textContent, /Open Mac A/);
   assert.match(view.textContent, /With Face ID on this phone\. Nothing to install\./);
   assert.ok(button(view, "Sign in with Tailscale instead"), "Tailscale sign-in stays as the other way");
