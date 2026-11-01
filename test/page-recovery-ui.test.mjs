@@ -1,5 +1,6 @@
 import test, { before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { JSDOM } from "jsdom";
 import { startDom, settle } from "./dom/harness.mjs";
 
 let dom, recovery, stop;
@@ -129,4 +130,21 @@ test("disposing recovery aborts held work and removes every wake handler", async
   assert.deepEqual(f.reopened, []);
   assert.equal(f.reads.length, 1);
   assert.equal(dom.document.querySelector('[data-reach-page-recovery]'), null);
+});
+
+test("closing the document stops its default recovery checks without an explicit application teardown", async () => {
+  const page = new JSDOM('<div id="root">Reach is open</div>', { url: "https://fixture.test/", pretendToBeVisual: true });
+  const doc = page.window.document;
+  let reads = 0;
+  Object.defineProperty(doc, "hidden", { configurable: true, get() { reads++; return false; } });
+  const dispose = recovery.watchPageRecovery({ doc, win: page.window });
+  try {
+    const before = reads;
+    page.window.close();
+    await settle(2250);
+    assert.equal(reads, before, "a destroyed document must never be checked again");
+  } finally {
+    dispose();
+    page.window.close();
+  }
 });

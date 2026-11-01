@@ -33,8 +33,8 @@ export function watchPageRecovery({
   win = window,
   answers = documentAnswers,
   reopen = (_href: string) => win.location.reload(),
-  every = (check: () => void) => setInterval(check, 2000),
-  clear = (timer: ReturnType<typeof setInterval>) => clearInterval(timer),
+  every = (check: () => void) => win.setInterval(check, 2000),
+  clear = (timer: number) => win.clearInterval(timer),
 } = {}) {
   let missing = false, stopped = false, opening = false;
   let pending: AbortController | undefined;
@@ -72,13 +72,13 @@ export function watchPageRecovery({
     }
     const controller = new AbortController();
     pending = controller;
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = win.setTimeout(() => controller.abort(), 6000);
     void answers(win.location.href, controller.signal).catch(() => false).then(ready => {
       if (!ready || stopped || controller.signal.aborted || doc.hidden || pageHasContent(doc)) return;
       opening = true;
       reopen(win.location.href);
     }).finally(() => {
-      clearTimeout(timer);
+      win.clearTimeout(timer);
       if (pending === controller) pending = undefined;
     });
   };
