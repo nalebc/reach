@@ -19,25 +19,32 @@ export async function writePortableArchive(source, destination) {
   // Observe errors immediately while entries are still being supplied.
   writing.catch(() => {});
   const header = (name, type, mode, size = 0) => ({ name, type, mode, size, uid: 0, gid: 0, uname: "", gname: "", mtime: new Date(0) });
+  const regularFile = async (file, name) => {
+    // Open first. The descriptor, not an earlier pathname check, is the read
+    // authority. Nonblocking open also refuses a swapped FIFO without hanging.
+    const handle = await fsp.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+    try {
+      const [opened, linked] = await Promise.all([handle.stat(), fsp.lstat(file)]);
+      if (!opened.isFile() || !linked.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino)
+        throw Error("A portable input changed during archiving.");
+      await pipeline(handle.createReadStream({ autoClose: false }),
+        pack.entry(header(name, "file", opened.mode & 0o777, opened.size)));
+    } finally { await handle.close(); }
+  };
   const directory = async (folder, name) => {
     const entry = pack.entry(header(name + "/", "directory", 0o755));
     entry.end();
     await finished(entry);
-    for (const child of (await fsp.readdir(folder)).sort()) {
-      const file = path.join(folder, child), relative = name + "/" + child;
-      const stat = await fsp.lstat(file);
-      if (stat.isDirectory()) await directory(file, relative);
-      else if (stat.isFile()) {
-        const handle = await fsp.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-        try {
-          const opened = await handle.stat();
-          if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino)
-            throw Error("A portable input changed during archiving.");
-          await pipeline(handle.createReadStream({ autoClose: false }),
-            pack.entry(header(relative, "file", opened.mode & 0o777, opened.size)));
-        } finally { await handle.close(); }
-      } else throw Error("Portable inputs must be regular files and directories.");
+    const children = await fsp.readdir(folder, { withFileTypes: true });
+    children.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const child of children) {
+      const file = path.join(folder, child.name), relative = name + "/" + child.name;
+      if (child.isDirectory()) await directory(file, relative);
+      else if (child.isSymbolicLink() || child.isFIFO() || child.isSocket() || child.isBlockDevice() || child.isCharacterDevice())
+        throw Error("Portable inputs must be regular files and directories.");
+      else await regularFile(file, relative);
     }
+    if (!(await fsp.lstat(folder)).isDirectory()) throw Error("A portable directory changed during archiving.");
   };
   try {
     await directory(root, "reach");

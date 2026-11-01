@@ -67,3 +67,19 @@ test("an archive cannot be written into its own source tree", async t => {
   const h = await fixture(t);
   await assert.rejects(writePortableArchive(h.stage, path.join(h.stage, "nested.tar.gz")), /outside its source/);
 });
+
+test("a pathname replaced after opening cannot supply different archive bytes", async t => {
+  const h = await fixture(t), file = path.join(h.stage, "input.txt");
+  await fsp.writeFile(file, "original");
+  const open = fsp.open.bind(fsp);
+  t.mock.method(fsp, "open", async (name, ...options) => {
+    const handle = await open(name, ...options);
+    if (name === file) {
+      await fsp.rename(file, path.join(h.root, "opened.txt"));
+      await fsp.writeFile(file, "replacement");
+    }
+    return handle;
+  });
+  await assert.rejects(writePortableArchive(h.stage, h.archive), /changed during archiving/);
+  await assert.rejects(fsp.stat(h.archive), { code: "ENOENT" });
+});
