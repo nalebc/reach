@@ -182,7 +182,7 @@
 /* "Your Mac needs you" (AgentSession.tsx): a small sign in the chat's header. */
 .as-page .as-bar-pill .as-icon.as-mac-needs {
   position: relative;
-  color: #d6c38f;
+  color: var(--needs-you);
 }
 .as-page .as-bar-pill .as-icon.as-mac-needs small {
   position: absolute;
@@ -191,7 +191,7 @@
   min-width: 15px;
   padding: 0 4px;
   border-radius: 999px;
-  background: #d6c38f;
+  background: var(--needs-you);
   color: #1b1b1b;
   font-size: 10px;
   font-weight: 700;

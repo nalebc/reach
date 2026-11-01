@@ -54,8 +54,8 @@
     box-shadow: none;
     color: #87948b;
     transition:
-      color 0.12s ease,
-      background 0.12s ease;
+      color var(--t-tap),
+      background var(--t-tap);
     -webkit-tap-highlight-color: transparent;
   }
   .app-shell nav.mobile-nav button > svg,

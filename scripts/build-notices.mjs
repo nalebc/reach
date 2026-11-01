@@ -32,6 +32,9 @@ function fileViewerLicense(name) {
 for (const name of ["highlight.js", "react-markdown", "remark-gfm"]) fileViewerLicense(name);
 for (const directory of ["cmaps", "standard_fonts", "wasm"])
   license(`PDF.js ${directory} assets`, path.join(root, "node_modules/pdfjs-dist", directory));
+// Typefaces bundled with the interface (src/styles.css), Latin subsets.
+for (const [name, directory] of [["Inter", "inter"], ["Manrope", "manrope"]])
+  license(`${name} typeface`, path.join(root, "src/assets/fonts", directory));
 // go list emits successive JSON objects. Package records end at a column-zero brace.
 const modules = new Map();
 for (const record of go(["list", "-deps", "-json", "."]).trim().split(/\n(?=\{)/)) {

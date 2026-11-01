@@ -47,6 +47,7 @@ import {
   type GuestLink,
   type StartConfig,
 } from "./start-flow";
+import "./type.css";
 import "./start.css";
 
 const view = document.getElementById("start")!;
