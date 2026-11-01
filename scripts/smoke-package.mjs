@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import { assertReleaseAssets } from "./release-assets.mjs";
 import { tailnetManifestFiles } from "./build-tailnet.mjs";
+import { writePortableArchive } from "./portable-archive.mjs";
 
 // The browser sign-in client dominates the tarball; a second copy of it is the
 // usual way to blow past this.
@@ -66,9 +67,7 @@ for (const file of paths)
   };
   assert.ok(fs.lstatSync(portableStage).isDirectory(), "Portable staging must be a directory, not a link.");
   ordinaryTree(portableStage);
-  execFileSync("tar", ["-czf", portableArchive, "-C", output, "reach"], {
-    timeout: 180000, env: { ...process.env, COPYFILE_DISABLE: "1" },
-  });
+  await writePortableArchive(portableStage, portableArchive);
   const artifact = path.join(output, pack.filename);
   const digest = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
   const verifiedDigest = digest(artifact), portableDigest = digest(portableArchive);
