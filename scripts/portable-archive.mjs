@@ -24,11 +24,12 @@ export async function writePortableArchive(source, destination) {
     // authority. Nonblocking open also refuses a swapped FIFO without hanging.
     const handle = await fsp.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
     try {
-      const [opened, linked] = await Promise.all([handle.stat(), fsp.lstat(file)]);
+      const [opened, linked] = await Promise.all([handle.stat({ bigint: true }), fsp.lstat(file, { bigint: true })]);
       if (!opened.isFile() || !linked.isFile() || opened.dev !== linked.dev || opened.ino !== linked.ino)
         throw Error("A portable input changed during archiving.");
+      if (opened.size > BigInt(Number.MAX_SAFE_INTEGER)) throw Error("A portable input is too large.");
       await pipeline(handle.createReadStream({ autoClose: false }),
-        pack.entry(header(name, "file", opened.mode & 0o777, opened.size)));
+        pack.entry(header(name, "file", Number(opened.mode & 0o777n), Number(opened.size))));
     } finally { await handle.close(); }
   };
   const directory = async (folder, name) => {
