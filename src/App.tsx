@@ -310,6 +310,9 @@ function ReachWorkspace() {
   const agentsWaiting = (agentFeed.sessions || []).filter(
     (s) => s.status === "waiting",
   ).length;
+  const agentsWorking = (agentFeed.sessions || []).some(
+    (s) => s.status === "running" && !s.archived,
+  );
   const [chatTarget, setChatTarget] = useState<{
     agent: AgentName | "openclaw";
     id: string;
@@ -1091,7 +1094,7 @@ function ReachWorkspace() {
                 {page === "overview" && (
                   <HomeLive
                     pinnedTools={
-                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} onTogglePin={togglePin} onMove={movePin} />
+                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} onTogglePin={togglePin} onMove={movePin} alive={{ sessions: { waiting: agentsWaiting, working: agentsWorking } }} />
                     }
                     features={features}
                     device={device}

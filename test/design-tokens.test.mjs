@@ -111,3 +111,33 @@ test("page and sheet titles use the display face", () => {
     );
   }
 });
+
+test("cards and sheets are lifted from the page, not outlined", () => {
+  const css = Object.fromEntries(sheets);
+  for (const [file, selector, lift] of [
+    ["settings-list.css", ".gs-group", "--lift"],
+    ["tools-page.css", ".tools-list", "--lift"],
+    [
+      "tools-page.css",
+      ".home-pinned .shortcut-open > .shortcut-icon",
+      "--lift",
+    ],
+    ["tools-page.css", ".tools-manage > .tool-open", "--lift"],
+    ["app-style.css", "  .app-shell .home-hero", "--lift"],
+    ["screen-popup.css", ".screen-popup", "--lift-float"],
+  ]) {
+    const at = css[file].indexOf(`${selector} {`);
+    assert.ok(at >= 0, `${file}: ${selector}`);
+    const rule = css[file].slice(at, css[file].indexOf("}", at));
+    assert.match(
+      rule,
+      new RegExp(`box-shadow:[^;]*var\\(${lift}\\b`),
+      `${file}: ${selector}`,
+    );
+    assert.doesNotMatch(
+      rule,
+      /inset 0 0 0 1px/,
+      `${file}: ${selector} has no outline ring`,
+    );
+  }
+});
