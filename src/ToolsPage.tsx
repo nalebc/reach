@@ -1,6 +1,5 @@
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import {
-  ArrowUpRight,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -95,16 +94,29 @@ type Props = {
   onNavigate: (id: string) => void;
 };
 
+// What's going on behind a shortcut, so Home shows it alive: how many wait
+// for you (an amber count) or that something is working (a mint dot).
+export type ShortcutLife = Partial<
+  Record<string, { waiting?: number; working?: boolean }>
+>;
+// What Home itself knows (a terminal printing, from its circles), merged
+// with what the app passes in.
+export const ShortcutLifeContext = createContext<ShortcutLife>({});
+
 export function PinnedTools({
   features,
   pinned,
   onNavigate,
   onTogglePin,
   onMove,
+  alive,
 }: Props & {
   onTogglePin?: (id: string) => void;
   onMove?: (id: string, other: string) => void;
+  alive?: ShortcutLife;
 }) {
+  const homeLife = useContext(ShortcutLifeContext);
+  const life = (id: string) => ({ ...homeLife[id], ...alive?.[id] });
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState("");
   const available = tools.filter((t) => pageAccessible(t.id, features));
@@ -183,18 +195,36 @@ export function PinnedTools({
         </div>
       ) : shown.length ? (
         <div className="shortcut-grid">
-          {shown.map(({ id, label, description, icon: Icon }) => (
-            <button
-              key={id}
-              className="shortcut-open"
-              onClick={() => onNavigate(id)}
-            >
-              <Icon size={22} aria-hidden="true" />
-              <span>{label}</span>
-              <small>{description}</small>
-              <ArrowUpRight size={15} aria-hidden="true" />
-            </button>
-          ))}
+          {shown.map(({ id, label, description, icon: Icon }) => {
+            const waiting = life(id).waiting || 0;
+            const working = !waiting && !!life(id).working;
+            return (
+              <button
+                key={id}
+                className={`shortcut-open${waiting ? " waiting" : working ? " working" : ""}`}
+                aria-label={
+                  waiting
+                    ? `${label}, ${waiting} waiting for you`
+                    : working
+                      ? `${label}, working`
+                      : undefined
+                }
+                onClick={() => onNavigate(id)}
+              >
+                <i className="shortcut-icon" aria-hidden="true">
+                  <Icon size={22} />
+                  {waiting > 0 && (
+                    <b className="shortcut-badge">
+                      {waiting > 9 ? "9+" : waiting}
+                    </b>
+                  )}
+                  {working && <b className="shortcut-working" />}
+                </i>
+                <span>{label}</span>
+                <small>{description}</small>
+              </button>
+            );
+          })}
         </div>
       ) : (
         <button className="shortcuts-add" onClick={() => setEditing(true)}>

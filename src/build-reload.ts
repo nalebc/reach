@@ -1,8 +1,9 @@
 // After Reach restarts with a new phone interface, an open page reloads itself
 // so it isn't left on the old one, but only while nothing is being typed,
 // answered or signed in, so nothing is lost, and only while it isn't being
-// used: in the background (another app, the phone locked), or left untouched
-// for a few minutes. It reloaded mid-read each time an agent saved a file,
+// used: visible and left untouched for a few minutes. Background navigation
+// can be suspended halfway through, even with a saved offline interface.
+// It reloaded mid-read each time an agent saved a file,
 // the chat back at its end (Oct 8). The Mac's live connection says
 // which interface it serves (presence `changes.build`). Foreground checks also
 // cover restored pages and browsers whose connection uses a different port.
@@ -59,7 +60,8 @@ export async function pageAnswers(href = location.href, load: typeof fetch = fet
       credentials: "same-origin",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    return response.ok && !response.headers.get("X-Reach-Cached-Shell");
+    return response.ok && !response.headers.get("X-Reach-Cached-Shell") &&
+      !!(await response.text()).trim();
   } catch {
     return false;
   }
@@ -67,9 +69,16 @@ export async function pageAnswers(href = location.href, load: typeof fetch = fet
 // The last touch, key, scroll or wheel on the page (its load counts).
 let touched = Date.now();
 export const IDLE_MS = 5 * 60 * 1000;
-if (typeof window !== "undefined")
+if (typeof window !== "undefined") {
   for (const type of ["pointerdown", "keydown", "wheel", "touchstart", "scroll"])
     window.addEventListener(type, () => (touched = Date.now()), { capture: true, passive: true });
+  // Tapping the Home Screen icon does not send a pointer event to this page.
+  // Time spent suspended must not make that first foreground moment idle.
+  const resumed = () => { if (!document.hidden) touched = Date.now(); };
+  window.addEventListener("pageshow", resumed);
+  window.addEventListener("focus", resumed);
+  document.addEventListener("visibilitychange", resumed);
+}
 // Someone is looking at it and used it lately.
 export function inUse(doc: Document = document, now = Date.now()) {
   return !doc.hidden && now - touched < IDLE_MS;
@@ -90,9 +99,9 @@ function queueUpdate({
   const seen = generation;
   let done = false;
   let preparing = false, prepared = false, asking = false;
-  // Put away, a page with no offline copy waits to be in front again: the
-  // phone may be locking or waking, its network not there yet.
-  const held = () => busy() || (away() && !offlineCopy());
+  // A worker and a saved-copy flag cannot keep a hidden document alive while
+  // the phone suspends it. Keep the current page until it is visible and idle.
+  const held = () => busy() || away();
   const apply = () => {
     done = true;
     setUpdateState("reloading");
@@ -129,10 +138,6 @@ function queueUpdate({
       });
     }
   };
-  // Put away (another app, the screen locked): now, not up to 5 s later,
-  // when the page may already be frozen; only a page its offline copy serves.
-  if (typeof document !== "undefined")
-    document.addEventListener("visibilitychange", () => document.hidden && offlineCopy() && attempt());
   attempt();
 }
 // Live screens and app windows open on this page: a reload mid-stream threw

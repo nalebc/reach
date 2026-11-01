@@ -27,7 +27,8 @@ class ReachBridgeViewController: CAPBridgeViewController {
 /// a blank white page until the app was closed and opened again (Oct 26).
 /// While the app is in front, a page with nothing in it is opened again at
 /// Reach's own link, "Reconnecting…" showing in place of the blank: soon at
-/// first, then every 15 s. A page that loads, or is loading, is left alone.
+/// first, then every 15 s. Healthy pages are left alone; empty loads have a
+/// deadline too, since WebKit can remain loading indefinitely after sleep.
 final class PageRecovery {
     private weak var webView: WKWebView?
     private let home: URL
@@ -39,6 +40,9 @@ final class PageRecovery {
     // counts as no page.
     private var unanswered = 0
     private var asking = false
+    private var generation = 0
+    private var loadingSince: Date?
+    private var lastPage: URL?
 
     init(webView: WKWebView, home: URL) {
         self.webView = webView
@@ -67,8 +71,14 @@ final class PageRecovery {
         // A load just ended: the cover goes as soon as there's a page under
         // it. Only the timer ever opens the page again.
         loading = webView.observe(\.isLoading) { [weak self] view, _ in
-            guard !view.isLoading else { return }
-            DispatchQueue.main.async { self?.look(opening: false) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if view.isLoading { self.loadingSince = Date() }
+                else {
+                    self.loadingSince = nil
+                    self.look(opening: false)
+                }
+            }
         }
         look(after: 5)
     }
@@ -79,10 +89,17 @@ final class PageRecovery {
         NotificationCenter.default.removeObserver(self)
     }
 
-    @objc private func inFront() { look(after: 1) }
+    @objc private func inFront() {
+        if webView?.isLoading == true { loadingSince = Date() }
+        look(after: 1)
+    }
     @objc private func putAway() {
         timer?.invalidate()
         timer = nil
+        generation += 1
+        asking = false
+        unanswered = 0
+        loadingSince = nil
     }
 
     private func look(after seconds: TimeInterval) {
@@ -92,21 +109,36 @@ final class PageRecovery {
 
     private func look(opening: Bool = true) {
         guard let webView, UIApplication.shared.applicationState == .active else { return }
-        if webView.isLoading {
+        if webView.isLoading && Date().timeIntervalSince(loadingSince ?? Date()) < 15 {
+            if loadingSince == nil { loadingSince = Date() }
             if opening { look(after: 2) }
             return
         }
         if opening {
             // The last look never came back: a page that doesn't answer.
-            if asking { unanswered += 1 }
-            if unanswered >= 2 { return open(webView) }
+            if asking {
+                unanswered += 1
+                if unanswered >= 2 { return open(webView) }
+                look(after: 5)
+                return
+            }
             asking = true
-            look(after: 15)
+            look(after: 5)
         }
-        webView.evaluateJavaScript("document.body ? document.body.childElementCount : 0") { [weak self] result, error in
-            guard let self else { return }
+        let seen = generation
+        // Scripts and an empty #root are not a rendered page. Keep this
+        // predicate aligned with the shared browser check (page-recovery.ts).
+        let health = """
+        (() => {
+            const roots = ['root', 'start'].map(id => document.getElementById(id)).filter(Boolean);
+            const content = root => !!root.textContent.trim() || !!root.querySelector('canvas,video,img,svg,input,button,[role=status],[role=alert]');
+            return roots.length ? roots.some(content) : !!document.body && Array.from(document.body.children).some(child => !['SCRIPT','STYLE','LINK'].includes(child.tagName) && content(child));
+        })()
+        """
+        webView.evaluateJavaScript(health) { [weak self] result, error in
+            guard let self, seen == self.generation else { return }
             let url = webView.url?.absoluteString ?? ""
-            let empty = url.isEmpty || url == "about:blank" || (error == nil && (result as? NSNumber)?.intValue == 0)
+            let empty = url.isEmpty || url == "about:blank" || (error == nil && (result as? NSNumber)?.boolValue != true)
             if !opening {
                 if !empty && error == nil { self.cover.isHidden = true }
                 return
@@ -115,6 +147,7 @@ final class PageRecovery {
             if error != nil { self.unanswered += 1 } else { self.unanswered = 0 }
             if empty || self.unanswered >= 2 { return self.open(webView) }
             self.cover.isHidden = true
+            if let url = webView.url, self.sameOrigin(url) { self.lastPage = url }
             self.tries = 0
             self.look(after: 10)
         }
@@ -122,13 +155,21 @@ final class PageRecovery {
 
     // Reach's own link again, the blank covered while it loads.
     private func open(_ webView: WKWebView) {
+        generation += 1
         cover.isHidden = false
         webView.bringSubviewToFront(cover)
         tries += 1
         unanswered = 0
         asking = false
-        webView.load(URLRequest(url: home))
+        let target = (webView.url.flatMap { sameOrigin($0) ? $0 : nil }) ?? lastPage ?? home
+        webView.stopLoading()
+        loadingSince = Date()
+        webView.load(URLRequest(url: target, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15))
         look(after: min(15, 2 * Double(tries)))
+    }
+
+    private func sameOrigin(_ url: URL) -> Bool {
+        url.scheme == home.scheme && url.host == home.host && url.port == home.port && url.user == nil && url.password == nil
     }
 }
 

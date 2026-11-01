@@ -7,7 +7,7 @@ const CLOCK_WINDOW = 60_000;
 const REPLAY_LIMIT = 4096;
 const KNOWN_REPLAY_LIMIT = 16384;
 const RATE_BUCKET_LIMIT = 1024;
-const PRIVATE_EXPOSED_HEADERS = "Reach-Not-Run, Retry-After, ETag, X-Reach-Screen, Content-Disposition, Content-Length, Content-Range, Accept-Ranges";
+const PRIVATE_EXPOSED_HEADERS = "Reach-Not-Run, Reach-Retry, Retry-After, ETag, X-Reach-Screen, Content-Disposition, Content-Length, Content-Range, Accept-Ranges";
 // One source per IPv4 address, per /64 for IPv6 (one machine's usual share):
 // fresh addresses from one network count as one.
 export function sourceKey(address) {
@@ -126,6 +126,7 @@ export function permittedPath(method, value) {
         // Preset sessions (agent-presets.mjs): the screen, what is in front,
         // the apps it may open, its command history.
         "/api/browser/desktop/screen", "/api/browser/desktop/front", "/api/browser/desktop/elements", "/api/browser/desktop/describe", "/api/browser/desktop/apps", "/api/browser/shell/history",
+        "/api/browser/desktop/windows", "/api/browser/desktop/menus", "/api/browser/desktop/read", "/api/browser/desktop/mac-shortcuts",
         "/api/browser/shortcuts",
         "/api/browser/tools", "/api/browser/tools/protocol",
         // Reach's own list of the agent's tools (browser-access.mjs).
@@ -309,7 +310,7 @@ export function createFunnelAgentGateway({
     });
     res.end(JSON.stringify(body));
   };
-  const rejection = (req, res, error) => {
+  const rejection = (req, res, error, notRun = true) => {
     // An early header rejection may happen before readBody attached listeners.
     // Drain remaining bytes so the HTTP connection can finish cleanly.
     req.resume();
@@ -340,10 +341,12 @@ export function createFunnelAgentGateway({
       500: "The agent request could not be completed.",
     };
     if (status === 429 || status === 503) res.setHeader("Retry-After", "5");
-    // Refused here, before any route ran: safe for the agent's page to send
-    // again, writes included (src/funnel-agent.ts funnelFetch).
-    res.setHeader("Reach-Not-Run", "1");
-    json(res, status, { error: messages[status] });
+    // Only a rejection before dispatch may certify that a write never ran
+    // (src/funnel-agent.ts funnelFetch).
+    if (notRun) res.setHeader("Reach-Not-Run", "1");
+    const freshSignature = notRun && error?.retry === "fresh-signature";
+    if (freshSignature) res.setHeader("Reach-Retry", "fresh-signature");
+    json(res, status, { error: freshSignature ? "Reach restarted before this request arrived. Retry using this connection." : messages[status] });
   };
   const run = async (req, res) => {
     if (!["POST", "OPTIONS"].includes(req.method)) throw failure(405);
@@ -416,6 +419,7 @@ export function createFunnelAgentGateway({
     pool.active++;
     if (ip) ip.active++;
     let keyBucket,
+      dispatched = false,
       released = false;
     const release = () => {
       if (released) return;
@@ -459,7 +463,6 @@ export function createFunnelAgentGateway({
         payload.audience !== origin ||
         !Number.isSafeInteger(payload.issuedAt) ||
         Math.abs(now() - payload.issuedAt) > CLOCK_WINDOW ||
-        payload.issuedAt < startedAt ||
         !encoded(payload.nonce, 24)
       )
         throw failure(400);
@@ -474,6 +477,9 @@ export function createFunnelAgentGateway({
         throw failure(401);
       // The key named up front must be the key that signed.
       if (hint !== undefined && hint !== identity.thumbprint) throw failure(400);
+      // A request signed before this process started cannot be replayed into
+      // its empty nonce cache. Its signer may send a fresh request instead.
+      if (payload.issuedAt < startedAt) throw Object.assign(failure(400), { retry: "fresh-signature" });
       const rate = bucket(known ? knownKeyRates : keys, identity.thumbprint, 180, now());
       if (rate.active >= 4) throw failure(429);
       keyBucket = rate;
@@ -547,9 +553,10 @@ export function createFunnelAgentGateway({
         path: payload.path,
         body: payload.body,
       });
+      dispatched = true;
       await dispatch(req, res, context);
     } catch (error) {
-      rejection(req, res, error);
+      rejection(req, res, error, !dispatched);
     }
   };
   return (req, res) => {
