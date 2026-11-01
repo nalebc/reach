@@ -1,13 +1,14 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startDom, settle } from "./dom/harness.mjs";
-let dom, ToolsPage, PinnedTools, usePinnedTools, workspaceCapabilities;
+let dom, ToolsPage, PinnedTools, usePinnedTools, ShortcutLifeContext, workspaceCapabilities;
 before(async () => {
   dom = await startDom({ mobile: true });
   ({
     default: ToolsPage,
     PinnedTools,
     usePinnedTools,
+    ShortcutLifeContext,
   } = await dom.load("/src/ToolsPage.tsx"));
   ({ workspaceCapabilities } = await dom.load("/src/capabilities.ts"));
 });
@@ -173,6 +174,25 @@ test("a shortcut shows what waits for you, or that something is working", async 
   view = await render(undefined);
   assert.equal(chat(view.container).getAttribute("aria-label"), null);
   assert.equal(view.container.querySelector(".shortcut-badge, .shortcut-working"), null);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});
+
+// Home tells its shortcuts what it knows: a terminal printing right now
+// (from the circles) makes the Terminal shortcut breathe, beside Chat's own.
+test("Home's terminal activity reaches the Terminal shortcut", async () => {
+  const h = dom.React.createElement;
+  const render = (working) =>
+    dom.render(h(ShortcutLifeContext.Provider, { value: { terminal: { working } } },
+      h(PinnedTools, { features: features("darwin"), pinned: ["terminal", "sessions"], onNavigate() {}, alive: { sessions: { waiting: 1 } } })));
+  let view = await render(true);
+  const [terminal, chat] = view.container.querySelectorAll(".shortcut-open");
+  assert.equal(terminal.getAttribute("aria-label"), "Terminal, working");
+  assert.ok(terminal.querySelector(".shortcut-working"));
+  assert.equal(chat.getAttribute("aria-label"), "Chat, 1 waiting for you");
+  await view.unmount();
+  view = await render(false);
+  assert.equal(view.container.querySelector(".shortcut-open").getAttribute("aria-label"), null);
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });

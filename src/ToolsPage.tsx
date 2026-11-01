@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -99,6 +99,9 @@ type Props = {
 export type ShortcutLife = Partial<
   Record<string, { waiting?: number; working?: boolean }>
 >;
+// What Home itself knows (a terminal printing, from its circles), merged
+// with what the app passes in.
+export const ShortcutLifeContext = createContext<ShortcutLife>({});
 
 export function PinnedTools({
   features,
@@ -112,6 +115,8 @@ export function PinnedTools({
   onMove?: (id: string, other: string) => void;
   alive?: ShortcutLife;
 }) {
+  const homeLife = useContext(ShortcutLifeContext);
+  const life = (id: string) => ({ ...homeLife[id], ...alive?.[id] });
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState("");
   const available = tools.filter((t) => pageAccessible(t.id, features));
@@ -191,8 +196,8 @@ export function PinnedTools({
       ) : shown.length ? (
         <div className="shortcut-grid">
           {shown.map(({ id, label, description, icon: Icon }) => {
-            const waiting = alive?.[id]?.waiting || 0;
-            const working = !waiting && !!alive?.[id]?.working;
+            const waiting = life(id).waiting || 0;
+            const working = !waiting && !!life(id).working;
             return (
               <button
                 key={id}

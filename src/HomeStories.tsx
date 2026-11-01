@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Asterisk, Check, MessageSquare, Plus, Sparkles, Terminal } from "lucide-react";
+import {
+  Asterisk,
+  Check,
+  MessageSquare,
+  Plus,
+  Sparkles,
+  Terminal,
+} from "lucide-react";
 import { request, type Device, type Peer, type Session } from "./api";
 import type { WorkspaceCapabilities } from "./capabilities";
 import type { MacTerminal } from "./DesktopTerminals";
@@ -33,17 +40,36 @@ type Story = {
 // The windows Reach itself runs in (its launcher on a Mac, its own "Reach"
 // window on a PC) are Reach, not something you're running.
 export const reachOwnWindow = (name = "") =>
-  /^start-(in-terminal|at-login)(\.command)?\b/i.test(name.trim()) || name.trim() === "Reach";
+  /^start-(in-terminal|at-login)(\.command)?\b/i.test(name.trim()) ||
+  name.trim() === "Reach";
 const kindOf = (name: string): Story["kind"] =>
-  /claude/i.test(name) ? "claude" : /codex/i.test(name) ? "codex" : /gemini/i.test(name) ? "gemini" : "shell";
+  /claude/i.test(name)
+    ? "claude"
+    : /codex/i.test(name)
+      ? "codex"
+      : /gemini/i.test(name)
+        ? "gemini"
+        : "shell";
 // Codex, Claude Code and terminals wear their real app icons (from the
 // computer), filling the round frame.
-const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }) => {
+const Glyph = ({
+  kind,
+  logos = {},
+}: {
+  kind: Story["kind"];
+  logos?: AgentLogos;
+}) => {
   const icon = kind === "shell" ? "terminal" : kind;
   // Gemini's mark ships with Reach (no app to read it from).
-  if (kind === "gemini") return <AgentLogo agent="gemini" logos={logos} size={30} />;
+  if (kind === "gemini")
+    return <AgentLogo agent="gemini" logos={logos} size={30} />;
   return logos[icon] && icon !== "chat" ? (
-    <AgentLogo agent={icon} logos={logos} name={icon === "terminal" ? "Terminal" : undefined} fill />
+    <AgentLogo
+      agent={icon}
+      logos={logos}
+      name={icon === "terminal" ? "Terminal" : undefined}
+      fill
+    />
   ) : kind === "codex" ? (
     <Sparkles size={22} />
   ) : kind === "claude" ? (
@@ -58,9 +84,16 @@ const Glyph = ({ kind, logos = {} }: { kind: Story["kind"]; logos?: AgentLogos }
 // The computer's own terminal windows and each one's last line. A computer
 // that tells when its windows change is asked only then
 // (server/mac-terminal-watch.mjs); others every few seconds.
-function useMacTabs(peer: Peer, enabled: boolean, visible: boolean, changes?: string) {
+function useMacTabs(
+  peer: Peer,
+  enabled: boolean,
+  visible: boolean,
+  changes?: string,
+) {
   const [tabs, setTabs] = useState<MacTerminal[]>([]);
-  const [peeks, setPeeks] = useState<Record<string, { line: string; at: number }>>({});
+  const [peeks, setPeeks] = useState<
+    Record<string, { line: string; at: number }>
+  >({});
   const list = useRef<MacTerminal[]>([]);
   useEffect(() => {
     list.current = [];
@@ -71,13 +104,20 @@ function useMacTabs(peer: Peer, enabled: boolean, visible: boolean, changes?: st
   const told = pushed !== undefined;
   // A changed last line counts as new output.
   const note = (id: string, line: string) =>
-    setPeeks((current) => (current[id]?.line === line ? current : { ...current, [id]: { line, at: Date.now() } }));
+    setPeeks((current) =>
+      current[id]?.line === line
+        ? current
+        : { ...current, [id]: { line, at: Date.now() } },
+    );
   useEffect(() => {
     if (!enabled || !visible) return;
     let stopped = false;
     const refresh = async () => {
       try {
-        const r = await request<{ sessions: MacTerminal[] }>(peer, "/api/terminals/desktop");
+        const r = await request<{ sessions: MacTerminal[] }>(
+          peer,
+          "/api/terminals/desktop",
+        );
         if (stopped) return;
         list.current = r.sessions;
         setTabs(r.sessions);
@@ -105,19 +145,23 @@ function useMacTabs(peer: Peer, enabled: boolean, visible: boolean, changes?: st
           waits.add(wait);
           const limit = setTimeout(() => wait.abort(), 30000);
           try {
-            const r = await request<{ version: number; peeks: Record<string, string> }>(
-              peer,
-              `/api/terminals/desktop/activity?after=${version}`,
-              { signal: wait.signal },
-            );
+            const r = await request<{
+              version: number;
+              peeks: Record<string, string>;
+            }>(peer, `/api/terminals/desktop/activity?after=${version}`, {
+              signal: wait.signal,
+            });
             if (stopped) return;
             // Nothing new right away: never spin.
-            if (r.version === version) await new Promise((done) => setTimeout(done, 1000));
+            if (r.version === version)
+              await new Promise((done) => setTimeout(done, 1000));
             version = r.version;
-            for (const [id, line] of Object.entries(r.peeks || {})) note(id, String(line));
+            for (const [id, line] of Object.entries(r.peeks || {}))
+              note(id, String(line));
           } catch (e) {
             if (stopped) return;
-            if ((e as Error).name !== "AbortError") await new Promise((done) => setTimeout(done, 3000));
+            if ((e as Error).name !== "AbortError")
+              await new Promise((done) => setTimeout(done, 3000));
           } finally {
             clearTimeout(limit);
             waits.delete(wait);
@@ -134,7 +178,10 @@ function useMacTabs(peer: Peer, enabled: boolean, visible: boolean, changes?: st
       const tab = list.current[turn++ % Math.max(1, list.current.length)];
       if (!tab || stopped) return;
       try {
-        const { text } = await request<{ text: string }>(peer, `/api/terminals/desktop/${tab.id}`);
+        const { text } = await request<{ text: string }>(
+          peer,
+          `/api/terminals/desktop/${tab.id}`,
+        );
         if (stopped) return;
         note(
           tab.id,
@@ -170,6 +217,7 @@ export default function HomeStories({
   openMacTab,
   openAgentSession,
   onStart,
+  onTerminalWorking,
 }: {
   peer: Peer;
   device: Device;
@@ -185,6 +233,9 @@ export default function HomeStories({
   openAgentSession?: (session: AgentSession) => void;
   // ＋: where agents and terminals are started.
   onStart?: () => void;
+  // Whether a terminal printed in the last two minutes (Home's Terminal
+  // shortcut shows it working).
+  onTerminalWorking?: (working: boolean) => void;
 }) {
   const word = computerWord(device.platform);
   const peeks = useTerminalPeeks(peer, features.terminal ? terminals : []);
@@ -213,23 +264,29 @@ export default function HomeStories({
           open: () => openTerminal(t.id),
         };
       }),
-    ...mac.tabs.filter((t) => !reachOwnWindow(t.name)).map((t): Story => {
-      const peek = mac.peeks[t.id];
-      return {
-        key: `mac:${t.id}`,
-        name: t.name || "Terminal",
-        kind: kindOf(t.name || ""),
-        mac: true,
-        state: recent(peek?.at || 0) ? "active" : "running",
-        line: peek?.line,
-        at: peek?.at || 0,
-        open: () => openMacTab(t.id),
-      };
-    }),
+    ...mac.tabs
+      .filter((t) => !reachOwnWindow(t.name))
+      .map((t): Story => {
+        const peek = mac.peeks[t.id];
+        return {
+          key: `mac:${t.id}`,
+          name: t.name || "Terminal",
+          kind: kindOf(t.name || ""),
+          mac: true,
+          state: recent(peek?.at || 0) ? "active" : "running",
+          line: peek?.line,
+          at: peek?.at || 0,
+          open: () => openMacTab(t.id),
+        };
+      }),
     // Agent sessions working anywhere on the computer: apps, terminals,
     // Reach. Just finished (or failed): kept a few minutes, so you see it.
     ...(openAgentSession ? agentSessions : [])
-      .filter((s) => !s.archived && (s.live || s.status !== "idle" || now - s.updatedAt < DONE_MS))
+      .filter(
+        (s) =>
+          !s.archived &&
+          (s.live || s.status !== "idle" || now - s.updatedAt < DONE_MS),
+      )
       .map((s): Story => ({
         key: `agent:${s.agent}:${s.id}`,
         name: s.title,
@@ -249,16 +306,35 @@ export default function HomeStories({
         open: () => openAgentSession!(s),
       })),
   ];
+  const terminalWorking = stories.some(
+    (s) =>
+      (s.key.startsWith("terminal:") || s.key.startsWith("mac:")) &&
+      s.state === "active",
+  );
+  useEffect(
+    () => onTerminalWorking?.(terminalWorking),
+    [terminalWorking, onTerminalWorking],
+  );
   // What needs you first, then what is printing right now, newest first.
-  const rank = { attention: 0, failed: 1, active: 2, done: 3, running: 4, idle: 5 };
+  const rank = {
+    attention: 0,
+    failed: 1,
+    active: 2,
+    done: 3,
+    running: 4,
+    idle: 5,
+  };
   stories.sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at);
   // At most six agent sessions, chosen after ranking so attention is never cut.
   let agentShown = 0;
-  const shown = stories.filter((s) => !s.key.startsWith("agent:") || ++agentShown <= 6);
+  const shown = stories.filter(
+    (s) => !s.key.startsWith("agent:") || ++agentShown <= 6,
+  );
   // Nothing running: no row at all (Home stays quiet). Once something runs,
   // ＋ leads the row to start another.
   if (!shown.length) return null;
-  const canStart = !!onStart && (features.terminal || features.desktopTerminals);
+  const canStart =
+    !!onStart && (features.terminal || features.desktopTerminals);
   return (
     <section className="home-section" aria-label={`Live on your ${word}`}>
       <header>
@@ -287,7 +363,9 @@ export default function HomeStories({
                 <Glyph kind={story.kind} logos={logos} />
               </span>
               {/* The computer's own window: "Mac" or "PC", the short word. */}
-              {story.mac && <i className="story-badge">{word.split(" ").pop()}</i>}
+              {story.mac && (
+                <i className="story-badge">{word.split(" ").pop()}</i>
+              )}
               {story.state === "done" && (
                 <i className="story-mark">
                   <Check size={11} strokeWidth={3} />
