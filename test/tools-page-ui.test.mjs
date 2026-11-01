@@ -149,3 +149,30 @@ test("Home shortcuts can be added, removed and reordered; hidden permissions kee
   await view.unmount();
   assert.deepEqual(dom.errors, []);
 });
+
+// Home's Chat shortcut is alive: an amber count of the chats waiting for
+// you, else a mint dot while an agent works; nothing when it's quiet.
+test("a shortcut shows what waits for you, or that something is working", async () => {
+  const render = (alive) =>
+    dom.render(dom.React.createElement(PinnedTools, { features: features("darwin"), pinned: ["sessions", "files"], onNavigate() {}, alive }));
+  const chat = (c) => c.querySelector(".shortcut-open");
+  let view = await render({ sessions: { waiting: 3, working: true } });
+  assert.equal(chat(view.container).getAttribute("aria-label"), "Chat, 3 waiting for you");
+  assert.equal(chat(view.container).querySelector(".shortcut-badge").textContent, "3");
+  assert.equal(view.container.querySelector(".shortcut-working"), null, "waiting comes first");
+  assert.equal(view.container.querySelectorAll(".shortcut-badge").length, 1, "only Chat");
+  await view.unmount();
+  view = await render({ sessions: { waiting: 12 } });
+  assert.equal(chat(view.container).querySelector(".shortcut-badge").textContent, "9+");
+  await view.unmount();
+  view = await render({ sessions: { working: true } });
+  assert.equal(chat(view.container).getAttribute("aria-label"), "Chat, working");
+  assert.ok(chat(view.container).classList.contains("working"));
+  assert.ok(chat(view.container).querySelector(".shortcut-working"));
+  await view.unmount();
+  view = await render(undefined);
+  assert.equal(chat(view.container).getAttribute("aria-label"), null);
+  assert.equal(view.container.querySelector(".shortcut-badge, .shortcut-working"), null);
+  await view.unmount();
+  assert.deepEqual(dom.errors, []);
+});

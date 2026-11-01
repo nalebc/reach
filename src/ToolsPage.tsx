@@ -94,15 +94,23 @@ type Props = {
   onNavigate: (id: string) => void;
 };
 
+// What's going on behind a shortcut, so Home shows it alive: how many wait
+// for you (an amber count) or that something is working (a mint dot).
+export type ShortcutLife = Partial<
+  Record<string, { waiting?: number; working?: boolean }>
+>;
+
 export function PinnedTools({
   features,
   pinned,
   onNavigate,
   onTogglePin,
   onMove,
+  alive,
 }: Props & {
   onTogglePin?: (id: string) => void;
   onMove?: (id: string, other: string) => void;
+  alive?: ShortcutLife;
 }) {
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -182,19 +190,36 @@ export function PinnedTools({
         </div>
       ) : shown.length ? (
         <div className="shortcut-grid">
-          {shown.map(({ id, label, description, icon: Icon }) => (
-            <button
-              key={id}
-              className="shortcut-open"
-              onClick={() => onNavigate(id)}
-            >
-              <i className="shortcut-icon" aria-hidden="true">
-                <Icon size={22} />
-              </i>
-              <span>{label}</span>
-              <small>{description}</small>
-            </button>
-          ))}
+          {shown.map(({ id, label, description, icon: Icon }) => {
+            const waiting = alive?.[id]?.waiting || 0;
+            const working = !waiting && !!alive?.[id]?.working;
+            return (
+              <button
+                key={id}
+                className={`shortcut-open${waiting ? " waiting" : working ? " working" : ""}`}
+                aria-label={
+                  waiting
+                    ? `${label}, ${waiting} waiting for you`
+                    : working
+                      ? `${label}, working`
+                      : undefined
+                }
+                onClick={() => onNavigate(id)}
+              >
+                <i className="shortcut-icon" aria-hidden="true">
+                  <Icon size={22} />
+                  {waiting > 0 && (
+                    <b className="shortcut-badge">
+                      {waiting > 9 ? "9+" : waiting}
+                    </b>
+                  )}
+                  {working && <b className="shortcut-working" />}
+                </i>
+                <span>{label}</span>
+                <small>{description}</small>
+              </button>
+            );
+          })}
         </div>
       ) : (
         <button className="shortcuts-add" onClick={() => setEditing(true)}>
