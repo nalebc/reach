@@ -21,7 +21,7 @@ export const suites = {
     "close-server", "test-hygiene",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
-    "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
+    "release-assets", "release-privacy", "portable-archive", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
     // Decode the emitted QR and follow it through a separate phone network.
     "qr-onboarding-e2e", "windows-atomic-json",
