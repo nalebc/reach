@@ -1,5 +1,6 @@
 // Storage refused (Safari blocking all cookies): kept in memory instead.
 import "./storage-fallback";
+import "./reconnect-url";
 import { openReach } from "./app-boot";
 // Keeps the browser's install prompt from page load (Add to Home Screen).
 import "./home-screen";

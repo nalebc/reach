@@ -30,6 +30,21 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   fs.mkdirSync(tailnet);
   const cert = await testCertificate(root, host);
   const app = express();
+  let navigationMode = "healthy";
+  const navigations = [];
+  app.use((req, res, next) => {
+    if (req.path !== "/") return next();
+    navigations.push({ url: req.url, mode: navigationMode });
+    if (navigationMode === "headers-stall") return;
+    if (navigationMode === "body-stall") {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.flushHeaders();
+      return;
+    }
+    if (navigationMode === "empty") return res.status(200).end();
+    if (navigationMode === "unavailable") return res.status(502).end("Temporary gateway failure");
+    next();
+  });
   // Reach's interface only: no computer behind it, so nothing is paired.
   app.use("/api", (_req, res) => res.status(503).end());
   serveBuild(app, express, dist, { tailnetDir: tailnet });
@@ -53,7 +68,7 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
     for (;;) {
       const value = await tab.evaluate(expression).catch(() => null);
       if (value) return value;
-      if (Date.now() > end) assert.fail(`${what}: ${JSON.stringify(await tab.evaluate("({ url: location.href, title: document.title, text: document.body?.innerText.slice(0, 200) })").catch((error) => error.message))}`);
+      if (Date.now() > end) assert.fail(`${what}: ${JSON.stringify({ page: await tab.evaluate("({ url: location.href, title: document.title, text: document.body?.innerText.slice(0, 200) })").catch((error) => error.message), navigations })}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
@@ -72,4 +87,17 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   await up();
   await until("document.title !== 'Reconnecting to Reach' && !!document.getElementById('root')", "back on Reach once the computer answers", 20000);
   assert.equal(await tab.evaluate("location.origin"), origin);
+
+  // A connection may stay open without delivering headers or its body.
+  // Exercise the production timeout and retry in a real service worker.
+  for (const mode of ["headers-stall", "body-stall", "empty", "unavailable"]) {
+    navigationMode = mode;
+    const href = origin + "/?resume=" + mode + "#saved-view";
+    await tab.navigate(href);
+    await until("document.title === 'Reconnecting to Reach'", `${mode}: visible recovery`, 15000);
+    assert.equal(await tab.evaluate("location.href"), href, `${mode}: retain the saved link`);
+    navigationMode = "healthy";
+    await until("document.title !== 'Reconnecting to Reach' && !!document.getElementById('root') && !new URL(location.href).searchParams.has('reach-reconnect')", `${mode}: automatic recovery`, 15000);
+    assert.equal(await tab.evaluate("location.href"), href, `${mode}: preserve the view and connection parameters after retry`);
+  }
 });

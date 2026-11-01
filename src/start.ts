@@ -5,10 +5,11 @@
 // the browser and run Reach through the page's own tailnet node.
 import "./abort-polyfill";
 import "./storage-fallback";
+import "./reconnect-url";
 // Keeps the browser's install prompt from page load: the app comes later here.
 import "./home-screen";
 import { browserState as storeFor, createBrowserNode, rememberOwnerBrowserSignIn } from "./browser-node";
-import { offlineBootstrap } from "./offline-shell";
+import { keepReconnectPage, offlineBootstrap } from "./offline-shell";
 import { resumeOwnerConnection } from "./owner-connection";
 import { rememberPrivateConfig } from "./app-watch";
 import { openReach } from "./app-boot";
@@ -50,6 +51,8 @@ import {
 import "./type.css";
 import "./start.css";
 
+// Prepare navigation recovery even while the private connection is starting.
+void keepReconnectPage();
 const view = document.getElementById("start")!;
 const USED = "reach.tailnet.used";
 let workspaceStarted = false;
