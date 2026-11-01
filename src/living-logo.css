@@ -56,7 +56,7 @@
   width: 0.42em;
   height: 0.24em;
   transform: translateY(-40%);
-  border-radius: 2px;
+  border-radius: var(--r-xs);
   background: linear-gradient(90deg, #8a968c 70%, #fff3b0 70%);
   animation: logo-torch 3.4s ease both;
 }

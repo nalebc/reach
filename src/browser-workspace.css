@@ -31,7 +31,7 @@
   justify-content: center;
   gap: 9px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 11px 18px;
   min-height: 44px;
   color: #a2afa6;
@@ -49,7 +49,7 @@
 .browser-tab-panel { outline-offset: 8px; }
 .browser-workspace-error {
   border: 1px solid #e9a59730;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 12px 15px;
   margin-bottom: 20px;
   background: #e9a59708;
@@ -57,7 +57,7 @@
 }
 .browser-card {
   border: 1px solid var(--hairline, #ffffff12);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #ffffff03;
   padding: 22px;
   overflow: hidden;
@@ -75,7 +75,7 @@
   align-items: center;
   gap: 10px;
   font-size: 18px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.025em;
   margin: 0;
 }
@@ -86,8 +86,8 @@
 .browser-workspace input,
 .browser-workspace select {
   border: 1px solid var(--border, #2b332d);
-  border-radius: 9px;
-  background: var(--bg, #101512);
+  border-radius: var(--r-sm);
+  background: var(--bg, var(--surface-0));
   color: inherit;
   padding: 10px 12px;
   min-width: 0;
@@ -109,7 +109,7 @@
 .browser-file-layout {
   overflow: hidden;
   border: 1px solid var(--hairline, #ffffff12);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #ffffff02;
   min-height: 240px;
 }
@@ -135,7 +135,7 @@
 .browser-file-list button {
   width: 100%;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 13px 12px;
   background: transparent;
   color: inherit;
@@ -154,7 +154,7 @@
   outline-offset: -2px;
 }
 .browser-file-list span { display: grid; gap: 3px; overflow-wrap: anywhere; }
-.browser-file-list strong { font-weight: 450; }
+.browser-file-list strong { font-weight: 500; }
 .browser-file-list small { color: var(--muted, #93a096); }
 .browser-file-content { min-width: 0; border-left: 1px solid var(--hairline, #ffffff12); }
 .browser-file-content h3 {
@@ -185,7 +185,7 @@
 .browser-file-content pre { min-height: 190px; }
 .browser-output {
   border: 1px solid var(--hairline, #ffffff12);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   min-height: 300px;
   margin: 16px 0 12px;
 }
@@ -249,7 +249,7 @@
   box-sizing: border-box;
   font: inherit;
   border: 1px solid #ffffff24;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: #1c212a;
   color: #e9edf0;
   padding: 10px 12px;
@@ -316,7 +316,7 @@
   margin: 12px 0;
   padding: 12px;
   border: 1px solid var(--border, #ffffff20);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--bg, #080b10);
   color: inherit;
   font: inherit;
@@ -330,7 +330,7 @@
 .browser-app-picker select, .browser-app-window-picker select { max-width: min(100%, 480px); }
 .browser-app-placeholder { display: grid; justify-items: center; align-content: center; gap: 14px; min-height: 220px; padding: 32px; color: var(--muted, #93a096); text-align: center; font-size: 13px; line-height: 1.6; }
 .browser-app-placeholder strong { color: var(--text-strong, #eef4ef); font-weight: 500; }
-.browser-app-surface { display: grid; place-items: center; overflow: hidden; border: 1px solid var(--hairline, #ffffff12); border-radius: 14px; background: #060907; min-height: 220px; }
+.browser-app-surface { display: grid; place-items: center; overflow: hidden; border: 1px solid var(--hairline, #ffffff12); border-radius: var(--r-lg); background: #060907; min-height: 220px; }
 .browser-app-surface:focus-visible { outline: 2px solid var(--lime, #b9efd4); outline-offset: 4px; }
 .browser-app-surface img { display: block; width: 100%; height: auto; max-height: calc(100dvh - 340px); min-height: 180px; object-fit: contain; user-select: none; }
 .browser-app-surface.can-control img { cursor: default; }

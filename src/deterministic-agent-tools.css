@@ -24,7 +24,7 @@
   flex: 1;
   min-width: 0;
   border: 1px solid var(--ag-border, #ffffff18);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 10px 12px;
   background: var(--aw-panel, #19211c);
   color: var(--ag-muted, #a0afa4);
@@ -57,7 +57,7 @@
   background: var(--aw-panel, #19211c);
   color: var(--ag-muted, #a0afa4);
   border: 1px solid var(--ag-border, #ffffff18);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 8px;
   font-size: 12px;
 }
@@ -84,7 +84,7 @@
   color: var(--ag-text, #edf2ee);
   border: 1px solid var(--ag-border, #ffffff18);
   padding: 7px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
 }
 .atl-text-button {
   display: inline-flex;
@@ -120,7 +120,7 @@
 }
 .atl-card.is-selected {
   background: var(--aw-panel, #19211c);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .atl-tool-row {
   display: flex;
@@ -146,7 +146,7 @@
   text-align: left;
 }
 .atl-title {
-  font-weight: 550;
+  font-weight: 600;
   font-size: 14px;
   overflow-wrap: anywhere;
 }
@@ -166,7 +166,7 @@
   min-height: 40px;
   font-size: 12px;
   padding: 8px 10px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: #b9efd410;
   border: 1px solid #b9efd420;
   color: var(--lime, #b9efd4);
@@ -212,7 +212,7 @@
 }
 .atl-runner .atl-results {
   padding: 14px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .atl-runner form {
   display: grid;
@@ -239,7 +239,7 @@
   background: var(--aw-bg, #111713);
   color: var(--ag-text, #edf2ee);
   border: 1px solid var(--ag-border, #ffffff18);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   padding: 10px;
   width: 100%;
   min-width: 0;
@@ -255,7 +255,7 @@
   justify-content: center;
   gap: 8px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--lime, #b9efd4);
   color: #17261d;
   font-size: 12px;
@@ -272,7 +272,7 @@
   padding: 12px;
   border: 1px solid #e9c89b25;
   background: #e9c89b07;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 11px;
 }
 .atl-recovery p {
@@ -287,7 +287,7 @@
   display: grid;
   gap: 16px;
   border: 1px solid var(--ag-border, #ffffff18);
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: var(--aw-panel, #19211c);
   padding: 20px;
 }
@@ -302,7 +302,7 @@
 .atl-result-heading h2 {
   font-size: 15px;
   margin: 0;
-  font-weight: 550;
+  font-weight: 600;
 }
 .atl-result-heading > span {
   margin-left: auto;
@@ -325,7 +325,7 @@
   gap: 11px;
   padding: 14px;
   border: 1px solid var(--ag-border, #ffffff18);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
 }
 .atl-result-item > svg {
   color: var(--ag-muted, #a0afa4);
@@ -379,7 +379,7 @@
   background: #b9efd409;
   color: var(--lime, #b9efd4);
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-size: 11px;
 }
 .atl-result-text {
@@ -400,7 +400,7 @@
   overflow: auto;
   background: var(--aw-bg, #111713);
   padding: 12px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   margin: 8px 0 0;
 }
 .atl-raw summary,
@@ -412,7 +412,7 @@
 .atl-editor {
   border: 1px solid #b9efd433;
   padding: 23px;
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: var(--aw-panel, #19211c);
 }
 .atl-editor > p {
@@ -497,7 +497,7 @@
   background: var(--aw-bg, #111713);
   color: inherit;
   padding: 9px 11px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   border: 1px solid var(--ag-border, #ffffff18);
   font-size: 13px;
 }
@@ -518,7 +518,7 @@
 }
 .ap-workspace-content .ap-card {
   padding: 20px;
-  border-radius: 13px;
+  border-radius: var(--r-md);
 }
 .ap-workspace-content .ap-card h2 {
   font-size: 15px;

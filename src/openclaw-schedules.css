@@ -17,7 +17,7 @@
   min-height: 32px;
   padding: 6px 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-strong);
   font-size: 12px;
@@ -35,14 +35,14 @@
   display: grid;
   gap: 2px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: color-mix(in srgb, var(--danger, #e5a18b) 10%, transparent);
   font-size: 12px;
   line-height: 1.45;
 }
 .claw-sched-failed strong {
   color: var(--danger, #e5a18b);
-  font-weight: 550;
+  font-weight: 600;
 }
 .claw-sched-failed span {
   color: var(--muted);

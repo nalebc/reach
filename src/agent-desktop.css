@@ -11,8 +11,8 @@
 .ag-changes { display: grid; gap: 10px; margin: 10px 0 14px; }
 .ag-changes-new { display: flex; flex-wrap: wrap; gap: 10px; }
 .ag-changes-new form { display: inline-flex; gap: 6px; align-items: center; }
-.ag-changes-new input { width: 170px; padding: 7px 9px; border-radius: 9px; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); font: inherit; font-size: 14px; }
+.ag-changes-new input { width: 170px; padding: 7px 9px; border-radius: var(--r-sm); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); font: inherit; font-size: 14px; }
 .ag-changes-file { display: flex; flex-wrap: wrap; gap: 8px; }
-.ag-changes-editor textarea { width: 100%; box-sizing: border-box; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 10px; border-radius: 10px; border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); }
+.ag-changes-editor textarea { width: 100%; box-sizing: border-box; font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 10px; border-radius: var(--r-md); border: 1px solid var(--ag-line, rgba(0, 0, 0, 0.12)); }
 .ag-changes-editor div { display: flex; gap: 8px; margin-top: 8px; }
 .ag-app-text small.is-note { color: #946200; }

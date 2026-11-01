@@ -1,17 +1,8 @@
 /* Reach's visual identity: ink, mint, and a small courier connecting your world. */
-:root {
-  --bg: #101311;
-  --panel: #191e1b;
-  --border: #dbe9d416;
-  --muted: #9fae9f;
-  --lime: #b9efd4;
-  --lime-ink: #16362a;
-  color: #eff1e6;
-}
 body,
 .reach-universe {
-  background: #101311;
-  color: #eff1e6;
+  background: var(--surface-0);
+  color: var(--ink);
 }
 .reach-universe {
   background-image: none;
@@ -36,7 +27,7 @@ body,
 .brand {
   gap: 10px;
   letter-spacing: -1.3px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .brand .brand-mark {
   width: 32px;
@@ -52,7 +43,7 @@ body,
   height: 100%;
 }
 .sidebar {
-  background: #101311;
+  background: var(--surface-0);
   border-color: var(--border);
   width: 208px;
   padding: 30px 18px 20px;
@@ -61,7 +52,7 @@ body,
   margin-bottom: 30px;
 }
 .sidebar nav button {
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   padding: 12px;
 }
 .sidebar nav button.active {
@@ -91,13 +82,13 @@ body,
   padding: 32px 36px 100px;
 }
 .fleet-switcher {
-  background: #101311;
+  background: var(--surface-0);
   border-color: var(--border);
   padding: 12px 36px;
   gap: 8px;
 }
 .fleet-switcher button {
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: transparent;
   border-color: transparent;
   color: #a5b4a5;
@@ -108,7 +99,7 @@ body,
   color: #dff4df;
 }
 .button {
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   min-height: 42px;
   box-shadow: none;
 }
@@ -117,7 +108,7 @@ body,
   color: var(--lime-ink);
   border-color: var(--lime);
   box-shadow: none;
-  font-weight: 650;
+  font-weight: 600;
 }
 .button.primary:hover {
   background: #cff7df;
@@ -129,7 +120,7 @@ body,
   color: #dce7d8;
 }
 .icon-button {
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 button:focus-visible,
 a:focus-visible,
@@ -162,10 +153,10 @@ select:focus {
 }
 .panel,
 .pair-card {
-  background: #191e1b;
+  background: var(--surface-2);
   border-color: #dbe9d41c;
   box-shadow: none;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
 }
 input,
 textarea,
@@ -173,7 +164,7 @@ select {
   background: #111a15;
   border-color: #dbe9d426;
   color: #eef1e5;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .page-title h1 {
   font-weight: 500;
@@ -193,7 +184,7 @@ select {
   font-size: 12px;
 }
 .fleet-mesh {
-  border-radius: 12px;
+  border-radius: var(--r-md);
   border: 1px solid #d8ebce20;
   background: #141d17;
   position: relative;
@@ -214,7 +205,7 @@ select {
 }
 .fleet-mesh h2 {
   font-size: 14px;
-  font-weight: 450;
+  font-weight: 500;
   color: #bccfb9;
 }
 .fleet-mesh .overline {
@@ -232,7 +223,7 @@ select {
   padding-top: 0;
 }
 .fleet-computer {
-  border-radius: 9px;
+  border-radius: var(--r-sm);
 }
 .is-selected .fleet-computer {
   background: #b9efd407;
@@ -269,10 +260,10 @@ select {
 .single-peer {
   background: #18291e !important;
   border-color: #c5e6bc21 !important;
-  border-radius: 8px !important;
+  border-radius: var(--r-sm) !important;
 }
 .single-peer > span {
-  border-radius: 7px !important;
+  border-radius: var(--r-sm) !important;
   background: #26432f !important;
   color: #c4f0ce !important;
 }
@@ -289,7 +280,7 @@ select {
   background: #25382b;
   color: #c1e0bc;
   border: 1px solid #b9d9ac20;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
 }
 .agent-signal {
   display: block;
@@ -315,7 +306,7 @@ select {
 .chat-list {
   background: #151f18;
   border-color: var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 
 /* Original SVG artwork: real CSS animation, with a static reduced-motion pose. */
@@ -532,7 +523,7 @@ select {
   background: #c2f0d5;
   color: #183a29;
   padding: 12px 22px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   font-size: 23px;
   font-weight: 600;
   letter-spacing: -1px;
@@ -601,7 +592,7 @@ select {
 }
 .welcome-hero h1 {
   font-size: clamp(38px, 4.7vw, 64px);
-  font-weight: 450;
+  font-weight: 500;
   line-height: 1.04;
   letter-spacing: -2.7px;
   margin: 18px 0;
@@ -621,7 +612,7 @@ select {
 }
 .welcome .pair-card {
   padding: 30px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #1a251d;
 }
 .welcome .pair-card h2 {
@@ -666,7 +657,7 @@ select {
     gap: 3px;
   }
   .mobile-nav button {
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     min-height: 52px;
     color: #9eae97;
     gap: 5px;
@@ -851,7 +842,7 @@ select {
     padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
   }
   .app-shell .mobile-nav button {
-    border-radius: 8px;
+    border-radius: var(--r-sm);
     min-height: 52px;
     color: #9eae97;
     background: none;
@@ -905,12 +896,12 @@ select {
 }
 .page-settings .settings-panel,
 .screen-popup {
-  border-radius: 12px;
-  background: #191e1b;
+  border-radius: var(--r-md);
+  background: var(--surface-2);
   border-color: var(--border);
 }
 .invite-banner {
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #213a2a;
   border-color: #b9efd433;
   color: #d4efda;
@@ -918,10 +909,10 @@ select {
 .search {
   background: #111c15;
   border-color: #dbe9d428;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .page-files .location {
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: #18261d;
 }
 .page-files .location.selected {
@@ -930,7 +921,7 @@ select {
   background: #213428;
 }
 .page-chat .chat-list {
-  border-radius: 12px;
+  border-radius: var(--r-md);
   border-color: var(--border);
   background: #17231b;
 }

@@ -30,7 +30,7 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 30%, transparent);
   color: color-mix(in srgb, var(--tone) 80%, white);
   font-size: 36cqw;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1;
 }
 @keyframes app-logo-in {

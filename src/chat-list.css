@@ -48,7 +48,7 @@
 .chat-library .chat-list-top h1 {
   margin: 0;
   font-size: 27px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.9px;
   line-height: 1.2;
 }
@@ -68,7 +68,7 @@
   min-height: 36px;
   padding: 8px 12px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--lime, #b9efd4);
   color: var(--lime-ink, #16362a);
   font-size: 12px;
@@ -97,7 +97,7 @@
   margin: 0;
   padding: 0 10px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #ffffff05;
   color: var(--chat-muted);
 }
@@ -142,7 +142,7 @@
   margin: 0 0 22px;
   padding: 0 14px;
   border: 1px solid color-mix(in srgb, var(--lime) 22%, transparent);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--lime) 7%, transparent);
   color: var(--chat-ink, #eef2ef);
   font-size: 14px;
@@ -210,7 +210,7 @@
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--chat-muted);
 }
@@ -254,7 +254,7 @@
   min-width: 0;
   padding: 13px 10px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--chat-ink);
   text-align: left;
@@ -382,7 +382,7 @@
   padding: 9px 16px;
   margin: 4px auto 0;
   border: 1px solid var(--chat-line);
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: none;
   color: var(--chat-muted);
   font-size: 12px;
@@ -494,7 +494,7 @@
   height: 42px;
   padding: 8px 10px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: none;
   color: var(--muted);
   font-size: 12px;
@@ -527,7 +527,7 @@
   min-width: 20px;
   height: 20px;
   padding: 0 4px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--needs-you);
   color: var(--needs-you-ink);
   font-size: 11px;
@@ -568,7 +568,7 @@
   min-width: 13px;
   height: 13px;
   padding: 0 3px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: var(--needs-you);
   color: var(--needs-you-ink);
   font-size: 9px;
@@ -690,7 +690,7 @@
     min-width: 185px;
     padding: 5px;
     border: 1px solid var(--border);
-    border-radius: 16px;
+    border-radius: var(--r-lg);
     background: var(--panel);
     box-shadow: 0 12px 32px #0009;
   }
@@ -703,7 +703,7 @@
     min-height: 40px;
     padding: 8px 10px;
     border: 0;
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background: none;
     color: var(--chat-ink);
     font-size: 14px;
@@ -734,7 +734,7 @@
     max-width: 100%;
     padding: 6px 9px;
     border: 1px solid color-mix(in srgb, var(--needs-you) 30%, var(--border));
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: color-mix(in srgb, var(--needs-you) 6%, var(--panel));
     color: var(--chat-ink);
     font-size: 12px;
@@ -755,7 +755,7 @@
     margin: 0 0 14px;
     padding-inline: 13px;
     border: 1px solid var(--border);
-    border-radius: 13px;
+    border-radius: var(--r-md);
     background: var(--panel);
   }
   .chat-source-strip {
@@ -776,7 +776,7 @@
     min-width: 0;
     max-width: calc(100% - 45px);
     padding: 10px 13px;
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: color-mix(in srgb, var(--lime) 12%, var(--panel));
     color: var(--chat-ink);
     overflow: hidden;
@@ -804,7 +804,7 @@
     gap: 8px;
     min-height: 49px;
     padding: 9px 3px 9px 8px;
-    border-radius: 10px;
+    border-radius: var(--r-md);
   }
   .chat-card-preview { display: none; }
   .chat-entry-logo { flex-basis: 18px; min-height: 20px; }
@@ -827,7 +827,7 @@
     margin-inline: auto;
     padding: 5px 6px 5px 15px;
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: var(--panel);
     color: var(--chat-muted);
     text-align: left;
@@ -929,7 +929,7 @@
   bottom: 8px;
   left: 0;
   width: 2px;
-  border-radius: 2px;
+  border-radius: var(--r-xs);
   background: var(--chat-line);
   pointer-events: none;
 }

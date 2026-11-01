@@ -1,15 +1,4 @@
 /* Reach — a quiet, living network. */
-:root {
-  --bg: #101315;
-  --panel: #191d20;
-  --border: #30373b;
-  --muted: #a0a9ac;
-  --lime: #b9efd4;
-  --lime-ink: #16362a;
-  --radius: 18px;
-  color: #edf0ee;
-  background: var(--bg);
-}
 body {
   background: var(--bg);
 }
@@ -45,7 +34,7 @@ body {
   backdrop-filter: blur(24px);
 }
 .sidebar nav > button {
-  border-radius: 12px;
+  border-radius: var(--r-md);
   color: #a6afb3;
   transition:
     background 0.2s,
@@ -66,12 +55,12 @@ body {
   background: #ffffff06;
 }
 .brand {
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -1.7px;
 }
 .brand-mark {
   background: #c4f0d0;
-  border-radius: 12px 12px 12px 3px;
+  border-radius: var(--r-md) var(--r-md) var(--r-md) var(--r-xs);
   box-shadow: 0 4px 20px #0002;
 }
 .workspace-label {
@@ -122,7 +111,7 @@ body {
   border-color: #ffffff10;
 }
 .button {
-  border-radius: 11px;
+  border-radius: var(--r-md);
   transition:
     transform 0.2s ease,
     background 0.2s ease,
@@ -226,7 +215,7 @@ select:focus {
   max-width: 500px;
 }
 .welcome-hero h1 {
-  font-weight: 450;
+  font-weight: 500;
   font-size: clamp(40px, 4.5vw, 62px);
 }
 .welcome-hero h1 span {
@@ -240,7 +229,7 @@ select:focus {
 .welcome .pair-card {
   background: #1a2023df;
   border: 1px solid #ffffff14;
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
   box-shadow: 0 30px 90px #0002;
 }
 .welcome footer {
@@ -379,7 +368,7 @@ select:focus {
   text-align: left;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--panel);
   color: inherit;
   cursor: pointer;
@@ -421,7 +410,7 @@ select:focus {
 .desktop-terminal-output {
   margin: 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: #0c110f;
   color: #dce5dd;
   padding: 16px;
@@ -596,7 +585,7 @@ select:focus {
   color: var(--text);
   background: var(--panel, #12191a);
   border: 1px solid var(--border);
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   padding: 0;
   width: min(480px, calc(100vw - 28px));
   max-height: min(740px, calc(100dvh - 40px));
@@ -639,7 +628,7 @@ select:focus {
   align-items: center;
   gap: 10px;
   border: 1px solid var(--border);
-  border-radius: 13px;
+  border-radius: var(--r-md);
   padding: 0 12px;
   color: var(--muted);
   margin-bottom: 16px;
@@ -666,7 +655,7 @@ select:focus {
   border: 0;
   background: transparent;
   padding: 11px 8px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   cursor: pointer;
 }
 .quick-action:hover,
@@ -683,7 +672,7 @@ select:focus {
 }
 .quick-action strong {
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .quick-action small {
   color: var(--muted);
@@ -700,7 +689,7 @@ select:focus {
   height: 42px;
   background: #ffffff08;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 .quick-action-icon.codex {
   color: #ceefc4;

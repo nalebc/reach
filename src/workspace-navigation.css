@@ -10,7 +10,7 @@
   padding: 0 8px;
   margin: -8px 0 12px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--muted);
 }
@@ -79,7 +79,7 @@
   }
   .workspace-computer:focus-visible {
     outline: 2px solid var(--lime);
-    border-radius: 8px;
+    border-radius: var(--r-sm);
   }
   .app-shell .page-sessions .chat-library {
     min-height: calc(100dvh - 64px - env(safe-area-inset-top));

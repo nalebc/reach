@@ -1,6 +1,6 @@
 .as-shortcuts {
   border: 1px solid var(--ag-line, #ffffff18);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #ffffff04;
   min-width: 0;
 }
@@ -36,7 +36,7 @@
 .as-card {
   padding: 12px;
   border: 1px solid var(--ag-line, #ffffff18);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   min-width: 0;
 }
 .as-card > summary {
@@ -73,7 +73,7 @@
 }
 .as-mac-list {
   margin-top: 8px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--panel, rgba(127, 127, 127, 0.08));
   padding: 2px 12px;
 }

@@ -101,7 +101,7 @@
   min-height: 50px;
   padding: 0 12px;
   border: 1px solid var(--claw-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--claw-ink);
   font-size: 14px;
@@ -120,7 +120,7 @@
   margin-left: auto;
   min-width: 22px;
   padding: 2px 7px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #d6c38f26;
   color: #e6d39f;
   font-size: 12px;
@@ -146,7 +146,7 @@
   min-height: 50px;
   padding: 8px 12px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--claw-ink);
   text-align: left;
@@ -210,7 +210,7 @@
   width: 44px;
   height: 44px;
   margin-bottom: 8px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--claw-field);
   color: var(--claw-ink);
 }
@@ -236,7 +236,7 @@
   min-height: 42px;
   padding: 0 18px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--claw-field);
   color: var(--claw-ink);
   font-size: 15px;
@@ -271,7 +271,7 @@
   min-height: 44px;
   padding: 0 20px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--claw-faint);
   font-size: 17px;
@@ -289,7 +289,7 @@
   min-height: 52px;
   padding: 0 24px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--claw-white);
   color: var(--claw-white-ink);
   font-size: 17px;
@@ -317,7 +317,7 @@
   width: 100%;
   padding: 18px 18px 18px 16px;
   border: 1px solid var(--claw-line);
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
   background: var(--claw-group);
   color: var(--claw-ink);
   text-align: left;
@@ -366,7 +366,7 @@
   margin: 0 0 22px;
   overflow: hidden;
   border: 1px solid var(--claw-line);
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
   background: var(--claw-group);
 }
 .claw-group-note {
@@ -461,7 +461,7 @@
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--claw-line);
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--claw-group);
   list-style: none;
 }
@@ -556,7 +556,7 @@
   max-width: calc(100vw - 32px);
   padding: 6px;
   border: 1px solid var(--claw-line);
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: #2a2a2a;
   box-shadow: 0 16px 40px #0009;
 }
@@ -567,7 +567,7 @@
   min-height: 46px;
   padding: 0 12px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: none;
   color: var(--claw-ink);
   font-size: 16px;
@@ -627,7 +627,7 @@
   max-width: 82%;
   margin-left: auto;
   padding: 10px 16px;
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
   background: #ffffff17;
 }
 .claw-message p:first-child {
@@ -672,7 +672,7 @@
   max-height: 45%;
   padding: 8px 8px 8px 18px;
   border: 1px solid var(--claw-line);
-  border-radius: 28px;
+  border-radius: var(--r-3xl);
   background: #ffffff0e;
   box-shadow: 0 8px 28px #0004;
 }
@@ -732,7 +732,7 @@
   gap: 10px;
   min-height: 52px;
   padding: 6px 6px 6px 18px;
-  border-radius: 28px;
+  border-radius: var(--r-3xl);
   background: #ffffff0a;
   color: var(--claw-muted);
 }
@@ -833,7 +833,7 @@
   gap: 6px;
   flex: none;
   padding: 3px 9px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #ffffff10;
   color: var(--muted);
   font-size: 12px;
@@ -882,7 +882,7 @@
   min-height: 40px;
   padding: 0 16px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #ffffff12;
   color: var(--text-strong);
   font-size: 14px;
@@ -908,7 +908,7 @@
   margin: 8px 0 12px;
   padding: 16px;
   border: 1px solid var(--claw-line);
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   background: #ffffff0b;
   color: var(--claw-ink);
 }
@@ -936,7 +936,7 @@
   margin: 0;
   padding: 10px 14px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   box-shadow: none;
   background: var(--claw-field);
   color: var(--claw-ink);
@@ -977,7 +977,7 @@
   margin: 0 0 12px;
   padding: 18px;
   border: 1.5px dashed #ffffff26;
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
 }
 .claw-missing p {
   margin: 0;
@@ -987,7 +987,7 @@
 }
 .claw-missing code {
   padding: 6px 10px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #ffffff10;
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -1001,7 +1001,7 @@
   width: min(240px, 100%);
   height: auto;
   padding: 8px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #fff;
 }
 .claw-link {
@@ -1059,7 +1059,7 @@
   min-height: 86px;
   padding: 12px 6px;
   border: 1px solid var(--claw-line);
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--claw-group);
   color: var(--claw-ink);
   font: inherit;

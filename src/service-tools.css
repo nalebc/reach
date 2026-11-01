@@ -19,7 +19,7 @@
 }
 .service-card {
   border: 1px solid var(--ag-border, #8884);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   padding: 16px;
   margin: 10px 0;
   overflow-wrap: anywhere;
@@ -42,7 +42,7 @@
 }
 .service-badge {
   font-size: 11px;
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   padding: 4px 8px;
   background: #66887725;
 }
@@ -67,14 +67,14 @@
   min-width: 0;
   border: 1px solid var(--ag-border, #8885);
   background: transparent;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   padding: 11px;
   font: inherit;
   color: inherit;
 }
 .service-card button {
   min-height: 42px;
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   padding: 10px 14px;
   font: inherit;
   font-size: 13px;

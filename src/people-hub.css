@@ -23,7 +23,7 @@
 }
 .ppl-head h1 {
   margin: 0;
-  font: 650 26px/1.15 system-ui, -apple-system, sans-serif;
+  font: 600 26px/1.15 var(--font-display);
   letter-spacing: -0.6px;
   color: #f1f6f2;
 }
@@ -34,7 +34,7 @@
 }
 /* A row: an avatar where Settings has a line icon. */
 .ppl .gs-row .gs-label strong {
-  font-weight: 450;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -159,7 +159,7 @@
 }
 .ppl-use.is-active {
   color: #5fd38d;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ppl-avatar.large .ppl-live {
   right: 2px;
@@ -188,7 +188,7 @@
 }
 .ppl-page .ppl-hero h1 {
   margin: 4px 0 0;
-  font: 650 22px/1.2 system-ui, -apple-system, sans-serif;
+  font: 600 22px/1.2 var(--font-display);
   letter-spacing: -0.3px;
   color: #f1f6f2;
   outline: none;

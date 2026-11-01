@@ -10,7 +10,7 @@
   gap: 10px;
   padding: 4px 6px 4px 10px;
   border: 1px solid #2b332d;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #171e19e6;
   color: #c9d3cb;
   font:
@@ -28,7 +28,7 @@
 .guest-bar button {
   padding: 3px 8px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #ffffff12;
   color: inherit;
   font: inherit;

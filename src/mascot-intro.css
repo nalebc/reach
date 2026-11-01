@@ -292,7 +292,7 @@
 }
 .intro-bubble text {
   font:
-    800 26px Inter,
+    700 26px Inter,
     -apple-system,
     system-ui,
     sans-serif;
@@ -315,7 +315,7 @@
   min-height: 34px;
   padding: 0 14px;
   border: 1px solid #ffffff2b;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #ffffff12;
   color: #e9f0ec;
   font:
@@ -460,7 +460,7 @@
   }
   63.51%,
   100% {
-    background-color: var(--bg, #101512);
+    background-color: var(--bg, var(--surface-0));
   }
 }
 @keyframes intro-step {

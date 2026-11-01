@@ -41,7 +41,7 @@
   align-items: center;
   gap: 2px;
   padding: 4px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(11 16 18 / 0.74);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
   backdrop-filter: blur(16px) saturate(1.4);
@@ -57,7 +57,7 @@
   height: 44px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: #e9f2ef;
   cursor: pointer;
@@ -96,7 +96,7 @@
   flex-shrink: 1;
   min-width: 0;
   margin: 0 2px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(255 255 255 / 0.05);
 }
 .screen-bar .screen-bar-group button {
@@ -114,7 +114,7 @@
 .screen-bar-dock .simple-screen-caption {
   pointer-events: none;
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(11 16 18 / 0.74);
   color: #e9f2ef;
   font-size: 12px;
@@ -129,7 +129,7 @@
   max-width: 100%;
   min-height: 30px;
   padding: 0 4px 0 10px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(11 16 18 / 0.74);
   -webkit-backdrop-filter: blur(16px) saturate(1.4);
   backdrop-filter: blur(16px) saturate(1.4);
@@ -151,7 +151,7 @@
   min-height: 24px;
   padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(255 255 255 / 0.08);
   color: #e9f2ef;
   font:
@@ -216,7 +216,7 @@ button.gs-row[aria-pressed="true"] .gs-value {
     margin: 8px max(8px, env(safe-area-inset-right)) 8px auto;
     width: min(360px, 55vw);
     max-height: calc(100dvh - 16px);
-    border-radius: 20px;
+    border-radius: var(--r-xl);
   }
   .screen-menu .screen-popup-body {
     padding: 14px 16px;

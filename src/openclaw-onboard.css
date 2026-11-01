@@ -20,7 +20,7 @@
   place-items: center;
   width: 76px;
   height: 76px;
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
   background: radial-gradient(
     ellipse at 50% 70%,
     color-mix(in srgb, var(--lime) 16%, transparent),
@@ -58,7 +58,7 @@
 .claw-onboard-providers {
   overflow: hidden;
   border: 1px solid var(--claw-line, var(--border));
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--claw-group, #ffffff0b);
 }
 .claw-onboard .claw-onboard-providers button {
@@ -109,7 +109,7 @@
   margin: 0;
   padding: 0 16px;
   border: 1px solid var(--claw-line, var(--border));
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   box-shadow: none;
   background: var(--claw-field, #ffffff10);
   color: inherit;
@@ -153,7 +153,7 @@
   flex: none;
   width: 46px;
   height: 28px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background:
     radial-gradient(circle at 14px 50%, #fff 11px, transparent 11.5px),
     #ffffff2e;
@@ -179,7 +179,7 @@
   min-height: 52px;
   padding: 0 20px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--claw-white, #f3f3f3);
   color: var(--claw-white-ink, #0d0d0d);
   font: inherit;
@@ -203,7 +203,7 @@
 .claw-onboard-line {
   margin: 0;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--claw-field, #ffffff10);
   color: inherit;
   font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;

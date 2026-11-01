@@ -1,7 +1,7 @@
 /* The Browser tools row on the Agents page, and its sheet. */
 .ts-row {
   margin-bottom: 10px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: var(--ag-card, #ffffff08);
 }
 .ts-icon {

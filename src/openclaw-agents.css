@@ -3,7 +3,7 @@
   overflow: hidden;
   margin: 0 0 32px;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 26px;
+  border-radius: var(--r-3xl);
   background: var(--claw-group, #ffffff0b);
 }
 .claw-agents-item + .claw-agents-item {
@@ -66,7 +66,7 @@
 .claw-agents-pill {
   flex: none;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: color-mix(in srgb, var(--claw-muted, #a1a1a1) 12%, transparent);
   color: var(--claw-muted, #a1a1a1);
   font-size: 12px;
@@ -124,7 +124,7 @@
   margin: 0 0 12px;
   color: var(--claw-ink, #ececec);
   font-size: 17px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .claw-agents-rules {
   margin: 0 0 28px;
@@ -150,7 +150,7 @@
   min-height: 44px;
   padding: 8px 16px;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--claw-muted, #a1a1a1);
   font-size: 13px;
@@ -172,7 +172,7 @@
 .claw-agents-allow {
   overflow: hidden;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 24px;
+  border-radius: var(--r-2xl);
   background: var(--claw-group, #ffffff0b);
 }
 .claw-agents-allow li {
@@ -197,7 +197,7 @@
   min-height: 44px;
   padding: 0 8px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--claw-muted, #a1a1a1);
   font-size: 13px;
@@ -213,7 +213,7 @@
   min-height: 46px;
   padding: 14px 16px;
   border: 1px solid var(--claw-line, #ffffff14);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--claw-group, #ffffff0b);
   color: var(--claw-ink, #ececec);
   font:

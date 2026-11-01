@@ -13,7 +13,7 @@
   display: block;
   overflow-x: auto;
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: rgb(255 255 255 / 0.06);
   color: #eef4ef;
   font: 12.5px "SFMono-Regular", Consolas, monospace;
