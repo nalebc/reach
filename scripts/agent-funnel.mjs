@@ -70,7 +70,7 @@ export function tailnetLookup(hostname, options, callback) {
 // never runs twice. A fresh connection each time, so "connected" is known.
 export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = false, connectMs = 5000, responseLimit = RESPONSE_LIMIT } = {}) {
   return new Promise((resolve, reject) => {
-    let connected = false, socket, connecting;
+    let connected = false, socket, connecting, deadline;
     const unreachable = (error) => Object.assign(error, { unreachable: !connected && !socket?.getCipher?.() });
     const req = https.request(`${endpoint}/agent-gateway`, {
       // No forced rejectUnauthorized: an agent behind a TLS-intercepting egress
@@ -108,8 +108,13 @@ export function httpsSend(endpoint, body, headers, timeoutMs, { tailnetOnly = fa
       socket = next;
       socket.once("secureConnect", () => { connected = true; clearTimeout(connecting); });
     });
-    req.on("close", () => clearTimeout(connecting));
-    req.on("timeout", () => req.destroy(unreachable(Error("Reach request timed out. Mutating operations are not retried."))));
+    const timedOut = () => req.destroy(unreachable(Error("Reach request timed out. Mutating operations are not retried.")));
+    // Socket inactivity is not a total deadline: a proxy or a response that
+    // dribbles bytes can otherwise keep a tool call pending indefinitely.
+    deadline = setTimeout(timedOut, timeoutMs);
+    deadline.unref?.();
+    req.on("close", () => { clearTimeout(connecting); clearTimeout(deadline); });
+    req.on("timeout", timedOut);
     req.once("error", (error) => reject(unreachable(error)));
     req.end(body);
   });
@@ -146,9 +151,9 @@ export function privateGatewaySend({ native = httpsSend, embedded, now = Date.no
 export function funnelGateway(audience, key, { send = httpsSend, now = Date.now, endpoints = [audience], retry = () => false } = {}) {
   let current = 0, failedAt = 0;
   const call = async (input, timeoutMs = 35000) => {
-    const payload = JSON.stringify({ v: 1, audience, issuedAt: now(), nonce: crypto.randomBytes(24).toString("base64url"), ...input });
-    const signature = crypto.sign("sha256", Buffer.from(payload, "utf8"), { key: key.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
-    const body = JSON.stringify({ payload, publicKey: key.jwk, signature });
+    // Hold the request's exact arguments across asynchronous route startup.
+    // Only the timestamp, nonce and signature are refreshed on a safe retry.
+    const request = JSON.parse(JSON.stringify(input));
     const headers = {
       "Content-Type": "application/json",
       Origin: audience,
@@ -159,20 +164,27 @@ export function funnelGateway(audience, key, { send = httpsSend, now = Date.now,
     if (current > 0 && (now() - failedAt > 60_000 || retry())) current = 0;
     // Each request keeps its own fallback cursor. Another request's private
     // failure may change the preference, but cannot consume this fallback.
-    let candidate = current;
+    let candidate = current, resigned = false;
     for (;;) {
       const endpoint = endpoints[candidate];
       try {
+        const payload = JSON.stringify({ v: 1, audience, issuedAt: now(), nonce: crypto.randomBytes(24).toString("base64url"), ...request });
+        const signature = crypto.sign("sha256", Buffer.from(payload, "utf8"), { key: key.privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
+        const body = JSON.stringify({ payload, publicKey: key.jwk, signature });
         // Every address but the last (the public link) is a tailnet one.
-        const imageLimit = agentJsonResponseLimit(input.path, input.method, input.body);
+        const imageLimit = agentJsonResponseLimit(request.path, request.method, request.body);
         const response = await send(endpoint, body, headers, timeoutMs, {
           tailnetOnly: candidate < endpoints.length - 1,
           responseLimit: Math.max(RESPONSE_LIMIT, imageLimit),
         });
-        const limit = Math.max(RESPONSE_LIMIT, agentJsonResponseLimit(input.path, input.method, input.body, response.status));
+        const limit = Math.max(RESPONSE_LIMIT, agentJsonResponseLimit(request.path, request.method, request.body, response.status));
         if (response.bytes.length > limit) throw Error("Reach response exceeds its transport limit.");
         let json = null;
         try { json = JSON.parse(response.bytes.toString("utf8") || "null"); } catch {}
+        if (!resigned && response.status === 400 && response.headers["reach-not-run"] === "1" && response.headers["reach-retry"] === "fresh-signature") {
+          resigned = true;
+          continue;
+        }
         return { ...response, json, endpoint };
       } catch (error) {
         if (!error?.unreachable || candidate + 1 >= endpoints.length) throw error;

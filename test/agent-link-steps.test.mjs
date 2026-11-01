@@ -81,7 +81,7 @@ test("the public start page: /agent is text for curl, the start page with the st
   assert.ok(!page.body.includes(SECRET));
   assert.doesNotMatch(page.body, /Opening Reach/, "the steps take the first screen's place");
   assert.match(page.body, /<main id="start" class="start" aria-live="polite"><section id="agent-steps"[^>]*><pre[^>]*>Reach: connect an AI agent to this Mac\n/);
-  assert.ok(page.body.includes("L=&#39;&lt;YOUR WHOLE LINK&gt;&#39; &amp;&amp; curl"), "escaped as text");
+  assert.ok(page.body.includes("L=&#39;&lt;YOUR WHOLE LINK&gt;&#39; &amp;&amp; REACH_AGENT_SHA="), "escaped as text");
   assert.ok(page.body.includes('<script type="module" src="/assets/start-abc.js"></script>'), "the page's own script, which shows people what it's for");
   // HEAD: the same headers, no body.
   const head = await get("/agent", { method: "HEAD" });
@@ -133,7 +133,8 @@ const run = (command, home) => new Promise((resolve) =>
 test("the steps install only the runtime the link's r= names, then join with the link on standard input", { skip: process.platform === "win32", timeout: 30000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-steps-run-"));
   let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
-  const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
+  const archive = new Map([[`/agent-runtimes/${sha(served)}.mjs`, served]]);
+  const server = http.createServer((req, res) => res.end(archive.get(req.url) || (/^\/agent-runtimes\/[a-f0-9]{64}\.mjs$/.test(req.url) ? served : "")));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
@@ -158,6 +159,9 @@ test("the steps install only the runtime the link's r= names, then join with the
   // Something else served: refused, the runtime it had stays, nothing joins.
   const before = fs.readFileSync(runtime, "utf8");
   served = 'console.log("swapped");\n';
+  const afterUpdate = await run(withLink(link), home);
+  assert.equal(afterUpdate.code, 0, afterUpdate.stderr);
+  assert.equal(afterUpdate.stdout.trim(), `runtime v2: join ${link}`, "the same link survives a Reach runtime update");
   const refused = await run(withLink(linkFor(sha("what the invitation named"))), home);
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /This is not the runtime your invitation names/);
@@ -178,7 +182,8 @@ test("the steps install only the runtime the link's r= names, then join with the
 test("Windows: the steps in PowerShell install only the runtime the link's r= names, then join with the link on standard input", { skip: process.platform !== "win32", timeout: 180000 }, async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "reach-steps-run-"));
   let served = 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log("runtime v2:", process.argv.slice(2).join(" "), s.trim()));\n';
-  const server = http.createServer((req, res) => res.end(req.url === "/agent.mjs" ? served : ""));
+  const archive = new Map([[`/agent-runtimes/${sha(served)}.mjs`, served]]);
+  const server = http.createServer((req, res) => res.end(archive.get(req.url) || (/^\/agent-runtimes\/[a-f0-9]{64}\.mjs$/.test(req.url) ? served : "")));
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => { server.close(); fs.rmSync(home, { recursive: true, force: true }); });
@@ -202,6 +207,9 @@ test("Windows: the steps in PowerShell install only the runtime the link's r= na
 
   const before = fs.readFileSync(runtime, "utf8");
   served = 'console.log("swapped");\n';
+  const afterUpdate = await agentPowerShell(withLink(link), home);
+  assert.equal(afterUpdate.code, 0, afterUpdate.stderr);
+  assert.equal(afterUpdate.stdout.trim(), `runtime v2: join ${link}`, "the same link survives a Reach update on Windows");
   const refused = await agentPowerShell(withLink(linkFor(sha("what the invitation named"))), home);
   assert.doesNotMatch(refused.stdout, /swapped/, `never run: ${refused.stderr}`);
   assert.equal(fs.readFileSync(runtime, "utf8"), before);
@@ -220,8 +228,8 @@ test("Windows: the steps in PowerShell install only the runtime the link's r= na
 test("Windows: the same steps in PowerShell, checked against the link's r=", () => {
   const command = windowsStepsCommand(START);
   assert.ok(command.startsWith(`$L = '${YOUR_LINK}'; [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; `));
-  assert.ok(command.includes(`Invoke-WebRequest -UseBasicParsing -Uri ${START}/agent.mjs -OutFile "$d\\agent.mjs.new"`));
-  assert.ok(command.includes(`$r = [regex]::Match($L, '[#&]r=([0-9a-f]{64})(&|$)').Groups[1].Value; if (-not $r -or (Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne $r) { throw `));
+  assert.ok(command.includes(`Invoke-WebRequest -UseBasicParsing -Uri "${START}/agent-runtimes/$r.mjs" -OutFile "$d\\agent.mjs.new"`));
+  assert.ok(command.includes(`$r = [regex]::Match($L, '[#&]r=([0-9a-f]{64})(&|$)').Groups[1].Value; if (-not $r) { throw `));
   assert.ok(command.indexOf("Get-FileHash") < command.indexOf("Move-Item"), "checked before it's put in place");
   assert.ok(command.endsWith(`Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; $L | node "$d\\agent.mjs" join`), "the link on standard input");
   assert.equal(command.split(YOUR_LINK).length, 2, "the link goes in once");

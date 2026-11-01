@@ -13,21 +13,22 @@ export const YOUR_LINK = "<YOUR WHOLE LINK>";
 
 // Node, given the link on standard input and the download: the runtime its
 // r= names, or a refusal. No single quotes: it sits inside sh's.
-const CHECK = [
+const READ_RUNTIME = [
   'let s="";process.stdin.on("data",(d)=>(s+=d)).on("end",()=>{',
   'let r="";try{r=new URLSearchParams(new URL(s.trim()).hash.slice(1)).get("r")||""}catch{}',
   'if(!/^[0-9a-f]{64}$/.test(r))throw Error("Your link names no runtime (r=). Ask for a new invitation.");',
-  'if(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex")!==r)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")})',
 ].join("");
+const CHECK = READ_RUNTIME + 'if(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex")!==r)throw Error("This is not the runtime your invitation names. Ask for a new invitation.")})';
+const RUNTIME_HASH = READ_RUNTIME + 'process.stdout.write(r)})';
 
 // macOS and Linux (sh): the link once, in a shell variable.
 export const stepsCommand = (start) =>
-  `L='${YOUR_LINK}' && curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new ${start}/agent.mjs && printf '%s' "$L" | node -e '${CHECK}' ~/.reach-agent/agent.mjs.new && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && printf '%s\\n' "$L" | node ~/.reach-agent/agent.mjs join`;
+  `L='${YOUR_LINK}' && REACH_AGENT_SHA=$(printf '%s' "$L" | node -e '${RUNTIME_HASH}') && curl -fsSL --create-dirs -o ~/.reach-agent/agent.mjs.new "${start}/agent-runtimes/$REACH_AGENT_SHA.mjs" && printf '%s' "$L" | node -e '${CHECK}' ~/.reach-agent/agent.mjs.new && mv ~/.reach-agent/agent.mjs.new ~/.reach-agent/agent.mjs && printf '%s\\n' "$L" | node ~/.reach-agent/agent.mjs join`;
 
 // Windows (PowerShell 5.1 and later ship with Windows 10 and 11): the same.
 // Get-FileHash's hex is upper case; -ne doesn't mind.
 export const windowsStepsCommand = (start) =>
-  `$L = '${YOUR_LINK}'; [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest -UseBasicParsing -Uri ${start}/agent.mjs -OutFile "$d\\agent.mjs.new"; $r = [regex]::Match($L, '[#&]r=([0-9a-f]{64})(&|$)').Groups[1].Value; if (-not $r -or (Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne $r) { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; $L | node "$d\\agent.mjs" join`;
+  `$L = '${YOUR_LINK}'; [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; $d = "$HOME\\.reach-agent"; New-Item -ItemType Directory -Force $d | Out-Null; $r = [regex]::Match($L, '[#&]r=([0-9a-f]{64})(&|$)').Groups[1].Value; if (-not $r) { throw 'Your link names no runtime (r=). Ask for a new invitation.' }; Invoke-WebRequest -UseBasicParsing -Uri "${start}/agent-runtimes/$r.mjs" -OutFile "$d\\agent.mjs.new"; if ((Get-FileHash "$d\\agent.mjs.new" -Algorithm SHA256).Hash -ne $r) { throw 'This is not the runtime your invitation names. Ask for a new invitation.' }; Move-Item -Force "$d\\agent.mjs.new" "$d\\agent.mjs"; $L | node "$d\\agent.mjs" join`;
 
 // The steps, as plain text. `start`: this computer's public start page
 // (https://<computer>.<tailnet>.ts.net), where its agent links point.

@@ -88,3 +88,11 @@ test("an approved identity spelled out in full is public, but a private word bui
   assert.equal(elsewhere.status, 1);
   assert.match(elsewhere.stderr, /local personal identifier/);
 });
+
+// A configured identifier must never be made public merely by putting its
+// address in the scanner. Historical exceptions are pinned to commit IDs.
+test("the privacy scanner embeds no personal email exemptions", () => {
+  const addresses = fs.readFileSync(checker, "utf8").match(/[A-Za-z0-9.+_\[\]-]+@[A-Za-z0-9.-]+\.[A-Za-z]+/g) || [];
+  assert.ok(addresses.every(address => address.endsWith("@users.noreply.github.com") || address.endsWith("@example.invalid")),
+    "Use a noreply identity; never embed personal addresses in the privacy scanner.");
+});

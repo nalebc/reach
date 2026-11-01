@@ -21,7 +21,7 @@ export const suites = {
     "close-server", "test-hygiene",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
-    "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
+    "release-assets", "release-privacy", "portable-archive", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
     // Decode the emitted QR and follow it through a separate phone network.
     "qr-onboarding-e2e", "windows-atomic-json",
@@ -63,7 +63,7 @@ export const suites = {
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
-    "start-native-ui", "start-screens-ui", "face-sign-in-ui", "funnel-agent-cors", "funnel-agent-gateway",
+    "build-reload", "app-boot-ui", "page-recovery-ui", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "face-sign-in-ui",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
@@ -113,7 +113,7 @@ export const suites = {
     "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
     "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
     // Shared credential renewal, browser tabs and recovery after lost replies.
-    "agent-funnel-reconnect", "funnel-agent-ui", "agent-guide", "agent-services", "service-connectors", "service-tools-ui",
+    "agent-funnel-reconnect", "agent-computer-tools", "mcp-navigation", "funnel-agent-ui", "agent-guide", "agent-services", "service-connectors", "service-tools-ui",
     // Background mode out of sight: no window from its task's programs.
     "windows-quiet-background",
     // Windows' live screen as H.264 with nothing installed (audit #26): the
