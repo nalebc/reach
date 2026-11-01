@@ -1,0 +1,84 @@
+.connection-state {
+  width: min(100%, 440px);
+  min-height: min(560px, 68svh);
+  margin: 0 auto;
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.connection-state .connection-state-scene {
+  width: min(100%, 340px);
+  aspect-ratio: 480 / 265;
+  margin-bottom: 26px;
+}
+.connection-state-copy {
+  width: 100%;
+}
+.connection-state h1 {
+  margin: 0;
+  font-size: clamp(23px, 4vw, 28px);
+  font-weight: 500;
+  font-family: var(--font-display);
+  line-height: 1.2;
+  letter-spacing: -0.7px;
+  text-wrap: balance;
+}
+.connection-state-copy > p {
+  max-width: 320px;
+  margin: 12px auto 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+.connection-state-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 36px;
+  max-width: 100%;
+  margin-top: 22px;
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--mint) 4%, transparent);
+  color: var(--lime);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.connection-state-status svg { flex: none; }
+.connection-state-actions { margin-top: 20px; }
+.connection-state-actions .button { min-width: 148px; min-height: 44px; }
+.connection-state-actions a { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.connection-state-help {
+  max-width: 100%;
+  margin-top: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.connection-state-help summary {
+  min-height: 44px;
+  align-content: center;
+  cursor: pointer;
+}
+.connection-state-help p {
+  margin: 4px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  line-height: 1.6;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.connection-state.needs-attention .connection-state-scene * {
+  animation-play-state: paused !important;
+}
+.motion-paused .connection-state-status .spin {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .connection-state *, .owner-connection-setup .spin { animation: none !important; }
+}
