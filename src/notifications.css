@@ -43,7 +43,7 @@
   min-width: 18px;
   height: 18px;
   padding: 0 3px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   font-size: 10px;
   font-weight: 700;
 }
@@ -68,8 +68,8 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--border, #ffffff14);
-  border-radius: 18px;
-  background: var(--panel, #191e1b);
+  border-radius: var(--r-xl);
+  background: var(--panel, var(--surface-2));
   color: var(--text, #e7eeea);
   box-shadow: 0 18px 60px #0008;
   transform-origin: top right;
@@ -127,7 +127,7 @@
 }
 .notification-card {
   border: 1px solid #ffffff12;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: #ffffff04;
   padding: 16px;
   min-width: 0;
@@ -150,7 +150,7 @@
   flex: 0 0 42px;
   width: 42px;
   height: 42px;
-  border-radius: 13px;
+  border-radius: var(--r-md);
   background: #ffffff08;
   color: #d6e4dc;
 }
@@ -185,7 +185,7 @@
   line-height: 1.5;
   border: 1px solid #daca9126;
   color: #daca91;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
   padding: 1px 5px;
 }
 .notification-heading strong {
@@ -212,7 +212,7 @@
 .notification-command {
   margin-top: 14px;
   border: 1px solid #ffffff0b;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #0000001a;
   padding: 12px;
 }
@@ -250,7 +250,7 @@
   min-height: 40px;
   padding: 9px 12px;
   border: 1px solid #ffffff1c;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   color: inherit;
   background: transparent;
   font: inherit;
@@ -336,7 +336,7 @@
   background: var(--panel, #18231f);
   border: 1px solid #bff1d940;
   color: var(--text, #e7eeea);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   box-shadow: 0 10px 40px #0006;
   padding: 12px 14px;
   display: flex;
@@ -388,7 +388,7 @@
     max-height: none;
     border: 0;
     border-radius: 0;
-    background: var(--bg, #101311);
+    background: var(--bg, var(--surface-0));
     box-shadow: none;
     animation: notification-page-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
@@ -430,7 +430,7 @@
 }
 .ns-group {
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--text, #e7eeea) 5%, transparent);
 }
 .ns-row {
@@ -475,7 +475,7 @@
   width: 46px;
   height: 28px;
   margin: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #ffffff24;
   cursor: pointer;
   transition: background 0.18s ease;
@@ -512,7 +512,7 @@
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid #ffffff1f;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: none;
   color: var(--text, #e7eeea);
   font: inherit;
@@ -563,7 +563,7 @@
   flex: none;
   width: 44px;
   height: 44px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #0d1611;
 }
 .ns-primary {
@@ -573,7 +573,7 @@
   gap: 8px;
   min-height: 46px;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: var(--lime);
   color: #0d1611;
   font: inherit;
@@ -606,14 +606,14 @@
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #ffffff12;
   color: var(--text, #e7eeea);
 }
 .ns-step-icon img {
   width: 20px;
   height: 20px;
-  border-radius: 5px;
+  border-radius: var(--r-xs);
 }
 @media (prefers-reduced-motion: reduce) {
   .notification-center {

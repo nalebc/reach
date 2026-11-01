@@ -24,7 +24,7 @@
   background: var(--bg, #080b10);
   color: var(--text-strong, #f2f2f2);
   border: 1px solid var(--border, #ffffff20);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -39,7 +39,7 @@
 .browser-approval-snapshot img {
   display: block;
   width: 100%;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .browser-click-marker {
   position: absolute;
@@ -68,7 +68,7 @@
   margin-top: 18px;
   position: sticky;
   bottom: -22px;
-  background: var(--panel, #191e1b);
+  background: var(--panel, var(--surface-2));
   padding: 14px 0;
   z-index: 1;
   border-top: 1px solid var(--border, #ffffff20);
@@ -105,7 +105,7 @@
 .browser-batch-builder {
   padding: 12px;
   border: 1px solid var(--border, #ffffff20);
-  border-radius: 10px;
+  border-radius: var(--r-md);
 }
 .browser-batch-builder h3 {
   display: flex;

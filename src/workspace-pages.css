@@ -45,7 +45,7 @@
   min-width: 20px;
   height: 20px;
   margin-left: 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: #b9efd410;
   color: #b8cebe;
   font-size: 10px;
@@ -66,7 +66,7 @@
 }
 .settings-workspace .settings-device h2 {
   font-size: 17px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.5px;
   margin: 0 0 5px;
 }
@@ -93,7 +93,7 @@
 .page-settings .settings-general .settings-device h2 {
   font-family: inherit;
   font-size: 17px;
-  font-weight: 550;
+  font-weight: 600;
   text-transform: none;
   letter-spacing: -0.4px;
   color: #e2ece2;
@@ -121,7 +121,7 @@
   background: #b9efd40a;
   border: 1px solid #b9efd431;
   padding: 20px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   margin: 0 0 25px;
 }
 .settings-workspace .settings-access .settings-panel {
@@ -151,7 +151,7 @@
 }
 .settings-workspace .client-row {
   border: 1px solid #d3ead219;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   padding: 17px 13px;
   background: #19221b;
   margin-bottom: 8px;
@@ -210,7 +210,7 @@
     margin: auto 0 0;
     width: 100%;
     max-width: none;
-    border-radius: 24px 24px 0 0;
+    border-radius: var(--r-2xl) var(--r-2xl) 0 0;
     max-height: calc(100dvh - 35px);
   }
   .workspace-launcher .screen-popup-body {
@@ -233,7 +233,7 @@
     width: 36px;
     height: 5px;
     margin: 11px auto 0;
-    border-radius: 5px;
+    border-radius: var(--r-xs);
     background: #78927d55;
   }
   body:has(.codex-workspace.is-thread.keyboard-open) .mobile-nav {

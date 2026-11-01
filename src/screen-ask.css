@@ -9,7 +9,7 @@
   display: grid;
   gap: 3px;
   padding: 12px 14px;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: rgb(20 20 20 / 0.88);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
@@ -43,7 +43,7 @@
   min-height: 36px;
   padding: 0 12px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: rgb(255 255 255 / 0.12);
   color: inherit;
   font: inherit;

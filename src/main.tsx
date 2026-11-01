@@ -150,6 +150,7 @@ function GuestRoot() {
     </>
   );
 }
+import "./type.css";
 import "./styles.css";
 import "./atmosphere.css";
 import "./workspace.css";

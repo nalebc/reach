@@ -37,7 +37,7 @@
   margin: 0;
   color: var(--ag-text);
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.5;
 }
 .ag-invite-label svg {
@@ -51,7 +51,7 @@
   min-height: 52px;
   padding: 4px 7px 4px 15px;
   border: 1px solid var(--ag-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   background: var(--ag-field);
   color: var(--ag-muted);
 }
@@ -83,7 +83,7 @@
   width: 40px;
   height: 40px;
   border: 0;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--ag-muted);
   cursor: pointer;
@@ -104,7 +104,7 @@
   min-width: 0;
   padding: 16px;
   border: 1px solid var(--ag-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: transparent;
   cursor: pointer;
   transition:
@@ -157,7 +157,7 @@
 }
 .ag-preset strong {
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 1.4;
 }
 .ag-preset small {
@@ -166,7 +166,7 @@
   line-height: 1.5;
 }
 .ag-invite .ag-rows {
-  border-radius: 12px;
+  border-radius: var(--r-md);
 }
 .ag-invite .ag-row-head {
   gap: 9px;
@@ -196,7 +196,7 @@
 }
 .ag-invite .ag-note {
   padding: 12px 14px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #ffffff05;
   font-size: 12px;
   line-height: 1.6;
@@ -204,13 +204,13 @@
 .ag-invite .ag-segments {
   gap: 4px;
   padding: 4px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #ffffff06;
 }
 .ag-invite .ag-segments button {
   min-height: 40px;
   padding: 0 8px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 12px;
   font-weight: 500;
 }
@@ -238,9 +238,9 @@
 .ag-invite .ag-primary,
 .ag-invite .ag-secondary {
   min-height: 48px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-invite .ag-primary {
   background: #ededed;
@@ -281,7 +281,7 @@
 .ag-error {
   margin: 0;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: color-mix(in srgb, var(--ag-danger) 10%, transparent);
   color: var(--ag-danger);
   font-size: 13px;
@@ -314,7 +314,7 @@
 .ag-done h3 {
   margin: 0;
   font-size: 24px;
-  font-weight: 550;
+  font-weight: 600;
   letter-spacing: -0.7px;
   outline: none;
 }
@@ -336,7 +336,7 @@
   margin: 8px 0 0;
   padding: 14px;
   border: 1px solid var(--ag-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   text-align: left;
 }
 .ag-invite-receipt > span {
@@ -422,7 +422,7 @@
   width: 100%;
   padding: 12px;
   border: 1px solid var(--ag-line);
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: var(--ag-field);
   color: #ccc;
   font:
@@ -499,7 +499,7 @@
 .ivt .ag-invite .ag-primary,
 .ivt .ag-invite .ag-secondary {
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ivt .ag-invite .fb-chip,
 .ivt .ag-invite .fb-share.on,
@@ -544,11 +544,11 @@
 }
 .ag-access.is-unset .ivt-menu-button {
   color: var(--ag-text);
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-invite .ag-rows {
   border: 0;
-  border-radius: 18px;
+  border-radius: var(--r-xl);
   background: rgb(255 255 255 / 0.045);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
 }
@@ -596,12 +596,12 @@
 }
 .ag-send .ag-primary {
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   font-size: 15px;
 }
 .ag-done .ag-primary,
 .ag-done .ag-secondary {
-  border-radius: 999px;
+  border-radius: var(--r-pill);
 }
 .ag-done-next {
   margin: 0;
@@ -652,7 +652,7 @@
   max-width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--ag-line);
-  border-radius: 12px;
+  border-radius: var(--r-md);
   font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--ag-text);
   overflow-wrap: anywhere;

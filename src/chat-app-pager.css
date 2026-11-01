@@ -32,7 +32,7 @@
   transform: translate3d(var(--chat-page-x, 0px), 0, 0);
 }
 .chat-app-pages[data-motion="settling"] .chat-page-pane {
-  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--t-move);
 }
 @media (max-width: 600px) {
   /* A transformed page becomes the floating composer's containing block.

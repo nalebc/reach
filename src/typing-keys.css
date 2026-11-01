@@ -12,7 +12,7 @@
 .simple-screen.screen-typing-paused:has(> .typing-keys) .screen-typing-pause {
   flex-wrap: wrap;
   justify-content: center;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   padding: 6px 8px;
   row-gap: 4px;
 }

@@ -3,7 +3,7 @@
 .screen-popup.ag-sheet {
   width: min(460px, calc(100vw - 20px));
   border: 1px solid #ffffff12;
-  border-radius: 28px;
+  border-radius: var(--r-3xl);
   background:
     radial-gradient(130% 50% at 50% 0%, color-mix(in srgb, var(--lime) 5%, transparent), transparent 65%),
     #121915;
@@ -43,7 +43,7 @@
   gap: 6px;
   margin: 0;
   padding: 5px 11px;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background: #ffffff0d;
   color: #cfdad2;
   font-size: 13px;
@@ -54,7 +54,7 @@
   width: 100%;
   margin: 8px 0 4px;
   padding: 12px 14px;
-  border-radius: 16px 16px 16px 6px;
+  border-radius: var(--r-lg) var(--r-lg) var(--r-lg) var(--r-sm);
   background: #ffffff0b;
   text-align: left;
 }
@@ -100,7 +100,7 @@
   margin: 0;
   padding: 14px;
   border: 1px solid var(--ag-line);
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #0a0f0c;
   color: #eaf4ec;
   font: 13.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -118,7 +118,7 @@
 .ag-review .browser-request-reason {
   margin: 0;
   padding: 12px 14px;
-  border-radius: 16px 16px 16px 6px;
+  border-radius: var(--r-lg) var(--r-lg) var(--r-lg) var(--r-sm);
   background: #ffffff0b;
   font-size: 14px;
 }
@@ -128,7 +128,7 @@
   font-size: 12.5px;
 }
 .ag-review .browser-approval-snapshot img {
-  border-radius: 14px;
+  border-radius: var(--r-lg);
 }
 .ag-review .browser-approval-actions,
 .ag-sheet .browser-approval-actions {
@@ -153,7 +153,7 @@
   min-height: 46px;
   margin: 0;
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: #ffffff12;
   color: var(--ag-text);
   font-size: 14.5px;

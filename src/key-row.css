@@ -17,7 +17,7 @@
   align-items: center;
   justify-content: center;
   border: 1px solid #ffffff1f;
-  border-radius: 9px;
+  border-radius: var(--r-sm);
   background: #ffffff12;
   color: #e9f0ec;
   font:

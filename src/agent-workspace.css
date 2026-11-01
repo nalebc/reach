@@ -29,7 +29,7 @@
   place-items: center;
   width: 44px;
   height: 44px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--lime) 12%, #ffffff06);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lime) 22%, transparent);
   color: var(--lime);
@@ -42,7 +42,7 @@
   margin: 0 0 2px;
   color: var(--ag-muted);
   font-size: 12.5px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-ws-title h1 {
   margin: 0;
@@ -64,7 +64,7 @@
 /* ---- What you can do --------------------------------------------------- */
 .ag-ws-access {
   border: 1px solid var(--ag-line);
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--ag-surface);
 }
 .ag-ws-access > summary {
@@ -107,7 +107,7 @@
   place-items: center;
   width: 36px;
   height: 36px;
-  border-radius: 11px;
+  border-radius: var(--r-md);
   background: #ffffff0b;
   color: #cfdad2;
 }
@@ -129,7 +129,7 @@
   flex: none;
   color: var(--lime);
   font-size: 13px;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-ws-rules {
   display: flex;
@@ -153,13 +153,13 @@
   margin: 0;
   padding: 4px;
   border: 0;
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #ffffff0a;
 }
 .ag-ws .ag-ws-tabs > button {
   flex: 1;
   min-height: 48px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   color: var(--ag-muted);
   font-size: 15.5px;
   font-weight: 600;
@@ -180,7 +180,7 @@
   gap: 16px;
   padding: 20px;
   border: 1px solid var(--ag-line);
-  border-radius: 22px;
+  border-radius: var(--r-2xl);
   background: var(--ag-surface);
 }
 .ag-ws-panel > section {
@@ -197,7 +197,7 @@
 }
 .ag-ws .browser-section-heading h2 {
   font-size: 20px;
-  font-weight: 650;
+  font-weight: 600;
 }
 .ag-ws .browser-policy {
   margin: 4px 0 0;
@@ -240,7 +240,7 @@
 .ag-ws-crumb button {
   padding: 6px 8px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: none;
   color: #cfdad2;
   font-size: 14px;
@@ -248,7 +248,7 @@
 }
 .ag-ws-crumbs button[aria-current="location"] {
   color: var(--ag-text);
-  font-weight: 650;
+  font-weight: 600;
 }
 .ag-ws-crumbs .ag-ws-up {
   margin-left: auto;
@@ -256,7 +256,7 @@
 .ag-ws-file-layout {
   overflow: hidden;
   border: 1px solid var(--ag-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
   background: #0b100d;
 }
 .ag-ws .ag-ws-file-list {
@@ -274,12 +274,12 @@
   flex: none;
   margin-left: auto;
   padding: 3px 10px;
-  border-radius: 99px;
+  border-radius: var(--r-pill);
   background: #ffffff0d;
   color: var(--ag-muted);
   font-size: 12.5px;
   font-style: normal;
-  font-weight: 550;
+  font-weight: 600;
 }
 .ag-ws .ag-ws-file-list button:hover .ag-ws-verb {
   background: color-mix(in srgb, var(--lime) 16%, transparent);
@@ -289,7 +289,7 @@
   min-height: 36px;
   margin-right: 6px;
   padding: 0 12px;
-  border-radius: 10px;
+  border-radius: var(--r-md);
   background: #ffffff0d;
   font-size: 13px;
   white-space: nowrap;
@@ -301,7 +301,7 @@
 .ag-ws .browser-output {
   min-height: 200px;
   margin: 12px 0 8px;
-  border-radius: 14px;
+  border-radius: var(--r-lg);
 }
 
 /* ---- Terminal ---------------------------------------------------------- */
@@ -310,7 +310,7 @@
 }
 .ag-ws .browser-command-terminal {
   border-color: var(--ag-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
 }
 .ag-ws .browser-command-transcript {
   font-size: 13.5px;
@@ -337,7 +337,7 @@
   min-height: 30px;
   padding: 0 10px;
   border: 1px solid #ffffff14;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   background: #ffffff08;
   color: #dce8df;
   cursor: pointer;
@@ -366,7 +366,7 @@
 }
 .ag-ws .browser-app-surface {
   border-color: var(--ag-line);
-  border-radius: 16px;
+  border-radius: var(--r-lg);
 }
 
 @media (max-width: 640px) {
@@ -401,7 +401,7 @@
   }
   .ag-ws-panel {
     padding: 14px;
-    border-radius: 18px;
+    border-radius: var(--r-xl);
   }
   .ag-ws .ag-ws-tabs > button {
     font-size: 14.5px;

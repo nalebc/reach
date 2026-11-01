@@ -7,12 +7,12 @@
   min-height: 30px;
   padding: 4px 11px 4px 9px;
   border: 1px solid #b5e9dc26;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: #0d171dcc;
   color: var(--muted, #93a096);
   font: inherit;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 600;
   line-height: 16px;
   cursor: pointer;
 }
@@ -59,7 +59,7 @@
 }
 .paused-cover strong {
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.2px;
 }
 .paused-cover small {
