@@ -55,6 +55,7 @@ export type NotificationItem = {
     threadId?: string;
     needs?: string;
     prompt?: string;
+    workflow?: string;
   };
 };
 const Notifications = createContext<{
@@ -135,6 +136,7 @@ export function NotificationBell({ compact = false }: { compact?: boolean }) {
   );
 }
 const reviewLabel = (item: NotificationItem) =>
+  item.source === "outcome" ? "Review outcome" :
   item.target.page === "apps"
     ? "Open app"
     : item.target.page === "screen"

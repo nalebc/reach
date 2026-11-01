@@ -115,7 +115,7 @@ import {
 import { AgentApps } from "./agent-apps.mjs";
 import { AgentInputHelper } from "./agent-input.mjs";
 import { createPush } from "./push.mjs";
-import { createNotifications, readAttention } from "./notifications.mjs";
+import { createNotifications, readAttention, createOutcomeJournal, isOutcomeTask } from "./notifications.mjs";
 import { createOpenClawWatch } from "./openclaw-watch.mjs";
 import { createNotificationActions, notificationPush, admissionNotification, pushLine, chatEventTitle } from "./notification-items.mjs";
 import { idleSeconds } from "./agent-sessions/claude-import.mjs";
@@ -763,7 +763,10 @@ export async function createReach(overrides = {}) {
   const doneWatch = createDoneWatch({
     list: () => agentSessions.list(),
     notify,
-    watching: (agent, id) => Date.now() - (chatOpenAt.get(`${agent}:${id}`) || 0) < 15000,
+    watching: (agent, id) => {
+      return isOutcomeTask(workflows.list(), agent, id) ||
+        Date.now() - (chatOpenAt.get(`${agent}:${id}`) || 0) < 15000;
+    },
     // The last thing the agent said (the list's preview can be your prompt).
     reply: async (agent, id) => {
       const read = agentSessions.read(agent, id, { limit: 30 });
@@ -798,7 +801,7 @@ export async function createReach(overrides = {}) {
       ]),
     onEnded: ({ session: s, outcome }) => {
       journal.add(turnEvent({ session: s, outcome }));
-      if (outcome.kind !== "error" || !usageLimited(s.agent, outcome.item)) return;
+      if (isOutcomeTask(workflows.list(), s.agent, s.id) || outcome.kind !== "error" || !usageLimited(s.agent, outcome.item)) return;
       const app = agentName(s.agent);
       return notify({
         category: "done",
@@ -891,6 +894,7 @@ export async function createReach(overrides = {}) {
     overrides.workflows ||
     createWorkflows({
       sessions: agentSessions,
+      outcomeRunner: overrides.outcomeRunner || null,
       openClaw,
       relays,
       availableAgents: async () => {
@@ -903,9 +907,11 @@ export async function createReach(overrides = {}) {
       file: process.env.NODE_TEST_CONTEXT && !overrides.workflowFile ? null : overrides.workflowFile || path.join(config.dataDir, "agent-workflows.json"),
       authorized: (owner) =>
         paused ? "Reach is paused." : ownDevices().includes(owner) ? "" : "The phone that ran this workflow no longer has access.",
+      ownerAuthorized: (owner) => ownDevices().includes(owner) ? "" : "Owner access ended.",
       folder: (cwd) => sessionFolder(cwd),
       modes: async (agent) => ((await agentSessions.models(agent))?.modes || []).map((m) => m.id),
       notify: ({ workflow, title, body }) => {
+        if (workflow.outcome) return;
         const task = workflow.tasks.find((t) => t.state === "stopped" || t.state === "uncertain") || workflow.tasks.findLast((t) => t.chat);
         // The phone is told first; noting it for the away report can't stop that.
         const sent = notify({
@@ -933,7 +939,9 @@ export async function createReach(overrides = {}) {
       },
     });
   agentSessions.onListChange?.(() => void workflows.sync());
+  const recordOutcomeChanges = createOutcomeJournal({ list: () => workflows.list(), journal });
   workflows.onChange?.(() => {
+    recordOutcomeChanges();
     for (const nudge of presenceNudges) nudge();
   });
   // Tag in: agents use apps on their own hidden displays and hand them to
@@ -4066,6 +4074,7 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/workflows", (req, res) => {
     macOwner(req);
     const body = req.body || {};
+    if (body.outcome !== undefined || body.outcomeRef !== undefined) throw fail(400, "Create the workflow draft, then save its outcome contract through the outcome endpoint.");
     res.json(workflows.create({ owner: req.client.id, title: body.title, cwd: body.cwd, tasks: Array.isArray(body.tasks) ? body.tasks : [] }));
   });
   app.post("/api/sessions/workflows/plan", async (req, res) => {
@@ -4088,10 +4097,71 @@ export async function createReach(overrides = {}) {
     record("session", `Asked ${agentLabel(String(body.agent || ""))} to plan a workflow`);
     res.json(result);
   });
+  // Outcome drafts and immutable original-turn evidence use the same private,
+  // owner-device-only sessions authorization. No agent can submit a receipt
+  // or verdict here, and these endpoints never execute an extracted command.
+  const outcomeOwner = req => {
+    macOwner(req);
+    if (!ownDevices().includes(req.client.id)) throw fail(401, "Owner access ended.");
+  };
+  app.get("/api/sessions/workflows/outcome-capabilities", (req, res) => {
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(workflows.outcomeCapabilities());
+  });
   app.get("/api/sessions/workflows/:id", (req, res) => versioned(req, res, workflows.get(req.params.id)));
+  app.get("/api/sessions/workflows/:id/outcome", (req, res) => {
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(workflows.getOutcome(req.params.id));
+  });
+  app.post("/api/sessions/workflows/:id/outcome", (req, res) => {
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(workflows.putOutcome(req.params.id, req.body, req.client.id));
+  });
+  app.get("/api/sessions/workflows/:id/outcome/operations/:requestId", (req, res) => {
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(workflows.outcomeOperation(req.params.id, req.params.requestId));
+  });
+  app.post("/api/sessions/workflows/:id/outcome/prepare", async (req, res) => {
+    outcomeOwner(req);
+    notPaused();
+    const result = await workflows.prepareOutcome(req.params.id, req.body, req.client.id);
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(result);
+  });
+  app.post("/api/sessions/workflows/:id/outcome/run", (req, res) => {
+    outcomeOwner(req);
+    notPaused();
+    res.set("Cache-Control", "no-store").json(workflows.runOutcome(req.params.id, req.body, req.client.id));
+  });
+  app.post("/api/sessions/workflows/:id/outcome/accept", async (req, res) => {
+    outcomeOwner(req);
+    const result = await workflows.acceptOutcome(req.params.id, req.body, req.client.id);
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(result);
+  });
+  app.post("/api/sessions/workflows/:id/outcome/request-changes", (req, res) => {
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(workflows.requestOutcomeChanges(req.params.id, req.body, req.client.id));
+  });
+  app.post("/api/sessions/workflows/:id/outcome/cancel", async (req, res) => {
+    outcomeOwner(req);
+    const result = await workflows.cancelOutcome(req.params.id, req.body, req.client.id);
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(result);
+  });
+  app.post("/api/sessions/workflows/:id/outcome/observations", (req, res) => {
+    outcomeOwner(req);
+    res.set("Cache-Control", "no-store").json(workflows.observeOutcome(req.params.id, req.body, req.client.id));
+  });
+  app.get("/api/sessions/workflows/:id/tasks/:task/result", (req, res) => {
+    outcomeOwner(req);
+    const attempt = req.query.attempt === undefined ? undefined : /^\d+$/.test(String(req.query.attempt)) ? Number(req.query.attempt) : NaN;
+    res.set("Cache-Control", "no-store").json(workflows.taskResult(req.params.id, req.params.task, { attempt }));
+  });
   app.post("/api/sessions/workflows/:id", (req, res) => {
     macOwner(req);
     const body = req.body || {};
+    if (body.outcome !== undefined || body.outcomeRef !== undefined) throw fail(400, "Save the outcome contract through this workflow's outcome endpoint.");
     res.json(workflows.update(req.params.id, { title: body.title, cwd: body.cwd, tasks: body.tasks }));
   });
   app.post("/api/sessions/workflows/:id/run", async (req, res) => {
@@ -4109,7 +4179,7 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/sessions/workflows/:id/stop", async (req, res) => {
     macOwner(req);
-    res.json(await workflows.stop(req.params.id));
+    res.json(await workflows.stop(req.params.id, req.client.id));
   });
   app.post("/api/sessions/workflows/:id/proposal", (req, res) => {
     macOwner(req);
@@ -4996,6 +5066,7 @@ export async function createReach(overrides = {}) {
   if (!process.env.NODE_TEST_CONTEXT) reachUpdates.watch();
   const readNotificationState = () => readAttention({
     agentSessions, openClaw,
+    workflows: () => workflows.list(),
     background: () => openClawWatch.items(),
     handoffs: () => agentApps.pending(),
     browserRequests: () => browserApprovals.listOwner(),

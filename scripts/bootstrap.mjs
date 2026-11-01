@@ -365,6 +365,11 @@ async function update() {
   // Windows: the version you confirmed on the phone, handed to this window by
   // the Reach it updates (server/reach-updates.mjs). Asked nothing more.
   const confirmed = process.platform === "win32" ? await confirmedUpdate() : null;
+  if (install.source) {
+    const { sourceUpdateGuidance } = await import("../server/reach-updates.mjs");
+    console.log(await sourceUpdateGuidance(root, { command, version: install.version }));
+    return;
+  }
   if (install.reason === "portable") return console.log(install.manual);
   let found;
   if (confirmed) {

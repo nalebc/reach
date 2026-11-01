@@ -43,6 +43,7 @@ import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
 import ChatAppPager from "./ChatAppPager";
 import ChatHub from "./ChatHub";
+import { OutcomeEntry, outcomeNeeds, outcomeForChat, workflowActive } from "./outcome-navigation";
 import type { FleetConnections } from "./useFleetConnections";
 import { relayAgents } from "./Relays";
 import { TeamPicker } from "./Teams";
@@ -150,8 +151,8 @@ export function NewChat({
   logos?: AgentLogos;
   onAgent?: (agent: AgentName) => void;
   // A workflow planned from here (Workflows.tsx), and opening on that choice.
-  onWorkflow?: (workflow: Workflow) => void;
-  startAs?: "" | "workflow";
+  onWorkflow?: (workflow: Workflow, outcome?: boolean) => void;
+  startAs?: "" | "workflow" | "outcome";
   // Whether this computer can run a team (no team bridge on Windows yet).
   teams?: boolean;
 }) {
@@ -197,8 +198,9 @@ export function NewChat({
   const team = teamMode && canTeam;
   // A workflow (docs/WORKFLOWS.md): this agent plans it, reading only.
   const canFlow = (agent === "codex" || agent === "claude") && !!onWorkflow;
-  const [flowMode, setFlowMode] = useState(startAs === "workflow");
+  const [flowMode, setFlowMode] = useState(startAs === "workflow" || startAs === "outcome");
   const flow = flowMode && canFlow && !team;
+  const outcomeMode = flow && startAs === "outcome";
   const [busy, setBusy] = useState(false);
   // Taps in the same instant come before `busy` re-renders: one chat.
   const startingNow = useRef(false);
@@ -351,7 +353,7 @@ export function NewChat({
     } catch {}
   };
   const start = async () => {
-    if (!ready || startingNow.current) return;
+    if (!ready || startingNow.current || outcomeMode) return;
     startingNow.current = true;
     setBusy(true);
     setProblem("");
@@ -445,7 +447,7 @@ export function NewChat({
       className={`chat-new ${agent}`}
       aria-label={`New ${agentLabel(agent)} chat`}
     >
-      {flow && <WorkflowIntro peer={peer} agent={agent} cwd={cwd} title={text} disabled={busy} onCreated={(w) => onWorkflow?.(w)} />}
+      {flow && <WorkflowIntro peer={peer} agent={agent} cwd={cwd} title={text} disabled={busy} outcomeOnly={outcomeMode} onCreated={(w, outcome) => onWorkflow?.(w, outcome)} />}
       {team && (
         <TeamPicker
           lead={agent}
@@ -636,9 +638,9 @@ export function NewChat({
             rows={3}
             value={text}
             placeholder={
-              flow ? "Describe the work to plan" : team ? "What should the team do?" : "What would you like to work on?"
+              outcomeMode ? "Describe the result to build" : flow ? "Describe the work to plan" : team ? "What should the team do?" : "What would you like to work on?"
             }
-            aria-label={flow ? `Workflow planned by ${agentLabel(agent)}` : team ? `New team led by ${agentLabel(agent)}` : `New ${agentLabel(agent)} chat`}
+            aria-label={outcomeMode ? "Outcome to build" : flow ? `Workflow planned by ${agentLabel(agent)}` : team ? `New team led by ${agentLabel(agent)}` : `New ${agentLabel(agent)} chat`}
             disabled={busy}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
@@ -718,17 +720,17 @@ export function NewChat({
           {(team || flow) && (
             <button
               className="chat-new-kind"
-              aria-label={`${team ? "Team" : "Workflow"} on. Tap for one chat.`}
+              aria-label={`${team ? "Team" : outcomeMode ? "Outcome" : "Workflow"} on. Tap for one chat.`}
               disabled={busy}
               onClick={() => (setTeamMode(false), setFlowMode(false))}
             >
               {team ? <Users size={15} /> : <WorkflowIcon size={15} />}
-              <span>{team ? "Team" : "Workflow"}</span>
+              <span>{team ? "Team" : outcomeMode ? "Outcome" : "Workflow"}</span>
               <X size={13} />
             </button>
           )}
           <span className="as-spacer" />
-          <button
+          {!outcomeMode && <button
             className={`as-send ${ready ? "ready" : ""}`}
             aria-label={flow ? "Plan workflow" : team ? "Start team" : "Start"}
             disabled={!ready}
@@ -739,7 +741,7 @@ export function NewChat({
             ) : (
               <ArrowUp size={21} />
             )}
-          </button>
+          </button>}
         </div>
       </div>
     </section>
@@ -1062,8 +1064,12 @@ export default function EverythingChat({
   feed: shared,
   target,
   onTargetOpened,
+  workflowTarget,
+  onWorkflowTargetOpened,
   showOnScreen,
   onScreen,
+  onApps,
+  onFiles,
   computers,
   connections,
   onOpenOn,
@@ -1073,8 +1079,12 @@ export default function EverythingChat({
   feed?: AgentFeed;
   target?: Target | null;
   onTargetOpened?: () => void;
+  workflowTarget?: string | null;
+  onWorkflowTargetOpened?: () => void;
   showOnScreen?: (prompt: MacPrompt) => void;
   onScreen?: () => void;
+  onApps?: () => void;
+  onFiles?: () => void;
   // The All page covers every paired computer (ChatHub.tsx); a chat on
   // another one opens there.
   computers?: Peer[];
@@ -1097,7 +1107,7 @@ export default function EverythingChat({
   const teams = (shared || own).teams || [];
   const workflows = (shared || own).workflows || [];
   const flowEntry = {
-    active: workflows.filter((w) => w.state === "running" || w.state === "paused").length,
+    active: workflows.filter(workflowActive).length,
     paused: workflows.filter((w) => w.state === "paused").length,
     onOpen: () => setFlowsOpen(true),
     // A folder's chats keep each workflow's together, a tap to it (ChatList.tsx).
@@ -1166,8 +1176,16 @@ export default function EverythingChat({
   // Workflows (Workflows.tsx): their page, one workflow's page (back to the
   // list when opened from it), and New chat opening on Workflow.
   const [flowsOpen, setFlowsOpen] = useState(false);
-  const [flow, setFlow] = useState<{ id: string; first: Workflow | null; back?: boolean } | null>(null);
-  const [newKind, setNewKind] = useState<"" | "workflow">("");
+  const [flow, setFlow] = useState<{ id: string; first: Workflow | null; back?: boolean; addOutcome?: boolean; openedAt?: number } | null>(null);
+  const showWorkflow = (id: string) => { setFlowsOpen(false); setSheet(""); setFlow({ id, first: null, openedAt: Date.now() }); };
+  useEffect(() => {
+    if (!workflowTarget) return;
+    setOpen(null); setClawOpen(null); setSheet(""); setFlow(null);
+    if (workflowTarget === "all") setFlowsOpen(true);
+    else showWorkflow(workflowTarget);
+    onWorkflowTargetOpened?.();
+  }, [workflowTarget]);
+  const [newKind, setNewKind] = useState<"" | "workflow" | "outcome">("");
   // Closed (a chat started, another sheet): the next New chat starts as usual.
   useEffect(() => {
     if (sheet !== "new") (setNewKind(""), setNewPick(null));
@@ -1233,9 +1251,9 @@ export default function EverythingChat({
   });
   // The chat open now, so a reload comes back to it (src/deep-link.ts).
   useEffect(() => {
-    rememberPlace(peer.id, { chat: open ? { agent: open.agent, id: open.id } : null });
-  }, [peer.id, open?.agent, open?.id]);
-  const allNeeds = agentNeeds({
+    rememberPlace(peer.id, { chat: open ? { agent: open.agent, id: open.id } : null, workflow: flow?.id || (flowsOpen ? "all" : null) });
+  }, [peer.id, open?.agent, open?.id, flow?.id, flowsOpen]);
+  const allNeeds = [...outcomeNeeds(workflows, showWorkflow), ...agentNeeds({
     peer,
     sessions: (sessions || []).filter((s) => !s.archived),
     macPrompts,
@@ -1243,7 +1261,7 @@ export default function EverythingChat({
     open: openChat,
     answered: reload,
     showOnScreen,
-  }).map((item) => {
+  })].map((item) => {
     const session = (sessions || []).find((s) =>
       item.key.startsWith(s.agent + ":" + s.id + ":"),
     );
@@ -1267,6 +1285,7 @@ export default function EverythingChat({
   });
   const needs = allNeeds.filter(
     (item) =>
+      item.key.startsWith("outcome:") ||
       picked.agent === "all" ||
       item.key.startsWith(picked.agent + ":") ||
       (picked.supported && item.key.startsWith("mac:")),
@@ -1304,6 +1323,7 @@ export default function EverythingChat({
           archived: false,
         } as AgentSession),
     );
+  const chatOutcome = open ? outcomeForChat(workflows, open) : undefined;
   const library = (app: ChatAppChoice, active: boolean) => {
     if (app.agent === "all")
       return (
@@ -1398,6 +1418,7 @@ export default function EverythingChat({
           <RunCommandContext.Provider
             value={runCommand ? (command) => runCommand(open.cwd || "", command) : null}
           >
+          {chatOutcome?.outcome && <button className="chat-needs-row" onClick={() => showWorkflow(chatOutcome.id)}><WorkflowIcon size={16} /> Back to outcome · {chatOutcome.title}</button>}
           <AgentSessionView
             key={peer.id + ":" + open.agent + ":" + open.id}
             peer={peer}
@@ -1431,9 +1452,12 @@ export default function EverythingChat({
           </RunCommandContext.Provider>
         </SessionLinkContext.Provider>
       ) : (
+        <>
+        {picked.agent !== "all" && <OutcomeEntry list={workflows} onAll={() => setFlowsOpen(true)} onOpen={showWorkflow} />}
         <ChatAppPager key={peer.id} apps={apps} value={picked.agent} onChange={setAgent} hidden={!!sheet}>
           {library}
         </ChatAppPager>
+        </>
       )}
       {sheet === "new" && (
         <ChatSheet
@@ -1506,10 +1530,10 @@ export default function EverythingChat({
                   onAgent={pickNew}
                   startAs={newKind}
                   teams={(shared || own).teamsReady !== false}
-                  onWorkflow={(w) => {
+                  onWorkflow={(w, addOutcome) => {
                     setSheet("");
                     setNewKind("");
-                    setFlow({ id: w.id, first: w });
+                    setFlow({ id: w.id, first: w, addOutcome });
                   }}
                 />
               )}
@@ -1519,6 +1543,7 @@ export default function EverythingChat({
       )}
       {flowsOpen && (
         <WorkflowsPage
+          peer={peer}
           workflows={workflows}
           logos={logos}
           onOpen={(w) => {
@@ -1537,15 +1562,28 @@ export default function EverythingChat({
             setNewKind("");
             setSheet("new");
           }}
+          onNewOutcome={() => {
+            setFlowsOpen(false);
+            setNewFolder("");
+            setNewKind("outcome");
+            pickNew(relayAgents(health, { openclaw: false })[0] as AgentName || "codex");
+            setSheet("new");
+          }}
           onClose={() => setFlowsOpen(false)}
         />
       )}
       {flow && (
         <WorkflowSheet
+          key={flow.id}
           peer={peer}
+          onScreen={onScreen}
+          onApps={onApps}
+          onFiles={onFiles}
           id={flow.id}
           initial={flow.first}
-          stamp={workflows.find((w) => w.id === flow.id)?.updatedAt}
+          addOutcome={flow.addOutcome}
+          onWorkflowChanged={w => setFlow({ id: w.id, first: w, back: flow.back })}
+          stamp={Math.max(flow.openedAt || 0, workflows.find((w) => w.id === flow.id)?.updatedAt || 0, workflows.find((w) => w.id === flow.id)?.outcome?.version || 0)}
           logos={logos}
           agents={relayAgents(health)}
           onOpenChat={(chat) => {

@@ -55,6 +55,13 @@ export const suites = {
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
     "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
+    // Outcome foundation: shared provenance, private persistence and owner APIs.
+    "result-evidence", "outcomes", "outcomes-routes", "workflow-result-evidence", "outcome-coordinator", "workflow-outcome-ui", "workflow-outcome-browser", "outcome-navigation-ui", "outcome-open-app-ui", "outcome-notifications", "workflows", "workflows-openclaw", "relays",
+    // Synthetic app bytes/check subprocesses through workflow, owner HTTP and
+    // real-browser decisions. Provider turns and isolation remain simulated.
+    "workflow-app-repair", "outcome-app-repair-routes", "outcome-app-repair-browser", "outcome-scheduling",
+    // Ordinary workflow progress and retained run results on phone layouts.
+    "workflow-run-ui", "workflow-run-browser",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
     "owner-connections", "owner-connection-ui", "owner-connection-cors", "owner-connection-layout-chrome", "owner-offline-start-chrome",
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",

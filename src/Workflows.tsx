@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Eye, Hammer, ListChecks, LoaderCircle, Pause, Plus, RotateCcw, Search, SkipForward, Trash, Workflow as WorkflowIcon, Wrench } from "lucide-react";
 import { post, request, type Peer } from "./api";
 import ChatSheet from "./ChatSheet";
+import WorkflowOutcome from "./WorkflowOutcome";
+import { WorkflowRunSummary, WorkflowTaskResult } from "./WorkflowRunSummary";
+import { outcomeState, workflowActive } from "./outcome-navigation";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, listModels, projectName, type AgentModel, type AgentName } from "./agent-sessions";
 import "./workflows.css";
@@ -27,6 +30,7 @@ export type WorkflowTask = {
   // What to do (a workflow read in full; the chat list's copy leaves it out).
   task?: string;
   state: WorkflowTaskState;
+  selection?: "conditional" | "selected" | "not_selected";
   chat?: ChatRef;
   // Its earlier chats, each try's (newest last).
   tries?: ChatRef[];
@@ -34,6 +38,11 @@ export type WorkflowTask = {
   // What it finished with, in brief, and the files it changed.
   summary?: string;
   files?: string[];
+  attempt?: number;
+  resultAvailable?: boolean;
+  resultAttempts?: number[];
+  omittedResultAttempts?: number;
+  resultEvidence?: { version: number; digest: string; frozen: boolean; historyIncomplete: boolean; truncated: boolean };
   startedAt?: number;
   updatedAt?: number;
 };
@@ -50,11 +59,25 @@ export type Workflow = {
   // The planner's newer plan, when you'd edited since its last one.
   proposal?: { title: string; tasks: TaskDraft[] };
   tasks: WorkflowTask[];
+  outcome?: { phase: string; version?: number; removable?: boolean; waitingForVerification?: boolean; acceptance: { status: string; eligible: boolean } };
 };
 // A task as the editor holds it (with its id once the Mac has it).
 export type TaskDraft = { id?: string; key?: string; title: string; agent: string; kind: "build" | "review"; task: string; together: boolean; model?: string; effort?: string };
 
 const BASE = "/api/sessions/workflows";
+export type OutcomeCapabilities = { executionAvailable: boolean; reason: string };
+export function useOutcomeCapabilities(peer: Peer) {
+  const [capabilities, setCapabilities] = useState<OutcomeCapabilities>({ executionAvailable: false, reason: "Checking outcome availability…" });
+  useEffect(() => {
+    let active = true;
+    setCapabilities({ executionAvailable: false, reason: "Checking outcome availability…" });
+    void request<OutcomeCapabilities>(peer, `${BASE}/outcome-capabilities`).then(value => {
+      if (active) setCapabilities(value.executionAvailable === true ? value : { executionAvailable: false, reason: value.reason || "Outcome execution is unavailable on this computer." });
+    }, () => { if (active) setCapabilities({ executionAvailable: false, reason: "Outcome availability could not be verified. Reopen this view to try again." }); });
+    return () => { active = false; };
+  }, [peer.url, peer.token]);
+  return capabilities;
+}
 const at = (id: string, rest = "") => `${BASE}/${encodeURIComponent(id)}${rest}`;
 // "key" only keeps a new row's identity on this screen; the Mac never sees it.
 const bare = (tasks?: TaskDraft[]) => tasks?.map(({ key: _key, ...rest }) => rest);
@@ -87,6 +110,7 @@ function stepsOf<T extends { together: boolean }>(tasks: T[]) {
 
 // Where a workflow stands, in a few words.
 export function workflowLine(w: Workflow) {
+  if (w.outcome) return outcomeState(w);
   const n = w.tasks.length;
   const done = w.tasks.filter((t) => finished(t.state)).length;
   if (w.state === "draft") return w.planner?.working && !n ? "Planning…" : plural(n, "task");
@@ -124,6 +148,7 @@ function taskValue(t: { kind: string; state?: WorkflowTaskState }) {
 function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | null) {
   const [workflow, setWorkflow] = useState<Workflow | null>(first && first.id === id ? first : null);
   const [failure, setFailure] = useState("");
+  const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const version = useRef("");
   const seq = useRef(0);
   const load = useRef(async () => {});
@@ -137,6 +162,7 @@ function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | 
       );
       if (mine !== seq.current) return;
       setFailure("");
+      setCheckedAt(Date.now());
       if ("unchanged" in r) return;
       version.current = r.version;
       setWorkflow(r);
@@ -146,6 +172,9 @@ function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | 
   };
   useEffect(() => {
     version.current = "";
+    setCheckedAt(null);
+    setFailure("");
+    setWorkflow(first && first.id === id ? first : null);
     void load.current();
     const timer = setInterval(() => void load.current(), 4000);
     const shown = () => void load.current();
@@ -164,7 +193,7 @@ function useWorkflow(peer: Peer, id: string, stamp?: number, first?: Workflow | 
     version.current = "";
     setWorkflow(w);
   };
-  return { workflow, failure, take };
+  return { workflow, failure, checkedAt, take, refresh: () => { version.current = ""; void load.current(); } };
 }
 
 const toDraft = ({ id, title, agent, kind, task, together, model, effort }: WorkflowTask): TaskDraft => ({
@@ -249,7 +278,7 @@ function Row({
 }) {
   const s = task.state;
   return (
-    <div className={`wf-item ${s || "draft"} ${open ? "open" : ""}`}>
+    <div className={`wf-item ${s || "draft"} ${open ? "open" : ""}`} data-workflow-task={n}>
       {open && title ? (
         <div className="wf-item-main">
           <AgentLogo agent={task.agent} logos={logos} size={24} />
@@ -624,9 +653,16 @@ export function WorkflowSheet({
   logos,
   agents = ["codex", "claude"],
   onOpenChat,
+  onScreen,
+  onApps,
+  onFiles,
   onClose,
+  addOutcome = false,
+  onWorkflowChanged,
 }: {
   peer: Peer;
+  addOutcome?: boolean;
+  onWorkflowChanged?: (w: Workflow) => void;
   id: string;
   initial?: Workflow | null;
   // Its line in the chat list's copy changed: read it again.
@@ -635,14 +671,19 @@ export function WorkflowSheet({
   // The agents that can take tasks here now.
   agents?: string[];
   onOpenChat: (chat: ChatRef) => void;
+  onScreen?: () => void;
+  onApps?: () => void;
+  onFiles?: () => void;
   onClose: () => void;
 }) {
   const [id, setId] = useState(first);
-  const { workflow, failure, take } = useWorkflow(peer, id, stamp, initial);
+  const { workflow, failure, checkedAt, take, refresh } = useWorkflow(peer, id, stamp, initial);
   const [busy, setBusy] = useState("");
   const [problem, setProblem] = useState("");
   const [asking, setAsking] = useState<"" | "stop" | "remove">("");
   const [editing, setEditing] = useState(false);
+  const [creatingOutcome, setCreatingOutcome] = useState(addOutcome);
+  const outcomeCapabilities = useOutcomeCapabilities(peer);
   const [open, setOpen] = useState<number | null>(null);
   const act = async (name: string, run: () => Promise<{ workflow?: Workflow }>) => {
     setBusy(name);
@@ -662,7 +703,7 @@ export function WorkflowSheet({
     return (
       <ChatSheet title="Workflow" className="workflow-sheet" onClose={onClose}>
         {failure ? (
-          <p className="wf-problem">{failure}</p>
+          <><p className="wf-problem">{failure}</p><button className="wf-pill" onClick={refresh}>Refresh workflow</button></>
         ) : (
           <p className="wf-meta" role="status">
             <LoaderCircle size={14} className="spin" /> Loading…
@@ -675,8 +716,15 @@ export function WorkflowSheet({
   const live = w.state === "running" || w.state === "paused";
   const stuck = w.tasks.some((t) => troubled(t.state));
   const planner = w.planner;
-  // The row open as it runs: the one you opened, else a stopped one.
-  const shown = open ?? w.tasks.findIndex((t) => troubled(t.state));
+  // Keep an owner's selection. Otherwise lead with the task that needs them,
+  // the work in progress, or the final retained report of a completed run.
+  const trouble = w.tasks.findIndex(t => troubled(t.state));
+  const working = w.tasks.findIndex(t => atWork(t.state));
+  const shown = open ?? (trouble >= 0 ? trouble : w.outcome ? -1 : working >= 0 ? working : w.tasks.reduce((last, t, i) => t.state === "done" ? i : last, -1));
+  const selectTask = (index: number) => {
+    setOpen(index);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`.workflow-sheet [data-workflow-task="${index + 1}"]`)?.scrollIntoView?.({ behavior: "smooth", block: "nearest" }));
+  };
   const confirm = (question: string, yes: string, run: () => void) => (
     <div className="wf-confirm" role="group" aria-label={question}>
       <span>{question}</span>
@@ -705,7 +753,18 @@ export function WorkflowSheet({
         <span aria-hidden="true">·</span>
         <span>{workflowLine(w)}</span>
       </p>
+      {!draft && <>
+        <WorkflowRunSummary workflow={w} onSelect={selectTask} />
+        <div className="wf-run-refresh">
+          <span>{failure ? "Progress updates unavailable. Showing the last loaded state." : `Updates every few seconds while open${checkedAt ? ` · checked ${new Date(checkedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}` : ""}`}</span>
+          <button className="wf-text-btn" onClick={refresh}>Refresh workflow</button>
+        </div>
+      </>}
+      {failure && <p className="wf-problem" role="status">{failure}</p>}
       {draft && <p className="wf-plan-intro">Review, then run. Each step uses the previous results.</p>}
+      {(w.outcome || creatingOutcome) && <WorkflowOutcome key={w.id} peer={peer} workflow={w} creating={creatingOutcome} refresh={stamp}
+        onCancel={() => setCreatingOutcome(false)} onOpenChat={onOpenChat} onScreen={onScreen} onApps={onApps} onFiles={onFiles}
+        onChanged={next => { setCreatingOutcome(false); if (next.id !== w.id) { setId(next.id); onWorkflowChanged?.(next); } take(next); }} />}
       {draft && planner && (
         <div className="wf-group wf-planner">
           <div className="wf-item-main">
@@ -758,7 +817,7 @@ export function WorkflowSheet({
             ))}
           </div>
         </section>
-      ) : draft || (live && editing) ? (
+      ) : !w.outcome && !creatingOutcome && (draft || (live && editing)) ? (
         <Editor key={w.id} peer={peer} workflow={w} agents={agents} logos={logos} onSaved={take}>
           {(flush, saving, rename) =>
             draft ? (
@@ -766,13 +825,16 @@ export function WorkflowSheet({
                 <p className="wf-save-note" role="status">{saving ? "Saving changes…" : "Changes save automatically"}</p>
                 <button
                   className="wf-primary"
-                  disabled={!!busy || saving || !w.tasks.length}
+                  disabled={!!busy || saving || creatingOutcome || !w.tasks.length}
                   onClick={async () => {
                     if (await flush()) await act("run", () => workflowAction(peer, w.id, "run"));
                   }}
                 >
                   {busy === "run" && <LoaderCircle size={16} className="spin" />} Run workflow
                 </button>
+                <button className="wf-pill" disabled={!!busy || saving || creatingOutcome || !outcomeCapabilities.executionAvailable || w.tasks.length !== 1 || w.tasks[0]?.kind !== 'build' || !['codex', 'claude'].includes(w.tasks[0]?.agent)}
+                  onClick={async () => { if (await flush()) setCreatingOutcome(true); }}>Add outcome goal</button>
+                <p className="wf-save-note">{outcomeCapabilities.executionAvailable ? "Optional outcomes use one local builder, pinned checks and a separate reviewer." : outcomeCapabilities.reason}</p>
                 {problem && <p className="wf-problem">{problem}</p>}
                 <div className="wf-quiet-row">
                   <button className="wf-text-btn" onClick={rename}>
@@ -799,15 +861,16 @@ export function WorkflowSheet({
           tasks={w.tasks}
           row={(t, i) => (
             <Row key={t.id} n={i + 1} task={t} logos={logos} open={shown === i} onToggle={() => setOpen(shown === i ? -1 : i)}>
-              {t.summary && <p className="wf-summary">{t.summary}</p>}
+              {!w.outcome ? <WorkflowTaskResult key={`${w.id}:${t.id}:${t.attempt || 0}`} peer={peer} workflowId={w.id} task={t} /> : t.summary && <p className="wf-summary">{t.summary}</p>}
               {t.problem && <p className="wf-problem">{t.problem}</p>}
+              {t.selection === "not_selected" && <p className="wf-meta">Not selected</p>}
               <div className="wf-chips">
                 {t.chat && (
                   <button className="wf-chip" onClick={() => onOpenChat(t.chat!)}>
                     Open chat
                   </button>
                 )}
-                {live && troubled(t.state) && (
+                {!w.outcome && live && troubled(t.state) && (
                   <>
                     <button className="wf-chip" disabled={!!busy} onClick={() => void act("retry", () => taskAction(peer, w.id, t.id, "retry"))}>
                       <RotateCcw size={13} /> Retry
@@ -833,7 +896,7 @@ export function WorkflowSheet({
         />
       )}
       {!draft && problem && <p className="wf-problem">{problem}</p>}
-      {live &&
+      {!w.outcome && live &&
         !editing &&
         (asking === "stop" ? (
           confirm("Stop all tasks?", "Stop", () => void act("stop", () => workflowAction(peer, w.id, "stop")).then((r) => r && setAsking("")))
@@ -864,14 +927,16 @@ export function WorkflowSheet({
               if (r?.workflow) {
                 setOpen(null);
                 setId(r.workflow.id);
+                onWorkflowChanged?.(r.workflow);
               }
             }}
           >
             {busy === "again" ? <LoaderCircle size={16} className="spin" /> : <RotateCcw size={16} />} Run again
           </button>
-          <div className="wf-quiet-row">{remove()}</div>
+          {(!w.outcome || w.outcome.removable) && <div className="wf-quiet-row">{remove()}</div>}
         </>
       )}
+      {w.state === "paused" && w.outcome?.removable && <div className="wf-quiet-row">{remove()}</div>}
     </ChatSheet>
   );
 }
@@ -880,24 +945,29 @@ export function WorkflowSheet({
 // a row each (a word on the right) that opens its page, and a pill for a
 // new one. Opened from the Workflows icon at the top of Chat.
 export function WorkflowsPage({
+  peer,
   workflows,
   logos,
   onOpen,
   onNew,
+  onNewOutcome,
   onNewChat,
   onClose,
 }: {
+  peer: Peer;
   workflows: Workflow[];
   logos: AgentLogos;
   onOpen: (w: Workflow) => void;
   onNew: () => void;
+  onNewOutcome?: () => void;
   onNewChat?: () => void;
   onClose: () => void;
 }) {
+  const outcomeCapabilities = useOutcomeCapabilities(peer);
   const groups = {
-    active: workflows.filter((w) => w.state === "running" || w.state === "paused"),
-    draft: workflows.filter((w) => w.state === "draft"),
-    done: workflows.filter((w) => w.state === "done" || w.state === "stopped"),
+    active: workflows.filter(workflowActive),
+    draft: workflows.filter((w) => w.state === "draft" && !workflowActive(w)),
+    done: workflows.filter((w) => (w.state === "done" || w.state === "stopped") && !workflowActive(w)),
   };
   const [tab, setTab] = useState<keyof typeof groups>(() => (groups.active.length ? "active" : groups.draft.length ? "draft" : "done"));
   // Waiting on you first, then the newest.
@@ -907,7 +977,9 @@ export function WorkflowsPage({
       <div className="wf-create-actions">
         {onNewChat && <button className="wf-primary wf-new-chat" onClick={onNewChat}><Plus size={18} /> New chat</button>}
         <button className="wf-primary" onClick={onNew}><Plus size={18} /> New workflow</button>
+        <button className="wf-pill" disabled={!outcomeCapabilities.executionAvailable || !onNewOutcome} onClick={onNewOutcome}><Plus size={18} /> New outcome</button>
       </div>
+      {!outcomeCapabilities.executionAvailable && <p className="wf-meta" role="status">{outcomeCapabilities.reason}</p>}
       {workflows.length ? (
         <>
           <div className="wf-tabs" role="tablist" aria-label="Workflows to show">
@@ -922,7 +994,7 @@ export function WorkflowsPage({
               {shown.map((w) => {
                 const done = w.tasks.filter((t) => finished(t.state)).length;
                 const value =
-                  w.state === "running"
+                  w.outcome ? workflowLine(w) : w.state === "running"
                     ? `${done} of ${w.tasks.length}`
                     : w.state === "draft"
                       ? w.planner?.working
@@ -980,6 +1052,7 @@ export function WorkflowIntro({
   cwd,
   title,
   disabled,
+  outcomeOnly = false,
   onCreated,
 }: {
   peer: Peer;
@@ -988,15 +1061,18 @@ export function WorkflowIntro({
   // A name from what's written so far.
   title: string;
   disabled?: boolean;
-  onCreated: (w: Workflow) => void;
+  outcomeOnly?: boolean;
+  onCreated: (w: Workflow, outcome?: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
-  const write = async () => {
+  const outcomeCapabilities = useOutcomeCapabilities(peer);
+  const write = async (outcome = false) => {
+    if (outcome && (!outcomeCapabilities.executionAvailable || !["codex", "claude"].includes(agent))) return;
     setBusy(true);
     setProblem("");
     try {
-      onCreated((await createWorkflow(peer, { cwd, title: title.trim().split("\n")[0].slice(0, 80) })).workflow);
+      onCreated((await createWorkflow(peer, { cwd, title: title.trim().split("\n")[0].slice(0, 80), ...(outcome ? { tasks: [{ title: "Build result", agent, kind: "build", task: title.trim(), together: false }] } : {}) })).workflow, outcome);
     } catch (e) {
       setProblem((e as Error).message);
     } finally {
@@ -1005,10 +1081,12 @@ export function WorkflowIntro({
   };
   return (
     <div className="wf-intro">
-      <span>{agentLabel(agent)} drafts the tasks · you review first</span>
-      <button className="wf-text-btn" disabled={disabled || busy || !cwd} onClick={() => void write()}>
+      <span>{outcomeOnly ? `${agentLabel(agent)} builds the result · you define the criteria first` : `${agentLabel(agent)} drafts the tasks · you review first`}</span>
+      {!outcomeOnly && <button className="wf-text-btn" disabled={disabled || busy || !cwd} onClick={() => void write()}>
         {busy && <LoaderCircle size={13} className="spin" />} Write tasks myself
-      </button>
+      </button>}
+      <button className="wf-text-btn" disabled={disabled || busy || !cwd || !title.trim() || !outcomeCapabilities.executionAvailable || !["codex", "claude"].includes(agent)} onClick={() => void write(true)}>Create outcome draft</button>
+      <small role="status">{outcomeCapabilities.executionAvailable ? "One local builder; add the goal and success criteria before Run. Pinned checks must already be supplied by trusted runner setup." : outcomeCapabilities.reason}</small>
       {problem && <p className="wf-problem">{problem}</p>}
     </div>
   );

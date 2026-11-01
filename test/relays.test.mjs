@@ -195,3 +195,13 @@ test("another agent's words can't close the block they're quoted in", () => {
   assert.match(block, /chat="A quoted title"/);
   assert.equal(turnMaterial([user("u1", "Do it"), edit("e1", "a.ts", "+x")]), null, "no reply yet");
 });
+
+test('a workflow watch treats a later owner turn as uncertain instead of completing the original task', async () => {
+  const { relays, pages, sent } = stage();
+  const opening = 'Original workflow request';
+  pages[`codex:${CODEX}`].items = [user('original', opening)];
+  const id = relays.watch({ owner: 'phone', from: { agent: 'codex', id: CODEX }, expect: opening, workflow: 'workflow', task: 't1' });
+  await relays.check(); assert.equal(relays.get(id).state, 'waiting');
+  pages[`codex:${CODEX}`].items.push(user('later', 'New owner request'), reply('later-reply', 'Finished the later task'));
+  await relays.check(); assert.equal(relays.get(id).state, 'uncertain'); assert.equal(sent.length, 0);
+});
