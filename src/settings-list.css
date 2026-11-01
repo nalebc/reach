@@ -47,8 +47,8 @@
 .gs-group {
   overflow: hidden;
   border-radius: var(--r-xl);
-  background: #161e1a;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+  background: var(--surface-raised);
+  box-shadow: var(--lift);
 }
 .gs-group.gs-end {
   margin-top: 26px;
