@@ -7,6 +7,7 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { findChrome, launchChrome, openTab } from './helpers/headless-chrome.mjs';
+import { scriptString } from './helpers/script-string.mjs';
 
 // Browser layout, touch and keyboard with synthetic run records only. Does not
 // start Reach, capture the host screen, or exercise real agents or phones.
@@ -62,7 +63,7 @@ window.showRun('done');
       await new Promise(resolve => setTimeout(resolve, 20));
     }
   };
-  const findButton = text => `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${JSON.stringify(text)}) || b.getAttribute('aria-label')?.includes(${JSON.stringify(text)}))`;
+  const findButton = text => `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${scriptString(text)}) || b.getAttribute('aria-label')?.includes(${scriptString(text)}))`;
   await tab.send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await wait(`document.body.textContent.includes('final paragraph is retained')`);
   for (const width of [320, 390, 768]) {
