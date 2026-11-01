@@ -25,7 +25,7 @@ async function fixture(t) {
   let checks = 0;
   const options = { shipped, dir, version: "0.0.0", warn() {}, signatures: async files => {
     checks++;
-    return new Map(files.map(file => [file, { status: "Valid", subject: "CN=SignPath Foundation, O=Fixture" }]));
+    return new Map(files.map(file => [file, { status: "Valid", publisher: "SignPath Foundation", subject: "CN=SignPath Foundation, O=Fixture" }]));
   } };
   return { shipped, dir, plan, manifest, entry, bytes, options, checks: () => checks };
 }
@@ -54,7 +54,7 @@ test("verified bytes are copied and rechecked; replacing shipped bytes invalidat
 });
 
 test("an invalid or unrelated signature never creates a helper copy", async t => {
-  for (const verdict of [{ status: "NotSigned", subject: "CN=SignPath Foundation" }, { status: "Valid", subject: "CN=Other Publisher" }]) {
+  for (const verdict of [{ status: "NotSigned", publisher: "SignPath Foundation", subject: "CN=SignPath Foundation" }, { status: "Valid", publisher: "Other Publisher", subject: 'OU="Fixture,CN=SignPath Foundation,O=Fixture", CN=Other Publisher' }]) {
     const h = await fixture(t);
     assert.equal(await signedHelper(h.plan, { ...h.options,
       signatures: async files => new Map(files.map(file => [file, verdict])),
@@ -71,9 +71,10 @@ test("signature inspection uses the system PowerShell and data arguments without
       assert.ok(!args.includes("-ExecutionPolicy"));
       assert.ok(!args.some(value => files.some(file => value.includes(file))));
       assert.equal(options.env.REACH_SIGNED_FILES, files.join("\n"));
-      return { stdout: JSON.stringify(files.map(file => ({ path: file, status: "Valid", subject: "CN=SignPath Foundation" }))) };
+      return { stdout: JSON.stringify(files.map(file => ({ path: file, status: "Valid", publisher: "SignPath Foundation", subject: "CN=SignPath Foundation" }))) };
     } });
   assert.equal(result.size, 2);
+  assert.equal(result.get(files[0]).publisher, "SignPath Foundation");
 });
 
 test("release source fingerprints cover every shipped C# helper and its auxiliary sources", () => {

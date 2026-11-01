@@ -75,20 +75,12 @@ export function shippedEntry({ kind, target, sourceSha256 }, { shipped = SHIPPED
 /** The name a signed helper's copy takes: its sources' digest and its own, never a local build's name. */
 export const signedCopyName = (kind, sourceSha256, signedSha256) => `reach-${kind}-${sourceSha256.slice(0, 12)}-s${signedSha256.slice(0, 8)}.exe`;
 
-/** The CN of a certificate subject as Windows prints it ("CN=SignPath Foundation, O=…"): "" when it has none. */
-export function subjectName(subject) {
-  const found = /(?:^|,\s*)CN=("(?:[^"]|"")*"|[^,]*)/.exec(String(subject || ""));
-  if (!found) return "";
-  const value = found[1].trim();
-  return value.startsWith('"') ? value.slice(1, -1).replace(/""/g, '"') : value;
-}
-
 // Windows PowerShell's own Get-AuthenticodeSignature (WinVerifyTrust, the
 // check Windows makes itself), run by full path, the files handed over in its
 // environment, never in its command line: no helper is needed to check a
 // helper, so a PC that refuses unsigned programs can still check a signed one.
-const SIGNATURES = "$ErrorActionPreference = 'Stop'; $list = @(foreach ($p in ($env:REACH_SIGNED_FILES -split \"`n\")) { if ($p) { $s = Get-AuthenticodeSignature -LiteralPath $p; [pscustomobject]@{ path = $p; status = [string]$s.Status; subject = [string]$s.SignerCertificate.Subject } } }); ConvertTo-Json -InputObject $list -Compress";
-/** Windows' verdict on each file's Authenticode signature: Map(file → { status, subject }). */
+const SIGNATURES = "$ErrorActionPreference = 'Stop'; $list = @(foreach ($p in ($env:REACH_SIGNED_FILES -split \"`n\")) { if ($p) { $s = Get-AuthenticodeSignature -LiteralPath $p; [pscustomobject]@{ path = $p; status = [string]$s.Status; publisher = $(if ($null -ne $s.SignerCertificate) { $s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '' }); subject = [string]$s.SignerCertificate.Subject } } }); ConvertTo-Json -InputObject $list -Compress";
+/** Windows' verdict on each file's Authenticode signature: Map(file → { status, publisher, subject }). */
 export async function authenticodeSignatures(files, { run = exec, env = process.env } = {}) {
   const powershell = path.win32.join(systemRoot(env), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const { stdout } = await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", SIGNATURES],
@@ -96,7 +88,7 @@ export async function authenticodeSignatures(files, { run = exec, env = process.
   const said = JSON.parse(String(stdout).trim() || "[]");
   const out = new Map();
   for (const item of Array.isArray(said) ? said : [said])
-    if (item && typeof item.path === "string") out.set(item.path, { status: String(item.status ?? ""), subject: String(item.subject ?? "") });
+    if (item && typeof item.path === "string") out.set(item.path, { status: String(item.status ?? ""), publisher: String(item.publisher ?? ""), subject: String(item.subject ?? "") });
   return out;
 }
 
@@ -135,7 +127,7 @@ function verifyShipped(shipped, manifest, { publisher, signatures, env, warn }) 
       try {
         now = sha256(await fs.readFile(file));
       } catch {}
-      if (verdict?.status === "Valid" && subjectName(verdict.subject) === publisher && now === entry.sha256) passed.add(entry.sha256);
+      if (verdict?.status === "Valid" && verdict.publisher === publisher && now === entry.sha256) passed.add(entry.sha256);
       else warnOnce(warn, `signature ${file}`, `the signed ${entry.kind} helper isn't validly signed by ${publisher} on this PC (${verdict?.status || "no answer"}); building it on this PC.`);
     }
     return passed;
