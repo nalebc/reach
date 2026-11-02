@@ -80,6 +80,7 @@ import { createCodingTasks } from "./coding-tasks.mjs";
 import { createMacShortcuts } from "./mac-shortcuts.mjs";
 import { createAgentActions } from "./agent-actions.mjs";
 import { createAgentTimings } from "./agent-timings.mjs";
+import { createPhoneStalls } from "./phone-stalls.mjs";
 import { AGENT_SCREEN_RESPONSE_BYTES, agentJsonResponseLimit } from "./agent-transport.mjs";
 import { markRunning, markStopped, previousRun, restartReason } from "./crash-guard.mjs";
 import { startTidying } from "./tidy.mjs";
@@ -212,6 +213,8 @@ export async function createReach(overrides = {}) {
   const logAction = (client, entry) => { try { agentActions.add(client, entry); } catch { /* the log never stops an action */ } };
   // Reach's time and the agent's for each call, beside that log.
   const agentTimings = overrides.agentTimings || createAgentTimings({ file: path.join(config.dataDir, "agent-timings.jsonl") });
+  // When the owner's phone page stopped answering (server/phone-stalls.mjs).
+  const phoneStalls = overrides.phoneStalls || createPhoneStalls({ file: path.join(config.dataDir, "phone-stalls.jsonl") });
   const settings = { screen: config.screen, ...loadJson(settingsFile, {}) };
   config.screen = settings.screen === true;
   // Written by the Mac app, which owns the macOS privacy permissions.
@@ -2399,6 +2402,9 @@ export async function createReach(overrides = {}) {
     res.type("json").send(JSON.stringify({ ok: true }));
   });
   app.get("/api/settings", (req, res) => res.json(settings));
+  // The owner's own page saying it stopped answering (src/stall-watch.ts).
+  // Under /api/reach: the owner's devices only.
+  app.post("/api/reach/stalls", (req, res) => res.json(phoneStalls.add(req.client, req.body)));
   app.post("/api/settings/pause", async (req, res) => {
     if (typeof req.body?.paused !== "boolean")
       throw fail(400, "Send paused as true or false.");
@@ -6486,6 +6492,7 @@ export async function createReach(overrides = {}) {
       // The last agent timings still on their way to disk land before Reach
       // says it stopped (a test removing the data folder raced them).
       await agentTimings.flushed?.().catch(() => {});
+      await phoneStalls.flushed?.().catch(() => {});
     },
   };
 }

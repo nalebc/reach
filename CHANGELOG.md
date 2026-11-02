@@ -16,6 +16,16 @@ release notes, so date the heading before tagging.
   and no command or action is replayed.
 - Cancelling a browser-relay response also ends its pending body read, so a
   suspended relay cannot hold foreground recovery indefinitely.
+### Added
+
+- When the phone's page stops answering (a freeze, a tap that arrives late or
+  never becomes a click, taps that land on something lying over the page, or
+  a page closed while frozen), it tells the computer, which keeps a short,
+  bounded record of what kind, how long, which page and route, and the Reach
+  names of what was tapped. Never the page's text or labels.
+
+- A guest saved without folders no longer makes every request fail with an
+  error; it has no folders.
 
 ## [0.4.4] — 2026-10-26
 
