@@ -17,6 +17,8 @@ test("outcome contracts and original result APIs remain private owner-device rou
     tasks: [{ id: "t1", agent: "codex", kind: "build", task: "Synthetic task", state: "done", attempt: 1, result: { answer: "Earlier claim", files: [], diffs: "" } }] }]));
   const reach = await createReach({ roots: [dir], dataDir: path.join(dir, "private"),
     workflowFile,
+    // Owner-only denials must not depend on a working host-identity lookup.
+    browserHostGuard: { lookup: async () => { throw Error("Synthetic host identity unavailable"); } },
     openClaw: { overview: async () => ({ connected: false }), close() {} },
     agentSessions: {
       list: async () => ({ sessions: [], errors: {} }), health: async () => [{ agent: "codex", installed: true, signedIn: true }],
@@ -56,7 +58,12 @@ test("outcome contracts and original result APIs remain private owner-device rou
     [`${prefix}/outcome`, undefined], [`${prefix}/outcome`, body], [`${prefix}/outcome/operations/${body.requestId}`, undefined],
     [`${prefix}/outcome/accept`, {}], [`${prefix}/outcome/run`, {}], [`${prefix}/outcome/prepare`, {}],
     [`${prefix}/outcome/request-changes`, {}], [`${prefix}/outcome/cancel`, {}], [`${prefix}/outcome/observations`, {}], [`${prefix}/tasks/t1/result`, undefined],
-  ]) assert.equal((await call(route, { body: mutation, token })).status, 403, route);
+  ]) {
+    const denied = await call(route, { body: mutation, token });
+    assert.equal(denied.status, 403, `${route}: ${JSON.stringify(denied.body)}`);
+  }
+  assert.equal((await call('/api/sessions/workflows/outcome-capabilities')).status, 503,
+    "a real owner still needs the host-identity guard while an app agent is active");
   reach.auth.revoke(full.clientId);
   assert.equal((await call(`${prefix}/outcome/run`, { body: {} })).status, 503);
   assert.equal((await call(`${prefix}/run`, { body: {} })).status, 503, "old Run cannot bypass the outcome barrier");

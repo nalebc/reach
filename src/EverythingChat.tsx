@@ -1324,6 +1324,7 @@ export default function EverythingChat({
         } as AgentSession),
     );
   const chatOutcome = open ? outcomeForChat(workflows, open) : undefined;
+  const outcomeEntry = <OutcomeEntry list={workflows} onAll={() => setFlowsOpen(true)} onOpen={showWorkflow} />;
   const library = (app: ChatAppChoice, active: boolean) => {
     if (app.agent === "all")
       return (
@@ -1364,6 +1365,7 @@ export default function EverythingChat({
         // OpenClaw's chats have no folder: a command runs in the home folder.
         <RunCommandContext.Provider value={runCommand ? (command) => runCommand("", command) : null}>
           <OpenClawSpace peer={peer} active={active} apps={apps} logos={logos}
+            notice={outcomeEntry}
             onScreen={onScreen}
             openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
             onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
@@ -1388,7 +1390,7 @@ export default function EverythingChat({
             : needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} />
             : undefined
           }
-          notice={app.supported && appHealth?.installed && !needsSetup ? <AgentUpdate peer={peer} agent={agent} /> : undefined}
+          notice={<>{outcomeEntry}{app.supported && appHealth?.installed && !needsSetup && <AgentUpdate peer={peer} agent={agent} />}</>}
           workflows={flowEntry}
           projects={(shared || own).projects}
           // Too old: its line above says it (a too-old Codex lists its chats,
@@ -1452,12 +1454,9 @@ export default function EverythingChat({
           </RunCommandContext.Provider>
         </SessionLinkContext.Provider>
       ) : (
-        <>
-        {picked.agent !== "all" && <OutcomeEntry list={workflows} onAll={() => setFlowsOpen(true)} onOpen={showWorkflow} />}
         <ChatAppPager key={peer.id} apps={apps} value={picked.agent} onChange={setAgent} hidden={!!sheet}>
           {library}
         </ChatAppPager>
-        </>
       )}
       {sheet === "new" && (
         <ChatSheet

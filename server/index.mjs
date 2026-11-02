@@ -1651,15 +1651,21 @@ export async function createReach(overrides = {}) {
     notify({ category: "access", title: `${name} wants to come in`, body: `An agent is using this Mac, so you allow each new person once${device ? ` (${person.macEntry.nodeName})` : ""}.`, icon: "agent", tag: `person-waiting-${person.id}` });
     for (const nudge of presenceNudges) nudge();
   };
+  const ownerDeviceRoutes = new Set(["sessions", "push", "notifications", "reach"]);
   const redeemRoutes = ["/api/guest/redeem", "/api/invitations/redeem"];
   app.use("/api", async (req, res, next) => {
     const route = (req.originalUrl || req.url || "").split("?", 1)[0];
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     const context = funnelRequests.get(req);
     const verified = () => context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+    const initialClient = token ? verified() : null;
+    // These credentials can never use owner APIs. Refuse them before a
+    // host-identity lookup can turn a permission denial into an outage.
+    if (initialClient && initialClient.kind !== "device" && ownerDeviceRoutes.has(req.path.split("/")[1].toLowerCase()))
+      return res.status(403).json({ error: "This credential does not grant admin access." });
     // A person waiting for your Allow reads that, whatever else is going on.
     if (token && !context) {
-      let client = verified();
+      let client = initialClient;
       if (client?.kind === "guest" && agentsActive()) {
         await browserHostGuard.refresh();
         if (browserHostGuard.needsPersonApproval(req, client)) {
@@ -2204,7 +2210,7 @@ export async function createReach(overrides = {}) {
       // Every AI session and the Mac's own dialogs: the owner's own devices
       // only. A list of who may, not of who may not: no other credential,
       // whatever it grants (or a kind added later), ever reaches them.
-      (!["sessions", "push", "notifications", "reach"].includes(route) || identity.kind === "device") &&
+      (!ownerDeviceRoutes.has(route) || identity.kind === "device") &&
       (route === "device" ||
         appWindows(identity) ||
         (scope &&
