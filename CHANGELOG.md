@@ -26,6 +26,12 @@ release notes, so date the heading before tagging.
 
 - A guest saved without folders no longer makes every request fail with an
   error; it has no folders.
+- The phone's page no longer stays frozen in place after a sheet closes, with
+  taps landing on the wrong spot and the message box not taking the cursor.
+  A sheet and the page under it each held the page still and put it back on
+  their own, so the one letting go last put back a stale copy. Choosing a
+  page from the computer menu (0.4.3), or a chat from a sheet, did that. One
+  shared hold now lets go once nothing holds it, in any order.
 
 ## [0.4.4] — 2026-10-26
 
