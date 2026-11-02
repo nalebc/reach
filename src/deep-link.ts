@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 // or the request itself opened for review (not the list it's in). Read from
 // the address Reach opens with (?page=…&agent=…&id=… / &needs=…), or passed
 // by the service worker when Reach is already open (public/sw.js).
-export type OpenTarget = { page: string; agent?: string; id?: string; threadId?: string; needs?: string; prompt?: string; computer?: string };
+export type OpenTarget = { page: string; agent?: string; id?: string; threadId?: string; needs?: string; prompt?: string; computer?: string; workflow?: string };
 
 const PAGE = /^[a-z][\w-]{0,30}$/;
 const VALUE = /^[\w:.@-]{1,200}$/;
@@ -20,7 +20,7 @@ export function openTarget(href: string): OpenTarget | null {
   const page = url.searchParams.get("page") || "";
   if (!PAGE.test(page)) return null;
   const target: OpenTarget = { page };
-  for (const key of ["agent", "id", "threadId", "needs", "prompt", "computer"] as const) {
+  for (const key of ["agent", "id", "threadId", "needs", "prompt", "computer", "workflow"] as const) {
     const value = url.searchParams.get(key);
     if (value && (key === "prompt" ? PROMPT : VALUE).test(value)) target[key] = value;
   }
@@ -30,7 +30,7 @@ export function openTarget(href: string): OpenTarget | null {
 // The address without the link's own bits, so a reload doesn't open it again.
 export function withoutTarget(href: string) {
   const url = new URL(href, location.origin);
-  for (const key of ["page", "agent", "id", "threadId", "needs", "prompt", "computer"]) url.searchParams.delete(key);
+  for (const key of ["page", "agent", "id", "threadId", "needs", "prompt", "computer", "workflow"]) url.searchParams.delete(key);
   return url.pathname + (url.search === "?" ? "" : url.search) + url.hash;
 }
 
@@ -38,7 +38,7 @@ export function withoutTarget(href: string) {
 // the background): the page and the chat open in it, for this tab only. A new
 // tab, or Reach opened from the Home Screen, starts on Home.
 const PLACE = "reach.place";
-type Place = { peer: string; page?: string; chat?: { agent: string; id: string } | null };
+type Place = { peer: string; page?: string; chat?: { agent: string; id: string } | null; workflow?: string | null };
 export function rememberPlace(peer: string, place: Omit<Place, "peer">) {
   try {
     const old = JSON.parse(sessionStorage.getItem(PLACE) || "null") as Place | null;
@@ -51,6 +51,7 @@ export function lastPlace(peer: string): OpenTarget | null {
   try {
     const place = JSON.parse(sessionStorage.getItem(PLACE) || "null") as Place | null;
     if (!place || place.peer !== peer || !PAGE.test(place.page || "")) return null;
+    if (place.page === "sessions" && place.workflow && VALUE.test(place.workflow)) return { page: "sessions", workflow: place.workflow };
     const chat = place.chat;
     if (place.page === "sessions" && chat && VALUE.test(chat.agent) && VALUE.test(chat.id))
       return { page: place.page, agent: chat.agent, id: chat.id };

@@ -1,6 +1,6 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { startDom, settle, typeInto } from "./dom/harness.mjs";
+import { startDom, settle, typeInto, replaceText } from "./dom/harness.mjs";
 
 const localPeer = { id: "local", name: "Local Mac", url: "https://reach.test", token: "local-token", platform: "darwin" };
 const peer = localPeer;
@@ -115,6 +115,10 @@ test("agent: workflow grouping preserves chat search and excludes archived membe
   await settle();
   assert.deepEqual(visible(view.container), ["Unique release fix, Codex"]);
   assert.equal(view.container.querySelectorAll(".chat-flow").length, 1);
+  // Search is intentionally remembered across mounts; leave the shared
+  // fixture clear for the following independent workflow cases.
+  await replaceText(input, "");
+  await settle();
 });
 
 test("all: matching chat IDs on another computer cannot open the local workflow", async (t) => {

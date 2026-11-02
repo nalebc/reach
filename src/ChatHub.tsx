@@ -19,6 +19,7 @@ import {
   useEveryComputer,
   type Absence,
 } from "./fleet-chats";
+import { OutcomeEntry } from "./outcome-navigation";
 import "./chat-hub.css";
 
 // The All page (docs/ACROSS_AGENTS.md): every agent's chats at once, which
@@ -352,6 +353,7 @@ export default function ChatHub({
         searchOpen={searchOpen}
         onSearch={() => { if (!searchOpen) requestFocus(); setSearchOpen(!searchOpen); }}
       />
+      {workflows && <OutcomeEntry list={workflows.list || []} onAll={workflows.onOpen} onOpen={id => { const w = workflows.list?.find(w => w.id === id); if (w) workflows.onOpenFlow?.(w); }} />}
       {absent.length > 0 && (
         <p className="hub-fleet-note" role="status">
           {sayAbsent(absent.map(({ computer, absence }) => ({ name: computer.name, absence })))}

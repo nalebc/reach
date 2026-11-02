@@ -4,6 +4,16 @@
 
 A workflow is a plan for a piece of work that several agents carry out, task by task. You write it yourself, or describe the work and an agent drafts it. Either way you see every task, can change any of it, and nothing runs until you tap **Run**.
 
+## Reach Outcomes
+
+An outcome is an optional owner-defined goal and review record attached to a workflow. It adds editable success criteria and evidence requirements; it does not change what an ordinary workflow means. For example, on a synthetic calculator where `2 + 3` incorrectly displays `-1`, an owner can set the goal to repair the calculation, require a pinned check and an independent review, and restrict changed paths to `src/`. Before Run, the outcome editor shows the builder, checker, reviewer, branch plan, permitted paths, deadline and attempt limits. The owner may preapprove at most one repair cycle.
+
+The result view keeps four things separate: whether task turns finished, what checks have recorded, what evidence or review remains uncertain, and whether the owner accepted this exact result revision. It can show recorded independent check status, reviewer findings, provider-reported task diffs/commands, truncation and unknowns. **Accept result** records an owner decision on the current revision; **Request changes** records the decision and creates a new unapproved draft. Acceptance does not merge, apply, push or deploy anything.
+
+The current preview controls link to Files, Apps and Screen. These are authenticated views of current computer state, not sealed previews of the captured result. Full independent logs and sealed artifact downloads/previews are not currently available through the APIs. Provider transcript evidence is explicitly provider-reported and cannot prove final candidate bytes or rule out concurrent edits. Provider display clipping stays visible and does not alone block independently established checks. If the runner cannot establish required evidence, original-turn history is incomplete, required check output is incomplete, a stop/dispatch is uncertain, access is lost or a limit expires, Reach holds for owner inspection; it does not infer success.
+
+Outcome preparation and Run currently require a trusted production runner adapter, which is not installed by default. Until configured, the UI explains the unavailable setup and disables New outcome, Create outcome draft, profile editing, Prepare and Run; direct preparation/Run calls fail closed with `503`. Existing results remain inspectable, and ordinary workflows remain available. When available, New outcome opens a dedicated builder/criteria flow without launching a planner. Profile IDs and digests must come from trusted runner setup; profile provisioning and a picker remain incomplete. Synthetic test adapters do not establish host isolation. The tested app journey uses a tiny synthetic total function (`2 + 3` should be `5`) with actual fixture files and check subprocesses, but simulated provider/reviewer turns and simulated runner isolation. It is not a live-agent or physical-device demonstration. See [Outcome status and evidence](OUTCOMES.md#synthetic-app-repair-regression-fixture) for the exact validation boundary.
+
 How it differs from what's already in Chat ([Working across agents](ACROSS_AGENTS.md)):
 - **Relay**: one chat's reply goes on to the next agent, up to three steps, set up on that chat.
 - **Team chat**: a lead agent decides, as it goes, which helper does what. You talk to the lead.
@@ -40,16 +50,26 @@ Tap **Run**. Each task starts when its step comes, as a new chat in the folder n
 - A task with a model or effort starts on it. Checked again at its start: if its agent no longer offers that model or effort, the task stops and says so, never running on another.
 - A task also gets what the steps before it finished with: the last replies and changed files, clipped like a relay's, inside a marked block introduced as material, not instructions.
 
-A task is done when its chat ends with a reply and is still idle a few seconds later, the same check relays use. The next step then starts on its own: a workflow keeps going until it's finished or something goes wrong.
+A task is done when its chat ends with a reply and is still idle a few seconds later, the same check relays use. The next step then starts on its own: a workflow keeps going until it's finished or something goes wrong. If the owner continues that chat before Reach records the original task completion, Reach pauses the task as uncertain rather than treating the later turn as its result. Inspect its chat and use the ordinary Retry, Skip or Mark done controls; later text cannot replace the original attempt's evidence. Attached outcomes do not allow those controls to bypass their evidence requirements.
 
-The **Workflows** icon at the top of Chat (beside Search, and in the ☰ menu) opens them all, as **Active**, **Drafts** and **Done**; its count shows how many run or wait on you (amber when one is paused). A workflow's page lists the tasks by step, each with its agent and where it stands (Waiting, Working, Done, Stopped). Tap one for what it finished with and **Open chat**. Every task is a normal chat: read it, write in it. A permission its agent asks for shows in **Needs you**, as any chat's does.
+The **Workflows** icon at the top of Chat (beside Search, and in the ☰ menu) opens them all, as **Active**, **Drafts** and **Done**; its count shows how many run or wait on you (amber when one is paused). Open a workflow for its overall progress and task results. Every task is also a normal chat: read it or write in it through **Open chat**. A permission its agent asks for shows in **Needs you**, as any chat's does.
+
+### Progress and completed results
+
+Inside a workflow, the run overview shows whether it is running, paused, stopped or completed; how many tasks have finished; and separate completed, skipped, running and waiting counts. The task count describes progress through the plan, not time remaining or independently verified success. Unused conditional outcome branches do not count as completed work. Current task buttons and **View latest task result** open the relevant task in the same workflow.
+
+A completed run opens its latest completed task's retained reply. The task view preserves the available paragraphs, lists reported files, and offers earlier retained attempts when a task was retried. Expand the recorded provider commands and changes to inspect outputs, exit status and diffs; the task's **Open chat** still opens its conversation. The retained reply is what the agent reported or what the owner passed on with **Mark done**. It remains separate from original-turn execution records and independent outcome checks.
+
+The open workflow refreshes every few seconds while visible and when you return to it. **Refresh workflow** requests an immediate update. A failed update stays visible alongside the last available run state, so an old view cannot silently look current. Missing results, shortened retained content and incomplete evidence are labelled; a short preview remains available when the full retained result cannot be loaded, with a retry control.
+
+Ordinary workflow records are bounded local history: finished workflows and drafts are kept for up to a week, with at most fifty retained ordinary workflows. A provider may retain its task chats separately. The overview does not add a permanent archive or change outcome acceptance.
 
 **When something goes wrong** (an error, a usage limit, a chat you stopped, a task that couldn't start), the workflow pauses and your phone is told. The stopped task opens with why, and:
 - **Retry** starts it again in a new chat.
 - **Skip** goes on without it.
 - **Mark done** takes what its chat ends on, once you've sorted it out there.
 
-**Edit** changes the tasks that haven't started (add, remove, move, rewrite); started ones stay as they are. **Stop** stops the tasks at work and never starts the rest; their chats stay. **Run again** copies a finished or stopped workflow as a new draft.
+**Edit** changes the tasks that haven't started (add, remove, move, rewrite); started ones stay as they are. **Stop** stops the tasks at work and never starts the rest; their chats stay. **Run again** copies a finished or stopped workflow as a new draft. A settled outcome can be explicitly deleted, which removes its retained evidence and releases its active quota while keeping a minimal replay-prevention tombstone; pending or uncertain work must be reconciled first. Retry stop targets only the same known outstanding operation. An accepted outcome cannot be cancelled.
 
 ## Rules Reach follows
 
@@ -81,8 +101,10 @@ October 8, 2026. Automated results against stand-ins; nothing here has run again
 - **Not yet run live:** a real planner turn (how reliably each agent ends its reply with the plan), real task turns and their finish detection, the notifications, and a physical phone.
 - **Suggested first live check, after restarting Reach:** a two-task workflow on a throwaway folder (Build, then review), and watch it finish.
 
+October 31, 2026. The ordinary workflow progress and retained-result views have focused synthetic coverage in `test/workflow-run-ui.test.mjs` and `test/workflow-run-browser.test.mjs`. The real components cover completed and running runs, earlier attempts, report/evidence separation, missing-result retries, refresh recovery and preservation of the selected task. Real Chrome checks 320, 390 and 768 pixel layouts, touch inspection, keyboard task opening and progress refresh using synthetic data only. Both suites are selected in Windows CI; registration is not an actual Windows run. These checks do not validate real-provider behavior, OS notifications or physical phones.
+
 ## Where it lives
 
 - Server: `server/agent-sessions/workflows.mjs` (the engine, the plan check, the messages), routes in `server/index.mjs`, and the relay engine's `record` step in `server/agent-sessions/relays.mjs`.
-- Phone: `src/Workflows.tsx` and `src/workflows.css`, opened from `src/EverythingChat.tsx` (New chat) and `src/ChatHub.tsx` (the All page).
+- Phone: `src/Workflows.tsx`, `src/WorkflowRunSummary.tsx` and `src/workflows.css`, opened from `src/EverythingChat.tsx` (New chat) and `src/ChatHub.tsx` (the All page).
 - API: [the HTTP API reference](API.md#workflows).

@@ -78,6 +78,7 @@ import {
 } from "./api";
 import {
   Logo,
+  Wifi,
   Modal,
   ErrorLine,
   Monitor,
@@ -85,7 +86,6 @@ import {
   Terminal,
   AppWindow,
   ShieldCheck,
-  Wifi,
   Plus,
   ChevronRight,
 } from "./ui";
@@ -313,6 +313,7 @@ function ReachWorkspace() {
   const agentsWorking = (agentFeed.sessions || []).some(
     (s) => s.status === "running" && !s.archived,
   );
+  const [workflowTarget, setWorkflowTarget] = useState<string | null>(null);
   const [chatTarget, setChatTarget] = useState<{
     agent: AgentName | "openclaw";
     id: string;
@@ -691,6 +692,7 @@ function ReachWorkspace() {
     const chatRoot = id === "sessions" && page === "sessions" && !opening;
     const show = () => {
       if (chatRoot) {
+        setWorkflowTarget(null);
         setChatTarget(null);
         setLinkTarget(null);
         setChatHomeRevision((n) => n + 1);
@@ -849,6 +851,7 @@ function ReachWorkspace() {
     setTerminalSource(saved?.terminalSource || "reach");
     setChatId(saved?.chatId || "");
     setNewSession(null);
+    setWorkflowTarget(null);
     setComputerMenu(false);
     setQuickLaunch(false);
     // The computer you pick wins over a link still waiting for another one
@@ -876,6 +879,11 @@ function ReachWorkspace() {
   // Opens what a notification (or the bell's list) points at, in one go:
   // the chat itself, the app handed to you, or the request opened for review.
   function openTargetNow(target: OpenTarget) {
+    if (target.page === "sessions" && target.workflow) {
+      setChatTarget(null);
+      setWorkflowTarget(target.workflow);
+    }
+    if (target.page === "sessions" && target.agent && target.id) setWorkflowTarget(null);
     if (target.page === "sessions" && target.agent && target.id && target.prompt)
       wantPrompt({ agent: target.agent, session: target.id, id: target.prompt });
     if (target.page === "sessions" && ["codex", "claude", "gemini", "openclaw"].includes(target.agent || "") && target.id)
@@ -1104,6 +1112,8 @@ function ReachWorkspace() {
                     decide={(r, decision) => void decide(r, decision)}
                     navigate={navigate}
                     openChat={(id) => openChat({ agent: "codex", id })}
+                    workflows={agentFeed.workflows || []}
+                    onOpenWorkflow={features.owner && pageAccessible("sessions", features) ? (id = "all") => openTargetNow({ page: "sessions", workflow: id }) : undefined}
                     agentSessions={agentFeed.sessions || []}
                     macPrompts={agentFeed.macPrompts}
                     showOnScreen={showOnScreen}
@@ -1175,10 +1185,14 @@ function ReachWorkspace() {
                     key={`${peer.id}:${chatHomeRevision}`}
                     peer={peer}
                     feed={agentFeed}
+                    workflowTarget={workflowTarget}
+                    onWorkflowTargetOpened={() => setWorkflowTarget(null)}
                     target={chatTarget}
                     onTargetOpened={() => setChatTarget(null)}
                     showOnScreen={showOnScreen}
                     onScreen={features.screen ? () => navigate("screen", { detail: true }) : undefined}
+                    onApps={features.apps ? () => navigate("apps") : undefined}
+                    onFiles={features.files ? () => navigate("files") : undefined}
                     // The All page covers every paired computer; a chat on
                     // another opens the way a notification from it does:
                     // that computer first, then the chat once it's connected.

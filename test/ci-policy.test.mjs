@@ -91,6 +91,13 @@ test("CI test selection never silently loses a renamed required platform test", 
   for (const suite of Object.keys(suites)) assert.equal(testFiles(suite).length, suites[suite].length);
 });
 
+test("Windows CI retains the shared outcome journey, evidence, coding, owner-route and phone UI regressions", () => {
+  const selected = new Set(testFiles("windows"));
+  for (const name of ["workflow-app-repair", "outcome-app-repair-routes", "outcome-app-repair-browser", "outcome-coordinator", "outcome-scheduling", "result-evidence", "workflow-result-evidence", "coding-tasks", "outcomes-routes", "workflow-outcome-ui", "workflow-outcome-browser", "workflow-run-ui", "workflow-run-browser"]) {
+    assert.ok(selected.has(path.join("test", `${name}.test.mjs`)), `${name} must run on Windows as a shared regression`);
+  }
+});
+
 test("every test runs on Windows unless a lane owns it", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-windows-rest-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

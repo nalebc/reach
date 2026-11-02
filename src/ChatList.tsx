@@ -1,3 +1,4 @@
+import { outcomeState } from "./outcome-navigation";
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   ArrowUpRight,
@@ -139,6 +140,7 @@ export const firstFew = <T,>(list: T[], flowOf: (s: T) => Flow | undefined, rank
 export const foldedAway = <T,>(list: T[], flowOf: (s: T) => Flow | undefined, rank: (s: T) => number) =>
   runsOf(list, flowOf).reduce((n, { flow, rows }) => n + (flow ? rows.length - flowShown(rows, rank).length : 0), 0);
 const flowWord = (w: Flow) => {
+  if (w.outcome) return outcomeState(w);
   if (w.state === "paused") return "Paused";
   if (w.state === "done") return "Done";
   if (w.state === "stopped") return "Stopped";

@@ -603,6 +603,14 @@ export function createRelays({
           }
           const outcome = turnOutcome(items);
           const ours = startsWith(outcome.request, r.expect);
+          if (!ours && internal(r)) {
+            r.state = "uncertain";
+            r.problem = "This chat continued with another turn. The original task's disposition needs inspection.";
+            r.updatedAt = now();
+            candidates.delete(r.id);
+            save();
+            continue;
+          }
           const eligible = r.trigger === "usage"
             ? outcome.kind === "error" && usageLimited(src.agent, outcome.item)
             : outcome.kind === "reply";
