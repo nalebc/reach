@@ -81,6 +81,7 @@ let dom,
   opened = [];
 let capabilities = { executionAvailable: true, reason: "" };
 let removedDraft = false;
+let outcomeReadDelay = 0;
 const base = "/api/sessions/workflows/wf-outcome";
 before(async () => {
   dom = await startDom({
@@ -100,7 +101,7 @@ before(async () => {
         return heldWorkflow;
       },
       "/api/sessions/models": () => ({ models: [] }),
-      [`${base}/outcome`]: (init) => {
+      [`${base}/outcome`]: async (init) => {
         if (init.method === "POST") {
           const body = JSON.parse(init.body);
           sent.push({ action: "save", body });
@@ -119,6 +120,8 @@ before(async () => {
           };
           heldWorkflow = { ...heldWorkflow, outcome: workflow.outcome };
         }
+        if (init.method !== "POST" && outcomeReadDelay)
+          await settle(outcomeReadDelay);
         return { outcome, capabilities };
       },
       [`${base}/outcome/prepare`]: (init) => {
@@ -219,6 +222,7 @@ afterEach(async () => {
   opened = [];
   capabilities = { executionAvailable: true, reason: "" };
   removedDraft = false;
+  outcomeReadDelay = 0;
   assert.deepEqual(dom.errors, []);
 });
 const button = (text) =>
@@ -635,10 +639,13 @@ test("ordinary workflow can attach an owner outcome only after task edits flush;
     "Owner-edited builder",
   );
   await dom.waitFor(() => !button("Add outcome goal").disabled);
+  // Loading the outcome is asynchronous even after the task edit has flushed.
+  outcomeReadDelay = 100;
   button("Add outcome goal").click();
-  await settle();
-  const form = dom.document.querySelector(
-    'form[aria-label="Edit outcome goal and success criteria"]',
+  const form = await dom.waitFor(() =>
+    dom.document.querySelector(
+      'form[aria-label="Edit outcome goal and success criteria"]',
+    ),
   );
   assert.ok(form);
   assert.equal(button("Run workflow"), undefined);
@@ -657,7 +664,7 @@ test("ordinary workflow can attach an owner outcome only after task edits flush;
   form.dispatchEvent(
     new dom.window.Event("submit", { bubbles: true, cancelable: true }),
   );
-  await settle();
+  await dom.waitFor(() => button("Prepare checks"));
   assert.equal(sent.find((s) => s.action === "save").body.expectedVersion, 0);
   assert.equal(sent[0].action, "edit");
   assert.equal(sent[0].body.tasks[0].title, "Owner-edited builder");
