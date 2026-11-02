@@ -41,7 +41,8 @@ async function fixture(source = "native", appAgent = false) {
   const fetcher = role => async (url, init = {}) => {
     const route = new URL(url, origin).pathname, bearer = new Headers(init.headers).get("Authorization");
     calls.push({ role, route, bearer, method: init.method || "GET" });
-    if (route === "/reach-start.json") return Response.json(network.metadata || config);
+    if (route === "/reach-start.json") return network.metadataResponse?.() || Response.json(network.metadata || config);
+    if (network.response) return network.response();
     if (!network[role]) return Response.json({}, { status: 404 }); // public start keeps metadata, not private APIs
     const body = init.body ? JSON.parse(init.body) : {};
     const request = { reachIdentity: identity(role), headers: {}, method: init.method || "GET", originalUrl: route };
@@ -156,6 +157,52 @@ test("revoked owner authority cannot enroll or select a new fallback", async () 
     f.network.native = false; await f.recovery.check();
     assert.equal(f.saved.browser.length, 0); assert.equal(f.changes.length, 0);
   } finally { await f.close(); }
+});
+
+for (const [name, response, status, message] of [
+  ["empty gateway failure", () => new Response(null, { status: 502 }), 502, /Reach is temporarily unavailable/],
+  ["HTML gateway failure", () => new Response("<h1>Unavailable</h1>", { status: 503 }), 503, /Reach is temporarily unavailable/],
+  ["empty successful response", () => new Response(null, { status: 200 }), 200, /unreadable connection response/],
+  ["JSON refusal", () => Response.json({ error: "Owner access was revoked." }, { status: 403 }), 403, /Owner access was revoked/],
+]) test(`owner setup handles ${name} without publishing an approval`, async () => {
+  const f = await fixture();
+  try {
+    f.network.response = response;
+    const enrollment = f.enroll();
+    await assert.rejects(enrollment.join(new AbortController().signal), error => {
+      assert.equal(error.status, status);
+      assert.match(error.message, message);
+      return true;
+    });
+    assert.equal(f.saved.browser.length, 0);
+    assert.equal(f.auth.list().length, 1);
+    f.network.response = null;
+    await enrollment.join(new AbortController().signal);
+    assert.equal(f.saved.browser.length, 1, "a temporary response failure does not poison the next attempt");
+  } finally { await f.close(); }
+});
+
+for (const event of ["pageshow", "focus"]) test(`Home Screen setup retries on ${event} after an empty gateway response`, async () => {
+  const f = await fixture(); let stop;
+  try {
+    const module = await f.dom.load("/src/owner-connection.ts");
+    Object.assign(module.browserOwnerKeys, f.keys);
+    f.network.metadataResponse = () => new Response(null, { status: 502 });
+    f.transport.installTailnet({ status: () => ({ self: { state: "NeedsLogin" } }), wake() {} }, "t.ts.net", "native");
+    globalThis.fetch = f.dom.window.fetch;
+    const states = [];
+    stop = module.watchOwnerEnrollment(f.peer, state => states.push(state), { resumeOnly: true });
+    await f.dom.waitFor(() => states.at(-1)?.state === "error");
+    assert.match(states.at(-1).message, /Reach is temporarily unavailable/);
+    const attempts = f.calls.filter(call => call.route === "/reach-start.json").length;
+    window.dispatchEvent(new Event(event));
+    await f.dom.waitFor(() => f.calls.filter(call => call.route === "/reach-start.json").length > attempts);
+    assert.equal(f.calls.some(call => call.method !== "GET"), false, "returning to the app never replays work");
+    stop(); stop = undefined;
+    const stopped = f.calls.length;
+    window.dispatchEvent(new Event(event));
+    assert.equal(f.calls.length, stopped, "stopping setup removes its foreground listeners");
+  } finally { stop?.(); await f.close(); }
 });
 
 async function observedFixture(dom, node, initialState = "NeedsLogin") {
@@ -292,6 +339,11 @@ for (const scenario of ['prepared', 'legacy-unprepared', 'cold-start', 'cold-sta
       assert.match(f.dom.document.body.textContent, /One quick sign-in/);
       window.dispatchEvent(new Event('online'));
       assert.equal(wakes, 1, 'a changed network wakes the suspended relay');
+      window.dispatchEvent(new Event('pagehide'));
+      window.dispatchEvent(new Event('pageshow'));
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      assert.equal(wakes, 2, 'Home Screen return repairs the relay once across overlapping foreground events');
     }
     state = 'Running'; observed.callbacks.state(state);
     if (scenario === 'cold-start') await module.resumeOwnerConnection(observed.settings, node, new AbortController().signal);

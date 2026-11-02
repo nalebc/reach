@@ -55,8 +55,17 @@ export const browserOwnerKeys = {
 };
 type KeyStore = typeof browserOwnerKeys;
 const responseJSON = async (response: Response) => {
-  const value = await response.json();
-  if (!response.ok) throw Object.assign(Error(value?.error || "Owner connection setup is unavailable."), { status: response.status });
+  // A sleeping or restarting host can leave its gateway answering with an
+  // empty body or HTML. Preserve that HTTP failure instead of surfacing a
+  // browser-specific JSON SyntaxError as a broken owner approval.
+  let value;
+  try { value = await response.json(); }
+  catch (error) {
+    if (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name)) throw error;
+    throw Object.assign(Error(response.ok ? "The computer returned an unreadable connection response. Try again." :
+      "Reach is temporarily unavailable. Check that it is running on your computer."), { status: response.status });
+  }
+  if (!response.ok) throw Object.assign(Error(typeof value?.error === "string" && value.error || "Owner connection setup is unavailable."), { status: response.status });
   return value;
 };
 
@@ -284,24 +293,42 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
     }
   };
   const changed = () => { retryAt = 0; void check(); };
+  let resumePending = document.hidden;
   const wake = () => {
     if (document.hidden) return;
+    resumePending = false;
     // A phone can suspend the standby relay while its VPN or SSO changes.
     // Wake on network/foreground events, never on ordinary state callbacks.
     if (target === "browser" && !completed) tailnetNode()?.wake();
     changed();
   };
+  const hidden = () => { resumePending = true; };
+  const resume = () => {
+    if (document.hidden) { hidden(); return; }
+    // Home Screen restoration can deliver all three events. Repair the relay
+    // once per return; repeated wakes close a connection still recovering.
+    if (resumePending) wake();
+    else changed();
+  };
   const timer = setInterval(() => void check(), 5000);
   window.addEventListener("online", wake);
+  window.addEventListener("pagehide", hidden);
+  window.addEventListener("blur", hidden);
+  window.addEventListener("pageshow", resume);
+  window.addEventListener("focus", resume);
   window.addEventListener("reach-owner-browser-state", changed);
-  document.addEventListener("visibilitychange", wake);
+  document.addEventListener("visibilitychange", resume);
   report({ state: source === "browser" ? "ready" : "preparing" });
   void check();
   return () => {
     lifetime.abort();
     clearInterval(timer);
     window.removeEventListener("online", wake);
+    window.removeEventListener("pagehide", hidden);
+    window.removeEventListener("blur", hidden);
+    window.removeEventListener("pageshow", resume);
+    window.removeEventListener("focus", resume);
     window.removeEventListener("reach-owner-browser-state", changed);
-    document.removeEventListener("visibilitychange", wake);
+    document.removeEventListener("visibilitychange", resume);
   };
 }

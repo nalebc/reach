@@ -21,11 +21,13 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
   assert.ok(chromeBinary, "Chrome is required in CI");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-owner-cors-"));
   const certificate = await testCertificate(root, hostname), seen = [], trace = [], ingressKey = newIngressKey();
-  let reach, browser, ingressPort, publicRoute = false, sourceUnavailable = false;
+  let reach, browser, ingressPort, publicRoute = false, sourceUnavailable = false, gatewayFailure = false;
   const tls = https.createServer(certificate, (req, res) => {
     seen.push({ method: req.method, path: req.url, origin: req.headers.origin, site: req.headers["sec-fetch-site"], bearer: !!req.headers.authorization });
     const source = req.url === "/api/device/owner-connection";
     if (source && sourceUnavailable) return res.destroy();
+    if (gatewayFailure && req.method === "POST" && req.url === "/api/auth/owner-connection/challenge")
+      return res.writeHead(502, { "Access-Control-Allow-Origin": ORIGIN }).end();
     const proxy = http.request({ host: "127.0.0.1", port: ingressPort, path: `/r-${ingressKey}${req.url}`, method: req.method,
       headers: { ...req.headers, host: "localhost", "x-forwarded-host": req.headers.host,
         "x-forwarded-for": source ? "100.64.0.21" : "100.64.0.22", "tailscale-user-login": "owner@example.test",
@@ -124,6 +126,15 @@ for (const sourceRole of ["browser", "native"]) test(`real Chrome enrolls ${sour
     if (exceptionDetails) throw Error(exceptionDetails.exception?.description || exceptionDetails.text);
     return result.value;
   };
+  gatewayFailure = true;
+  const unavailable = await call(`async function (peer, config, sourceRole) {
+    try { await OwnerFixture.ownerEnrollment(peer, sourceRole, config).join(new AbortController().signal); }
+    catch (error) { return { status: error.status, message: error.message }; }
+  }`, peer, config, sourceRole);
+  assert.equal(unavailable.status, 502);
+  assert.match(unavailable.message, /Reach is temporarily unavailable/);
+  assert.equal(reach.auth.list().filter(c => c.kind === "device").length, 1, "an empty gateway failure never grants fallback access");
+  gatewayFailure = false;
   const joined = await call(`async function (peer, config, sourceRole) {
     const setup = () => OwnerFixture.ownerEnrollment(peer, sourceRole, config);
     const [first, second] = await Promise.all([setup().join(new AbortController().signal), setup().join(new AbortController().signal)]);

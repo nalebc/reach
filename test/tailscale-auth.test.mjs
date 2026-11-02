@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import http from "node:http";
@@ -731,6 +732,43 @@ test(
     }
   },
 );
+
+for (const mode of [0o700, 0o755]) test(`private ingress reopens an owned ${mode.toString(8)} directory without unnecessary permission writes`, {
+  skip: process.platform === "win32" && "Windows uses keyed loopback ingress, not POSIX socket permissions",
+}, async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "reach-ingress-mode-"));
+  await fs.chmod(dir, mode);
+  const chmod = fsSync.chmodSync;
+  let repairs = 0, server;
+  t.mock.method(fsSync, "chmodSync", (target, permission) => {
+    if (target === dir) {
+      repairs++;
+      if (mode === 0o700) throw Error("Redundant directory metadata write is unavailable");
+    }
+    return chmod(target, permission);
+  });
+  const socketPath = path.join(dir, "s");
+  try {
+    server = await listenPrivateIngress({ socketPath, resolveIdentity: async () => identity,
+      app: (_req, res) => res.end("private fixture"), upgrade() {},
+    });
+    assert.equal(repairs, mode === 0o700 ? 0 : 1);
+    assert.equal((await fs.lstat(dir)).mode & 0o7777, 0o700);
+    assert.equal((await fs.lstat(socketPath)).mode & 0o7777, 0o600);
+    const result = await new Promise((resolve, reject) => {
+      const req = http.get({ socketPath, path: "/", headers: { Connection: "close" } }, res => {
+        let text = "";
+        res.on("data", chunk => text += chunk);
+        res.on("end", () => resolve({ status: res.statusCode, text }));
+      });
+      req.on("error", reject);
+    });
+    assert.deepEqual(result, { status: 200, text: "private fixture" });
+  } finally {
+    if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("Mac socket selection stays in an existing app group and within Unix path limits", () => {
   const group =

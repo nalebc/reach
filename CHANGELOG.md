@@ -8,6 +8,79 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-11-02
+
+Early-access release focused on reliable agent access, recovery after sleep,
+and clearer progress and results across supported hosts and phone clients.
+
+### Fixed
+
+- Owner setup preserves HTTP failure status and shows a readable retry message
+  when a gateway returns an empty or HTML response, instead of a browser JSON
+  syntax error. Returning to the Home Screen app retries setup; overlapping
+  foreground events repair a suspended relay once.
+- Private listener startup verifies an owned directory's existing permissions
+  before changing them, avoiding a redundant filesystem write when the
+  directory is already private. Looser permissions are still repaired.
+- Returning from suspension restores a stale live connection even when its
+  socket still reports open or the browser omitted its visibility event.
+  Existing work stays mounted, saved approvals stay bound to their device,
+  and no command or action is replayed.
+- Cancelling a browser-relay response also ends its pending body read, so a
+  suspended relay cannot hold foreground recovery indefinitely.
+- Agent requests sign after connection readiness and can refresh stale proofs
+  only when Reach confirms the action never ran. A lost action reply is never
+  replayed during a connection change.
+- Transient local-agent runtime download failures retry on the next use. Setup
+  commands on shell and PowerShell fetch the immutable runtime that matches
+  the invitation checksum, preserving the existing invitation.
+- Tool discovery uses the host catalog in one request. Advertised desktop
+  reads work through the authenticated gateway, and missing results return a
+  valid MCP error instead of an invalid tool-result envelope.
+- Home Screen pages recover from interrupted loads and foreground resumes
+  using the same Reach link. Empty open pages show reconnecting feedback and
+  recover once the document answers; stale reads cannot replace working pages.
+  Updates wait for a usable document and avoid reloading an unavailable page.
+- The iPhone app reconnects after iOS ends its page process while the host
+  is unavailable, and bounds empty loads that never finish. Recovery preserves
+  the current view and fragment. This requires a new native app build.
+- Closing overlapping sheets releases one shared page hold, restoring taps,
+  scrolling and input focus. Guest records without folders load safely.
+- Desktop actions refuse a control covered by a notification. Source checkout
+  updates show the verified release commands without discarding local work.
+
+### Added
+
+- Workflow progress and retained task results, with earlier attempts, explicit
+  evidence gaps and refresh recovery. Results distinguish provider reports
+  from recorded independent checks and owner decisions.
+- Optional outcome contracts and review records with bounded coordination,
+  exact-revision acceptance and no automatic replay of uncertain work.
+- Private, bounded phone freeze diagnostics containing only validated Reach
+  page, route and element identifiers, without page text or labels.
+
+### Changed
+
+- Connection loading, slow waits and browser sign-in show actionable feedback.
+- Shared typography and design tokens simplify the interface; Home shortcuts
+  show current Chat and Terminal activity.
+- The release privacy scanner no longer embeds personal identity exemptions.
+  Existing published attribution is pinned to specific historical commits;
+  new source and commit identities continue to be checked. Portable archives
+  also use neutral ownership and timestamps, with no builder account metadata.
+- Windows helper source fingerprints and optional signature verification are
+  prepared and tested. Runtime builds continue to use the existing compiler
+  path; this release does not ship newly signed helpers.
+
+### Known limitations
+
+- Outcome execution requires a trusted production runner adapter, which is
+  not installed by default. Preparation and Run fail closed while unavailable;
+  ordinary workflows and existing result inspection remain available.
+- Synthetic transports, providers and runner checks do not establish physical
+  iPhone, iPad or Android recovery or host isolation. Real-device acceptance
+  remains separate from automated platform verification.
+
 ## [0.5.0] — 2026-11-01
 
 Early-access release focused on reliable agent access, recovery after sleep,

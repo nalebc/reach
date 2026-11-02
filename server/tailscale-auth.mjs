@@ -156,7 +156,10 @@ export async function listenPrivateIngress({
   const stat = fs.lstatSync(dir);
   if (!stat.isDirectory() || stat.uid !== process.getuid())
     throw Error("Unsafe Reach socket directory.");
-  fs.chmodSync(dir, 0o700);
+  // Reopening an already private directory must not require another metadata
+  // write. Protected filesystem locations can block that redundant operation
+  // before the private listener is available to answer a reconnect.
+  if ((stat.mode & 0o7777) !== 0o700) fs.chmodSync(dir, 0o700);
   if (fs.existsSync(socketPath)) {
     const old = fs.lstatSync(socketPath);
     if (!old.isSocket() || old.uid !== process.getuid())

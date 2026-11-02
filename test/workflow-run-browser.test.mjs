@@ -47,7 +47,14 @@ window.showRun('done');
   const server = http.createServer((req, res) => {
     if (req.url === '/favicon.ico') return res.writeHead(204).end();
     if (req.url === '/fonts.css') return res.writeHead(200, { 'Content-Type': 'text/css' }).end('');
-    if (req.url === '/') return res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/entry.css"><div id="root"></div><script type="module" src="/entry.js"></script>');
+    if (req.url === '/') {
+      // Commit the document before its body arrives, as a slow initial load
+      // can. Observing Page.navigate alone does not mean the body exists.
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.write('<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/entry.css"></head>');
+      setTimeout(() => res.end('<body><div id="root"></div><script type="module" src="/entry.js"></script></body></html>'), 100);
+      return;
+    }
     if (!['/entry.js', '/entry.css'].includes(req.url)) return res.writeHead(404).end();
     res.setHeader('Content-Type', req.url.endsWith('.css') ? 'text/css' : 'text/javascript');
     res.end(fs.readFileSync(path.join(dir, req.url.slice(1))));
@@ -64,7 +71,7 @@ window.showRun('done');
     }
   };
   const findButton = text => `[...document.querySelectorAll('button')].find(b => b.textContent.includes(${scriptString(text)}) || b.getAttribute('aria-label')?.includes(${scriptString(text)}))`;
-  await tab.send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
+  await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
   await wait(`document.body.textContent.includes('final paragraph is retained')`);
   for (const width of [320, 390, 768]) {
     await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true });
