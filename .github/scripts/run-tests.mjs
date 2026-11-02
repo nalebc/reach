@@ -88,7 +88,7 @@ export const suites = {
     "windows-route-audit", "windows-private-folder", "windows-owner-rights", "windows-state-normalization", "private-artifact", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
-    "face-join", "fleet",
+    "face-join", "fleet", "fleet-resume-ui", "fleet-resume-chrome",
     // Workstreams K and L: the PC's process list (one Reach per computer),
     // status, stop, restart and Reach's own window, sleep prevention and the
     // background task, on a real PC.

@@ -329,7 +329,7 @@ test("Windows CI covers shared phone navigation, agent workspace privacy, update
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui", "desktop-control-reconnect", "screen-typing-reconnect-chrome",
-    "screen-control-diagnostics", "private-recovery-chrome"])
+    "screen-control-diagnostics", "private-recovery-chrome", "fleet-resume-ui", "fleet-resume-chrome"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });
 
