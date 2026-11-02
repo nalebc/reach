@@ -14,7 +14,7 @@ import { agentKey } from "../scripts/agent-funnel.mjs";
 import { findChrome, launchChrome, openTab, testCertificate } from "./helpers/headless-chrome.mjs";
 
 const ORIGIN = "https://computer.fixture.ts.net", HOST = "computer.fixture.ts.net:8443";
-const EXPOSED = ["reach-not-run", "retry-after", "etag", "x-reach-screen", "content-disposition", "content-length", "content-range", "accept-ranges"];
+const EXPOSED = ["reach-not-run", "reach-retry", "retry-after", "etag", "x-reach-screen", "content-disposition", "content-length", "content-range", "accept-ranges"];
 const headerNames = value => String(value || "").toLowerCase().split(",").map(name => name.trim()).filter(Boolean).sort();
 const sign = (key, input) => {
   const payload = JSON.stringify({ v: 1, audience: ORIGIN, issuedAt: Date.now(), nonce: crypto.randomBytes(24).toString("base64url"), ...input });
@@ -208,6 +208,10 @@ test("real Chrome reads private signed responses and metadata through Reach's or
   const replay = await fetchSigned(shot);
   assert.equal(replay.status, 409);
   assert.equal(replay.headers["reach-not-run"], "1");
+  const stale = await fetchSigned(sign(key, { operation: "request", token, method: "GET", path: "/api/device", body: null, issuedAt: Date.now() - 30000 }));
+  assert.equal(stale.status, 400);
+  assert.equal(stale.headers["reach-not-run"], "1");
+  assert.equal(stale.headers["reach-retry"], "fresh-signature", "Chrome exposes the bounded restart retry hint across ports");
   await reach.setPaused(true);
   const paused = await fetchSigned(request(key, token));
   assert.equal(paused.status, 503);

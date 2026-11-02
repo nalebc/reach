@@ -1,13 +1,13 @@
 /* The Screen dialog, shared by the main app and the agent page (copied from atmosphere.css, same values). */
 .screen-popup {
   color: var(--text);
-  background: var(--panel, #12191a);
-  border: 1px solid var(--border);
+  background: var(--surface-float, #12191a);
+  border: 1px solid transparent;
   border-radius: var(--r-2xl);
   padding: 0;
   width: min(480px, calc(100vw - 28px));
   max-height: min(740px, calc(100dvh - 40px));
-  box-shadow: 0 24px 100px #0009;
+  box-shadow: var(--lift-float, 0 24px 100px #0009);
   /* A tall popup scrolls itself; the swipe never reaches the page. */
   overflow-y: auto;
   overscroll-behavior: contain;

@@ -28,6 +28,17 @@ export function useFleetConnections(peers: Peer[]) {
         timeout: ReturnType<typeof setTimeout>;
       let attempts = 0,
         denied = false;
+      let hiddenAt = document.hidden ? Date.now() : undefined;
+      let lastTick = Date.now();
+      // A dead radio can leave WebSocket.OPEN (or CLOSING) indefinitely.
+      // Retire the old callbacks before opening the read-only presence feed.
+      const retire = () => {
+        const old = ws;
+        ws = undefined;
+        if (!old) return;
+        old.onopen = old.onmessage = old.onclose = old.onerror = null;
+        try { old.close(); } catch { /* The old transport is already gone. */ }
+      };
       const update = (
         state: FleetConnection["state"],
         devices: ConnectedDevice[] = [],
@@ -41,7 +52,9 @@ export function useFleetConnections(peers: Peer[]) {
       };
       const connect = () => {
         clearTimeout(timer);
+        clearTimeout(timeout);
         if (stopped || denied) return;
+        retire();
         update("connecting");
         try {
           const url = new URL("/ws/presence", peer.url);
@@ -53,8 +66,18 @@ export function useFleetConnections(peers: Peer[]) {
           return;
         }
         const socket = ws;
-        timeout = setTimeout(() => socket.close(), 8000);
+        const current = () => !stopped && ws === socket;
+        const disconnected = () => {
+          if (!current()) return;
+          clearTimeout(timeout);
+          retire();
+          update("disconnected");
+          timer = setTimeout(connect, Math.min(10000, 1000 * 2 ** attempts++));
+        };
+        // Closing a suspended socket may never deliver its close event.
+        timeout = setTimeout(disconnected, 8000);
         socket.onopen = () => {
+          if (!current()) return;
           const tablet =
             /iPad/.test(navigator.userAgent) ||
             (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -71,6 +94,7 @@ export function useFleetConnections(peers: Peer[]) {
           );
         };
         socket.onmessage = (event) => {
+          if (!current()) return;
           try {
             const value = JSON.parse(event.data);
             if (value.type !== "presence" || !Array.isArray(value.devices))
@@ -97,7 +121,9 @@ export function useFleetConnections(peers: Peer[]) {
           }
         };
         socket.onclose = (event) => {
+          if (!current()) return;
           clearTimeout(timeout);
+          ws = undefined;
           denied = [4001, 4003].includes(event.code);
           update(denied ? "denied" : "disconnected");
           if (!stopped && !denied)
@@ -106,23 +132,52 @@ export function useFleetConnections(peers: Peer[]) {
               Math.min(10000, 1000 * 2 ** attempts++),
             );
         };
-        socket.onerror = () => socket.close();
+        socket.onerror = disconnected;
       };
+      const hidden = () => { hiddenAt ??= Date.now(); };
       const wake = () => {
-        if (!document.hidden && (!ws || ws.readyState === WebSocket.CLOSED)) {
+        if (document.hidden) { hidden(); return; }
+        const now = Date.now();
+        const suspended = (hiddenAt !== undefined && now - hiddenAt >= 3000) || now - lastTick >= 8000;
+        hiddenAt = undefined;
+        lastTick = now;
+        if (stopped || denied) return;
+        if (suspended || !ws || ws.readyState >= WebSocket.CLOSING) {
           attempts = 0;
           connect();
         }
       };
+      // Some restored web views omit visibility events. A large timer gap
+      // still signals suspension; an ordinarily quiet feed is left alone.
+      const liveness = window.setInterval(() => {
+        const gap = Date.now() - lastTick;
+        lastTick = Date.now();
+        if (document.hidden) { hidden(); return; }
+        if (gap >= 8000 || hiddenAt !== undefined) {
+          if (gap >= 8000) hiddenAt ??= Date.now() - gap;
+          wake();
+        }
+      }, 2000);
       connect();
       window.addEventListener("online", wake);
+      window.addEventListener("pagehide", hidden);
+      window.addEventListener("pageshow", wake);
+      window.addEventListener("focus", wake);
       document.addEventListener("visibilitychange", wake);
+      document.addEventListener("freeze", hidden);
+      document.addEventListener("resume", wake);
       return () => {
         clearTimeout(timer);
         clearTimeout(timeout);
+        window.clearInterval(liveness);
         window.removeEventListener("online", wake);
+        window.removeEventListener("pagehide", hidden);
+        window.removeEventListener("pageshow", wake);
+        window.removeEventListener("focus", wake);
         document.removeEventListener("visibilitychange", wake);
-        ws?.close();
+        document.removeEventListener("freeze", hidden);
+        document.removeEventListener("resume", wake);
+        retire();
       };
     });
     return () => {

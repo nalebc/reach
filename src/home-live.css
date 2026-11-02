@@ -142,10 +142,11 @@
   gap: 10px;
   min-height: 48px;
   padding: 10px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--r-lg);
   color: var(--muted);
-  background: #ffffff05;
+  background: var(--surface-raised);
+  box-shadow: var(--lift);
   text-align: left;
   font: inherit;
   font-size: 13px;
@@ -162,9 +163,8 @@
   flex-shrink: 0;
 }
 .home-presence.controlling {
-  color: #fac775;
-  background: #fac7750d;
-  border-color: #fac77530;
+  color: var(--needs-you);
+  background: color-mix(in srgb, var(--needs-you) 8%, var(--surface-raised));
 }
 .home-presence:active {
   background: #ffffff0c;

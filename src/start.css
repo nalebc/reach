@@ -15,52 +15,108 @@ body {
   box-sizing: border-box;
 }
 .start-card {
-  width: min(360px, 100%);
+  width: min(380px, 100%);
   display: grid;
-  gap: 14px;
+  gap: 16px;
   text-align: center;
 }
 .start-mark {
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: #b9efd4;
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  margin: 0 auto 6px;
+}
+.start-mark img {
+  display: block;
+  width: 84px;
+  height: 84px;
+  border-radius: var(--r-xl);
+  box-shadow: 0 12px 32px #0003;
+}
+.start-card[data-busy="true"] .start-mark img {
+  animation: start-mascot-bob 2.4s ease-in-out infinite;
 }
 .start h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: clamp(24px, 6vw, 28px);
   font-weight: 600;
   line-height: 1.25;
 }
 .start p {
   margin: 0;
-  color: #93a096;
+  color: var(--ink-2);
   font-size: 15px;
-  line-height: 1.45;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.start .start-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--mint);
+  font-size: 13px;
+  font-weight: 500;
+}
+.start-status span {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.start-card[data-busy="true"] .start-status span {
+  animation: start-status-pulse 1.6s ease-in-out infinite;
 }
 .start-action {
-  display: block;
+  display: flex;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
   padding: 14px 18px;
   border: 0;
   border-radius: var(--r-lg);
-  background: #b9efd4;
-  color: #19250f;
+  background: var(--mint);
+  color: var(--mint-ink);
   font: inherit;
   font-weight: 600;
   text-decoration: none;
 }
 .start-action[aria-busy="true"] {
-  opacity: 0.55;
-  pointer-events: none;
+  background: color-mix(in srgb, var(--mint) 7%, var(--surface-0));
+  color: var(--mint);
+  cursor: wait;
+}
+.start-action[aria-busy="true"]::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid color-mix(in srgb, var(--mint) 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: start-spin 0.9s linear infinite;
 }
 .start-secondary {
+  min-height: 44px;
   border: 0;
   background: none;
-  color: #93a096;
+  color: var(--ink-2);
   font: inherit;
+}
+.start-action:focus-visible,
+.start-secondary:focus-visible,
+.start-diagnostics summary:focus-visible,
+.start-hint a:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 4px;
 }
 .start-diagnostics {
   margin-top: 4px;
-  color: #93a096;
+  color: var(--ink-2);
   text-align: left;
   font-size: 13px;
 }
@@ -70,7 +126,7 @@ body {
 }
 .start-diagnostics pre {
   padding: 12px;
-  border: 1px solid #2b332d;
+  border: 1px solid var(--line);
   border-radius: var(--r-md);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -85,10 +141,11 @@ body {
   font-size: 13px;
 }
 .start .start-hint {
+  margin-top: 6px;
   font-size: 13px;
 }
 .start-hint a {
-  color: #e9eee9;
+  color: var(--ink);
 }
 .start-switch {
   position: fixed;
@@ -98,10 +155,10 @@ body {
   transform: translateX(-50%);
   max-width: calc(100% - 32px);
   padding: 7px 12px;
-  border: 1px solid #2b332d;
+  border: 1px solid var(--line);
   border-radius: var(--r-pill);
   background: var(--surface-2);
-  color: #e9eee9;
+  color: var(--ink);
   font:
     13px/1.2 -apple-system,
     BlinkMacSystemFont,
@@ -113,9 +170,27 @@ body {
 
 /* "Step 1 of 2 · Join your network": where you are, signing in without the app. */
 .start-step {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  opacity: 0.65;
+}
+
+@keyframes start-mascot-bob {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-6px) rotate(2deg); }
+}
+@keyframes start-status-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+@keyframes start-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .start-card[data-busy="true"] .start-mark img,
+  .start-card[data-busy="true"] .start-status span,
+  .start-action[aria-busy="true"]::before {
+    animation: none;
+  }
 }

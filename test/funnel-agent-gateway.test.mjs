@@ -7,6 +7,7 @@ import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { createAuth } from "../server/core.mjs";
 import { createFunnelAgentGateway } from "../server/funnel-agent.mjs";
+import { funnelGateway } from "../scripts/agent-funnel.mjs";
 
 const ORIGIN = "https://computer.example.ts.net";
 const random = (size = 32) => crypto.randomBytes(size).toString("base64url");
@@ -730,8 +731,46 @@ test("a request signed before the gateway started is refused, however fresh", as
   const earlier = signed(f.key, { operation: "claim", invitation: f.grant().invitation }, { issuedAt: Date.now() - 5000 });
   const refused = await f.call(earlier);
   assert.equal(refused.status, 400);
+  assert.equal(refused.headers["reach-not-run"], "1");
+  assert.equal(refused.headers["reach-retry"], "fresh-signature");
   assert.equal(f.claims.length, 0);
   assert.equal((await f.call(signed(f.key, { operation: "claim", invitation: f.grant().invitation }))).status, 202);
+});
+
+test("an approved agent signs again after a host restart without a new invitation or repeated action", async t => {
+  let clock = Date.now(), attempts = 0, actions = 0;
+  const f = setup(t, { now: () => clock });
+  const token = await f.join();
+  const proofs = [];
+  let gateway;
+  const client = funnelGateway(ORIGIN, { ...f.key, thumbprint: thumbprintOf(f.key) }, { now: () => clock, send: async (_endpoint, body, headers) => {
+    proofs.push(JSON.parse(JSON.parse(body).payload));
+    if (++attempts === 1) {
+      clock += 10;
+      gateway = createFunnelAgentGateway({ origin: ORIGIN, auth: f.auth, now: () => clock,
+        dispatch(_req, res) { actions++; res.writeHead(200, { "Content-Type": "application/json" }); res.end('{"ok":true}'); } });
+    }
+    return send(gateway, JSON.parse(body), { headers }).done;
+  } });
+  const response = await client.request(token, "POST", "/api/browser/requests", { type: "command", command: "inert fixture" });
+  assert.equal(response.status, 200);
+  assert.equal(attempts, 2);
+  assert.equal(actions, 1);
+  assert.notEqual(proofs[0].nonce, proofs[1].nonce);
+  assert.ok(proofs[1].issuedAt > proofs[0].issuedAt);
+  assert.equal(proofs[0].token, proofs[1].token);
+  assert.deepEqual(proofs[0].body, proofs[1].body);
+});
+
+test("a failure after dispatch never claims an action did not run", async t => {
+  let actions = 0;
+  const f = setup(t, { dispatch() { actions++; throw Object.assign(Error("Lost result"), { status: 503 }); } });
+  const token = await f.join();
+  const response = await f.call(f.request(token));
+  assert.equal(response.status, 503);
+  assert.equal(actions, 1);
+  assert.equal(response.headers["reach-not-run"], undefined);
+  assert.equal(response.headers["reach-retry"], undefined);
 });
 
 // An agent on the owner's tailnet reaches the gateway at the computer's

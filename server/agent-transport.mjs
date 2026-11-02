@@ -11,14 +11,18 @@ export const AGENT_SCREEN_RESPONSE_BYTES = 8 * 1024 * 1024;
 // A screenshot's existing binary bound, encoded as base64, plus bounded MCP
 // metadata. Ordinary JSON and request payloads keep their smaller limits.
 export const AGENT_MCP_IMAGE_RESPONSE_BYTES = 4 * Math.ceil(AGENT_SCREEN_RESPONSE_BYTES / 3) + 64 * 1024;
+const mcpCall = (route, method) => method === "POST" && /^\/api\/browser\/mcp\/call(?:\?runtime=[a-f0-9]{64})?$/.test(route);
 const mcpImageCall = (route, method, body) => {
-  if (method !== "POST" || !/^\/api\/browser\/mcp\/call(?:\?runtime=[a-f0-9]{64})?$/.test(route)) return false;
+  if (!mcpCall(route, method)) return false;
   const name = body?.name === "reach_execute" ? body.arguments?.name : body?.name;
   return ["reach_screenshot", "reach_app_screen"].includes(name);
 };
 export const agentJsonResponseLimit = (route, method = "GET", body, status = 200) =>
   status >= 200 && status < 300 && mcpImageCall(route, method, body) ? AGENT_MCP_IMAGE_RESPONSE_BYTES : AGENT_JSON_RESPONSE_BYTES;
 export function validateAgentJsonResponse(route, method, body, result) {
+  if (mcpCall(route, method) && (!result || typeof result !== "object" || Array.isArray(result) ||
+      !Object.hasOwn(result, "result") || result.result === undefined))
+    throw Error("Reach returned an invalid tool result. Check its state before retrying.");
   if (!mcpImageCall(route, method, body)) return result;
   const image = result?.result;
   if (typeof image?.image !== "string" || !["image/jpeg", "image/png"].includes(image.mimeType) ||
