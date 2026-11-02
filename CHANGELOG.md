@@ -8,6 +8,11 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-01
+
+Early-access release focused on reliable agent access, recovery after sleep,
+and clearer progress and results across supported hosts and phone clients.
+
 ### Fixed
 
 - Returning from suspension restores a stale live connection even when its
@@ -16,22 +21,58 @@ release notes, so date the heading before tagging.
   and no command or action is replayed.
 - Cancelling a browser-relay response also ends its pending body read, so a
   suspended relay cannot hold foreground recovery indefinitely.
+- Agent requests sign after connection readiness and can refresh stale proofs
+  only when Reach confirms the action never ran. A lost action reply is never
+  replayed during a connection change.
+- Transient local-agent runtime download failures retry on the next use. Setup
+  commands on shell and PowerShell fetch the immutable runtime that matches
+  the invitation checksum, preserving the existing invitation.
+- Tool discovery uses the host catalog in one request. Advertised desktop
+  reads work through the authenticated gateway, and missing results return a
+  valid MCP error instead of an invalid tool-result envelope.
+- Home Screen pages recover from interrupted loads and foreground resumes
+  using the same Reach link. Empty open pages show reconnecting feedback and
+  recover once the document answers; stale reads cannot replace working pages.
+  Updates wait for a usable document and avoid reloading an unavailable page.
+- The iPhone app reconnects after iOS ends its page process while the host
+  is unavailable, and bounds empty loads that never finish. Recovery preserves
+  the current view and fragment. This requires a new native app build.
+- Closing overlapping sheets releases one shared page hold, restoring taps,
+  scrolling and input focus. Guest records without folders load safely.
+- Desktop actions refuse a control covered by a notification. Source checkout
+  updates show the verified release commands without discarding local work.
+
 ### Added
 
-- When the phone's page stops answering (a freeze, a tap that arrives late or
-  never becomes a click, taps that land on something lying over the page, or
-  a page closed while frozen), it tells the computer, which keeps a short,
-  bounded record of what kind, how long, which page and route, and the Reach
-  names of what was tapped. Never the page's text or labels.
+- Workflow progress and retained task results, with earlier attempts, explicit
+  evidence gaps and refresh recovery. Results distinguish provider reports
+  from recorded independent checks and owner decisions.
+- Optional outcome contracts and review records with bounded coordination,
+  exact-revision acceptance and no automatic replay of uncertain work.
+- Private, bounded phone freeze diagnostics containing only validated Reach
+  page, route and element identifiers, without page text or labels.
 
-- A guest saved without folders no longer makes every request fail with an
-  error; it has no folders.
-- The phone's page no longer stays frozen in place after a sheet closes, with
-  taps landing on the wrong spot and the message box not taking the cursor.
-  A sheet and the page under it each held the page still and put it back on
-  their own, so the one letting go last put back a stale copy. Choosing a
-  page from the computer menu (0.4.3), or a chat from a sheet, did that. One
-  shared hold now lets go once nothing holds it, in any order.
+### Changed
+
+- Connection loading, slow waits and browser sign-in show actionable feedback.
+- Shared typography and design tokens simplify the interface; Home shortcuts
+  show current Chat and Terminal activity.
+- The release privacy scanner no longer embeds personal identity exemptions.
+  Existing published attribution is pinned to specific historical commits;
+  new source and commit identities continue to be checked. Portable archives
+  also use neutral ownership and timestamps, with no builder account metadata.
+- Windows helper source fingerprints and optional signature verification are
+  prepared and tested. Runtime builds continue to use the existing compiler
+  path; this release does not ship newly signed helpers.
+
+### Known limitations
+
+- Outcome execution requires a trusted production runner adapter, which is
+  not installed by default. Preparation and Run fail closed while unavailable;
+  ordinary workflows and existing result inspection remain available.
+- Synthetic transports, providers and runner checks do not establish physical
+  iPhone, iPad or Android recovery or host isolation. Real-device acceptance
+  remains separate from automated platform verification.
 
 ## [0.4.4] — 2026-10-26
 
