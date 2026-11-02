@@ -125,17 +125,38 @@ export async function tailnetFetch(
     redirect: request.redirect,
   });
   let head: GoHead | null = null;
+  let cancelledHead: GoHead | null = null;
+  let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let finished = false;
   let stopWaiting: (e: unknown) => void = () => {};
+  const cancelHead = (value: GoHead) => {
+    if (cancelledHead === value) return;
+    cancelledHead = value;
+    value.cancel();
+  };
+  const done = () => {
+    finished = true;
+    signal.removeEventListener("abort", onAbort);
+  };
   const onAbort = () => {
-    call.abort();
-    head?.cancel();
-    stopWaiting(abortError(signal));
+    const reason = abortError(signal);
+    try {
+      call.abort();
+      if (head) cancelHead(head);
+    } finally {
+      stopWaiting(reason);
+      // The Go relay may itself be suspended. Settle the browser's body
+      // now instead of waiting for its pending read/cancel to return.
+      if (bodyController && !finished) {
+        bodyController.error(reason);
+        done();
+      }
+    }
   };
   signal.addEventListener("abort", onAbort, { once: true });
-  const done = () => signal.removeEventListener("abort", onAbort);
   // A late answer to an aborted request is let go of right away.
   void call.response.then(
-    (h) => signal.aborted && h.cancel(),
+    (h) => signal.aborted && cancelHead(h),
     () => {},
   );
   try {
@@ -149,10 +170,15 @@ export async function tailnetFetch(
     throw new TypeError("Failed to fetch");
   }
   const got = head;
+  if (signal.aborted) {
+    cancelHead(got);
+    done();
+    throw abortError(signal);
+  }
   const empty =
     request.method === "HEAD" || [101, 204, 205, 304].includes(got.status);
   if (got.status < 200 || got.status > 599) {
-    got.cancel();
+    cancelHead(got);
     done();
     throw new TypeError("Failed to fetch");
   }
@@ -161,19 +187,22 @@ export async function tailnetFetch(
     responseHeaders.append(got.headers[i], got.headers[i + 1]);
   let stream: ReadableStream<Uint8Array> | null = null;
   if (empty) {
-    got.cancel();
+    cancelHead(got);
     done();
   } else
     stream = new ReadableStream<Uint8Array>({
+      start(controller) { bodyController = controller; },
       async pull(controller) {
         try {
           const chunk = await got.read();
+          if (finished) return;
           if (chunk) controller.enqueue(chunk);
           else {
             done();
             controller.close();
           }
         } catch {
+          if (finished) return;
           done();
           controller.error(
             signal.aborted
@@ -183,7 +212,7 @@ export async function tailnetFetch(
         }
       },
       cancel() {
-        got.cancel();
+        cancelHead(got);
         done();
       },
     });

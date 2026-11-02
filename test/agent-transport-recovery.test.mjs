@@ -16,6 +16,58 @@ import { testCertificate } from "./helpers/headless-chrome.mjs";
 
 const PUBLIC = "https://computer.fixture.ts.net";
 const PRIVATE = `${PUBLIC}:8443`;
+
+test("a delayed private fallback signs the held request afresh and keeps its original arguments", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-fresh-proof-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let clock = Date.now();
+  const proofs = [], body = { command: "original inert fixture" };
+  const key = agentKey(root);
+  const gateway = funnelGateway(PUBLIC, key, { endpoints: [PRIVATE, PUBLIC], now: () => clock, send: async (endpoint, text) => {
+    const envelope = JSON.parse(text), proof = JSON.parse(envelope.payload);
+    assert.ok(crypto.verify("sha256", Buffer.from(envelope.payload), { key: crypto.createPublicKey({ key: envelope.publicKey, format: "jwk" }), dsaEncoding: "ieee-p1363" }, Buffer.from(envelope.signature, "base64url")));
+    proofs.push(proof);
+    if (endpoint === PRIVATE) {
+      clock += 61_000;
+      body.command = "changed while connecting";
+      throw Object.assign(Error("No private connection"), { unreachable: true });
+    }
+    assert.equal(proof.issuedAt, clock);
+    return { status: 200, headers: {}, bytes: Buffer.from('{"ok":true}') };
+  } });
+  assert.equal((await gateway.request("fixture", "POST", "/api/browser/shell", body)).status, 200);
+  assert.equal(proofs.length, 2);
+  assert.notEqual(proofs[0].nonce, proofs[1].nonce);
+  assert.deepEqual(proofs[1].body, { command: "original inert fixture" });
+});
+
+test("fresh-signature retries require both pre-dispatch headers and stop after one retry", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-proof-retry-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const key = agentKey(root);
+  for (const headers of [{}, { "reach-not-run": "1" }, { "reach-retry": "fresh-signature" }, { "reach-not-run": "1", "reach-retry": "fresh-signature" }]) {
+    let calls = 0;
+    const gateway = funnelGateway(PUBLIC, key, { send: async () => { calls++; return { status: 400, headers, bytes: Buffer.from("{}") }; } });
+    assert.equal((await gateway.request("fixture", "POST", "/api/browser/shell", {})).status, 400);
+    assert.equal(calls, Object.keys(headers).length === 2 ? 2 : 1);
+  }
+});
+
+test("HTTPS has a total deadline even while a proxy keeps sending response bytes", async t => {
+  const response = new Readable({ read() {} });
+  response.statusCode = 200; response.headers = { "content-type": "application/json" };
+  const active = setInterval(() => response.push(Buffer.from(" ")), 5);
+  t.after(() => { clearInterval(active); response.destroy(); });
+  t.mock.method(https, "request", (_url, _options, callback) => {
+    const request = new EventEmitter(), socket = new EventEmitter();
+    request.end = () => queueMicrotask(() => {
+      request.emit("socket", socket); socket.emit("secureConnect"); callback(response);
+    });
+    request.destroy = error => { request.emit("error", error); request.emit("close"); return request; };
+    return request;
+  });
+  await assert.rejects(httpsSend(PUBLIC, "{}", {}, 40), error => /timed out/.test(error.message) && error.unreachable === false);
+});
 const hex = value => Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString("hex");
 const storedState = () => ({
   _machinekey: hex(`privkey:${"1".repeat(64)}`),

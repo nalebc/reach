@@ -195,7 +195,7 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       const hero = document.querySelector('.home-hero').getBoundingClientRect();
       const nav = document.querySelector('.mobile-nav').getBoundingClientRect();
       const shortcuts = document.querySelector('.home-pinned').getBoundingClientRect();
-      return { width: innerWidth, scroll: document.documentElement.scrollWidth, hero: hero.toJSON(), shortcuts: shortcuts.toJSON(), nav: nav.toJSON(), scene: document.querySelector(".home-scene > svg").getAttribute("viewBox"), name: document.querySelector(".home-hero-text h1")?.textContent ?? null, pill: !!document.querySelector(".home-screen-open"), shortcutWidth: document.querySelector(".shortcut-open").getBoundingClientRect().width, mascot: !!document.querySelector('.home-scene .courier-actor'), target: document.querySelector('.home-screen-launch').getBoundingClientRect().height };
+      return { width: innerWidth, scroll: document.documentElement.scrollWidth, hero: hero.toJSON(), shortcuts: shortcuts.toJSON(), nav: nav.toJSON(), scene: document.querySelector(".home-scene > svg").getAttribute("viewBox"), name: document.querySelector(".home-hero-text h1")?.textContent ?? null, pill: !!document.querySelector(".home-screen-open"), shortcutWidth: document.querySelector(".shortcut-open").getBoundingClientRect().width, shortcutHeight: document.querySelector(".shortcut-open").getBoundingClientRect().height, mascot: !!document.querySelector('.home-scene .courier-actor'), target: document.querySelector('.home-screen-launch').getBoundingClientRect().height };
     })()`);
       results.push(result);
       const shot = await tab.send("Page.captureScreenshot", {
@@ -212,7 +212,10 @@ flushSync(() => createRoot(document.getElementById("root")).render(<WorkspaceAtm
       // preview itself opens Screen (also in the bottom bar), no pill.
       assert.equal(result.name, null);
       assert.equal(result.pill, false);
-      assert.ok(result.shortcutWidth >= result.shortcuts.width - 1, "a lone shortcut uses the available width");
+      // Shortcuts are small icon tiles with their name underneath (the
+      // owner, Nov 1: "should be very small"), each still a touch target.
+      assert.ok(result.shortcutWidth >= 44 && result.shortcutWidth <= 80, `a shortcut is a small tile (${result.shortcutWidth}px)`);
+      assert.ok(result.shortcutHeight >= 44, "a shortcut is a touch target");
       assert.ok(result.mascot, "Reach mascot stays in the scene");
       assert.ok(result.target >= 44, "the preview is a touch target for Screen");
       assert.ok(

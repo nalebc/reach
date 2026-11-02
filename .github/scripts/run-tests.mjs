@@ -21,7 +21,7 @@ export const suites = {
     "close-server", "test-hygiene",
     "browser-file-boundary", "browser-platform-capabilities", "capabilities", "ci-policy",
     "integration", "mcp-entrypoints", "mcp-preset-tools", "native-sharing", "node-runtime-files", "notice-versions",
-    "release-assets", "release-privacy", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
+    "release-assets", "release-privacy", "portable-archive", "terminal-keys", "terminal-lifecycle", "terminal-liveness", "terminal-windows-exit",
     "uploads-concurrency", "windows-agent-cli", "windows-commands", "tailscale-port", "browser-link", "public-dns", "public-start", "tailnet-transport", "setup", "windows-screen-helpers", "phone-link", "jobs", "windows-recycle",
     // Decode the emitted QR and follow it through a separate phone network.
     "qr-onboarding-e2e", "windows-atomic-json",
@@ -63,13 +63,14 @@ export const suites = {
     // Ordinary workflow progress and retained run results on phone layouts.
     "workflow-run-ui", "workflow-run-browser",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
-    "owner-connections", "owner-connection-ui", "owner-connection-cors", "owner-connection-layout-chrome", "owner-offline-start-chrome",
+    "owner-connections", "owner-connection-ui", "owner-connection-cors", "owner-connection-layout-chrome",
+    "connection-feedback-ui", "connection-status-chrome", "owner-offline-start-chrome",
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     // The host guard refreshing ahead, and live connections held through a
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
-    "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
+    "build-reload", "app-boot-ui", "page-recovery-ui", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "face-sign-in-ui",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
@@ -94,7 +95,7 @@ export const suites = {
     "windows-route-audit", "windows-private-folder", "windows-owner-rights", "windows-state-normalization", "private-artifact", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
-    "face-join", "fleet",
+    "face-join", "fleet", "fleet-resume-ui", "fleet-resume-chrome",
     // Workstreams K and L: the PC's process list (one Reach per computer),
     // status, stop, restart and Reach's own window, sleep prevention and the
     // background task, on a real PC.
@@ -119,7 +120,7 @@ export const suites = {
     "windows-tailscale-stand-in", "windows-sign-in-launch", "windows-console", "windows-files", "file-icons", "archives",
     "agent-remote", "agent-runtime-pin", "agent-link-steps", "agent-credential-rotation", "agent-runtime-update", "agent-cli",
     // Shared credential renewal, browser tabs and recovery after lost replies.
-    "agent-funnel-reconnect", "funnel-agent-ui", "agent-guide", "agent-services", "service-connectors", "service-tools-ui",
+    "agent-funnel-reconnect", "agent-computer-tools", "mcp-navigation", "funnel-agent-ui", "agent-guide", "agent-services", "service-connectors", "service-tools-ui",
     // Background mode out of sight: no window from its task's programs.
     "windows-quiet-background",
     // Windows' live screen as H.264 with nothing installed (audit #26): the

@@ -3,12 +3,14 @@ import "./storage-fallback";
 import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
+import { watchStalls } from "./stall-watch";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
 import FallbackSetup, { FallbackNotice } from "./FallbackSetup";
 import KeepInSync from "./KeepInSync";
 import OwnerConnection from "./OwnerConnection";
-import FleetMesh, { ComputerSwitcher } from "./FleetMesh";
+import ConnectionStatus from "./ConnectionStatus";
+import { ComputerSwitcher } from "./FleetMesh";
 import {
   workspaceCapabilities,
   pageAccessible,
@@ -76,9 +78,6 @@ import {
 } from "./api";
 import {
   Logo,
-  PageTitle,
-  Empty,
-  Spinner,
   Wifi,
   Modal,
   ErrorLine,
@@ -192,6 +191,7 @@ function ReachWorkspace() {
       value: Device;
     } | null>(null),
     [error, setError] = useState(""),
+    [connectionDenied, setConnectionDenied] = useState(false),
     [ownerSetupActive, setOwnerSetupActive] = useState(false),
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(""),
@@ -310,6 +310,9 @@ function ReachWorkspace() {
   const agentsWaiting = (agentFeed.sessions || []).filter(
     (s) => s.status === "waiting",
   ).length;
+  const agentsWorking = (agentFeed.sessions || []).some(
+    (s) => s.status === "running" && !s.archived,
+  );
   const [workflowTarget, setWorkflowTarget] = useState<string | null>(null);
   const [chatTarget, setChatTarget] = useState<{
     agent: AgentName | "openclaw";
@@ -490,6 +493,7 @@ function ReachWorkspace() {
       if (!quiet) {
         setLoading(true);
         setError("");
+        setConnectionDenied(false);
       }
       request<Device>(peer, "/api/device", {
         signal: AbortSignal.any([
@@ -506,6 +510,7 @@ function ReachWorkspace() {
           deviceRetry.current.reset();
           setDevice(value);
           setError("");
+          setConnectionDenied(false);
           keepDoorKey(peer);
         })
         .catch((e) => {
@@ -518,6 +523,7 @@ function ReachWorkspace() {
           // sockets are healthy. Keep the current workspace mounted during
           // that retry; only revoked access discards its device immediately.
           if ([401, 403].includes(e.status)) setDevice(null);
+          setConnectionDenied([401, 403].includes(e.status));
           setError(e.message);
           if (![401, 403].includes(e.status))
             deviceRetry.current.schedule(() => refreshDeviceRef.current(true));
@@ -603,6 +609,21 @@ function ReachWorkspace() {
   const pageAt = useRef(0);
   const pageNow = useRef(page);
   pageNow.current = page;
+  // When this page stops answering, the computer keeps a note of it
+  // (src/stall-watch.ts): only on the owner's own private connection.
+  const stallPeer = useRef(peer);
+  stallPeer.current = peer;
+  useEffect(() => watchStalls(async (reports) => {
+    const target = stallPeer.current;
+    if (!target || connectionWay(target) === "public") return "later";
+    try {
+      await request(target, "/api/reach/stalls", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reports }), signal: AbortSignal.timeout(10000) });
+      return "taken";
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      return status === 401 || status === 403 || status === 400 ? "refused" : "later";
+    }
+  }, { page: () => pageNow.current || "", route: () => (stallPeer.current ? connectionWay(stallPeer.current) : "") }), []);
   const afterStep = useRef<(() => void) | null>(null);
   // A root-tab switch discards that section's deeper entries before moving
   // on. Ordinary page navigation keeps them, so Back restores the exact
@@ -1029,52 +1050,18 @@ function ReachWorkspace() {
             key={`${peer?.id}:${page}`}
             onHome={() => navigate("overview")}
           >
-            {loading && !device ? (
+            {!device && (loading || error) ? (
               <>
-                <Spinner />
-                <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
-              </>
-            ) : error && !device ? (
-              <>
-                {page === "overview" && !ownerSetupActive && (
-                  <FleetMesh
-                    peers={peers}
-                    active={peer.id}
-                    connections={connections}
-                    choose={choose}
-                  />
-                )}
-                <PageTitle title="Let’s reconnect" description={peer?.name} />
-                {!guestPeers() && <OwnerConnection peer={peer} device={null} visible reconnect
-                  onActive={setOwnerSetupActive} beginBrowser={beginBrowserApproval} />}
-                {!ownerSetupActive && <section className="panel">
-                  <Empty
-                    icon={Wifi}
-                    title="Your computer is out of reach"
-                    action={
-                      <div className="button-row">
-                        <button
-                          className="button primary"
-                          onClick={refreshDevice}
-                        >
-                          Try again
-                        </button>
-                        <button
-                          className="button secondary"
-                          onClick={() => setPairing(true)}
-                        >
-                          Pair again
-                        </button>
-                      </div>
-                    }
-                  >
-                    {error}
-                    <br />
-                    Reach retries connection interruptions automatically. Keep
-                    your computer awake with Reach and Tailscale running. The phone app is optional after owner setup.
-                  </Empty>
-                  <div className="gs-group"><ConnectionReport peer={peer} toast={toast} /></div>
-                </section>}
+                {(!ownerSetupActive || loading) && <ConnectionStatus
+                  error={loading ? "" : error}
+                  needsApproval={!loading && connectionDenied}
+                  onRetry={refreshDevice}
+                  onConnect={() => setPairing(true)}
+                  diagnostics={<ConnectionReport peer={peer} toast={toast} />}
+                />}
+                {!loading && !guestPeers() && <OwnerConnection peer={peer} device={null} visible reconnect
+                  onActive={setOwnerSetupActive} beginBrowser={beginBrowserApproval}
+                  diagnostics={<ConnectionReport peer={peer} toast={toast} />} />}
               </>
             ) : device && peer && pageAccessible(page, features) ? (
               <>
@@ -1099,7 +1086,7 @@ function ReachWorkspace() {
                 {page === "overview" && (
                   <HomeLive
                     pinnedTools={
-                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} onTogglePin={togglePin} onMove={movePin} />
+                      <PinnedTools features={features} pinned={pinned} onNavigate={navigate} onTogglePin={togglePin} onMove={movePin} alive={{ sessions: { waiting: agentsWaiting, working: agentsWorking } }} />
                     }
                     features={features}
                     device={device}

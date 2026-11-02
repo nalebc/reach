@@ -1,5 +1,12 @@
 import { useOpenWantedNeed } from "./deep-link";
-import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Bell, ChevronRight } from "lucide-react";
 import { type AgentRequest, type Device, type Peer, type Session } from "./api";
 import type { WorkspaceCapabilities } from "./capabilities";
@@ -21,6 +28,7 @@ import { useRemoteScreen } from "./useRemoteScreen";
 import { PauseButton } from "./PauseControl";
 import { computerWord, pausedIn } from "./pause";
 import HomeStories from "./HomeStories";
+import { ShortcutLifeContext, type ShortcutLife } from "./ToolsPage";
 import { OutcomeEntry, outcomeNeeds } from "./outcome-navigation";
 import type { Workflow } from "./Workflows";
 import "./home-live.css";
@@ -271,6 +279,13 @@ export default function HomeLive({
   // A notification's request: opened for review the moment it's here.
   useOpenWantedNeed(needItems);
   const live = features.screen && stream.ready;
+  // A terminal printing right now (the circles below know): Home's
+  // Terminal shortcut breathes while it does.
+  const [terminalWorking, setTerminalWorking] = useState(false);
+  const shortcutLife = useMemo<ShortcutLife>(
+    () => ({ terminal: { working: terminalWorking } }),
+    [terminalWorking],
+  );
   // Everyone else on this computer now: other phones, guests, agents.
   const here = (connections[active]?.devices || []).filter((d) => !d.self);
   const controlling = here.find((d) => d.activity === "controlling");
@@ -358,7 +373,11 @@ export default function HomeLive({
         {/* One line under the computer: how it is, nothing to open. Its
             name is already in the top bar. Offline, what to do says so. */}
         <div className="home-hero-text">
-          <div className="home-connection" role="status" aria-label={`Connection: ${connectionStatus}`}>
+          <div
+            className="home-connection"
+            role="status"
+            aria-label={`Connection: ${connectionStatus}`}
+          >
             <span className="home-connection-line">
               <i className={`status-dot ${online ? "" : "off"}`} />
               {connectionStatus}
@@ -376,7 +395,12 @@ export default function HomeLive({
               </small>
             )}
             {appLink && (
-              <a className="home-app-link" href={appLink} target="_blank" rel="noopener noreferrer">
+              <a
+                className="home-app-link"
+                href={appLink}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 Tailscale app · optional, potentially faster
               </a>
             )}
@@ -400,11 +424,14 @@ export default function HomeLive({
           openMacTab={openMacTab}
           openAgentSession={openAgentSession}
           onStart={() => navigate("terminal")}
+          onTerminalWorking={setTerminalWorking}
         />
       )}
 
+      <ShortcutLifeContext.Provider value={shortcutLife}>
+        {pinnedTools}
+      </ShortcutLifeContext.Provider>
       {features.owner && onOpenWorkflow && <OutcomeEntry list={workflows} runningOnly onOpen={onOpenWorkflow} onAll={() => onOpenWorkflow()} />}
-      {pinnedTools}
 
       {browserApprovals.review}
       {agentAdmissions.review}

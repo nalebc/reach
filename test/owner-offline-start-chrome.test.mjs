@@ -146,11 +146,11 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   await fresh();
   await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true, screenOrientation: { type: 'portraitPrimary', angle: 0 } });
   await tab.send('Page.navigate', { url: workspaceAddress });
-  await wait('!!document.querySelector(".owner-connection-setup[open] a")');
-  assert.match(await tab.evaluate('document.body.textContent'), /Connect securely in this browser/);
+  await wait('!!document.querySelector(".connection-state-actions a")');
+  assert.match(await tab.evaluate('document.body.textContent'), /One quick sign-in/);
   assert.doesNotMatch(await tab.evaluate('document.body.textContent'), /Your computer is out of reach/);
   assert.equal(await tab.evaluate('!!document.querySelector(".fleet-mesh")'), false, 'connection setup is not buried under the disconnected fleet panel');
-  assert.ok(await tab.evaluate('document.querySelector(".owner-connection-setup a").getBoundingClientRect().bottom < innerHeight'), 'sign-in is visible on a phone viewport');
+  assert.ok(await tab.evaluate('document.querySelector(".connection-state-actions a").getBoundingClientRect().bottom < innerHeight'), 'sign-in is visible on a phone viewport');
   if (process.env.REACH_TEST_RECONNECT_SCREENSHOT) {
     const capture = await tab.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(process.env.REACH_TEST_RECONNECT_SCREENSHOT, Buffer.from(capture.data, 'base64'));
@@ -161,7 +161,7 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   // this workspace, with no native bearer sent through the new browser node.
   await call(`function (peers) { localStorage.setItem('reach.devices', JSON.stringify(peers)); }`, [{ ...peer, token: 'FIXTURE-LEGACY-ONLY' }]);
   await fresh(); await tab.send('Page.navigate', { url: workspaceAddress });
-  await wait('!!document.querySelector(".owner-connection-setup[open] a")');
+  await wait('!!document.querySelector(".connection-state-actions a")');
   await tab.evaluate('fixtureCompleteSignIn()');
   await wait('fixtureBrowserRequests.some(request=>request.path==="/api/auth/requests")');
   await wait('document.body.textContent.includes("TEST 123")');

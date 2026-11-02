@@ -1012,7 +1012,11 @@ export function runtimeUpdater({ home, api, file = self(), bundle = isBundle(), 
     get current() { return current; },
     async update(wanted) {
       if (!/^[a-f0-9]{64}$/.test(wanted || "")) throw Error("The computer named no runtime.");
-      const got = await api("/api/device/runtime");
+      let got;
+      try { got = await api("/api/device/runtime"); }
+      catch (error) {
+        throw Object.assign(Error(error?.message || "Reach's runtime could not be downloaded."), { code: "EREACHRUNTIMEFETCH", cause: error });
+      }
       if (typeof got?.text !== "string" || got.sha256 !== wanted || sha256(Buffer.from(got.text, "utf8")) !== wanted)
         throw Error("its runtime didn't match the hash it named");
       // Loaded from its own name: it never starts as a program here.

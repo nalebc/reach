@@ -2,10 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { presetFixture } from "./helpers/preset-fixture.mjs";
-import { serveMcp, toolsFor } from "../scripts/mcp-server.mjs";
+import { serveMcp, toolsFor, toContent } from "../scripts/mcp-server.mjs";
 import { compactTools, browserToolRequest } from "../server/browser-tools.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 import { normalizeAction } from "../server/agent-desktop.mjs";
+
+test("an absent legacy tool result never produces an MCP text block without text", () => {
+  assert.throws(() => toContent(undefined), /no tool result.*Check its state/);
+  assert.deepEqual(toContent(null), [{ type: "text", text: "null" }]);
+});
 
 test("stdio executes a tool with one request after capability discovery and never retries a failed mutation", async () => {
   const input = new PassThrough(), output = new PassThrough(), calls = [];
