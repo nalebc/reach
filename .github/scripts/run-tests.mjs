@@ -88,7 +88,7 @@ export const suites = {
     // Shared cross-agent archives and bounded context on macOS and Windows.
     "portable-history", "transfer-context", "agent-move", "agent-move-sessions", "move-provider-authorization",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
-    "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
+    "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build", "windows-signed-helpers",
     "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in", "windows-sign-in-launch",
