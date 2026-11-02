@@ -55,14 +55,22 @@ export const suites = {
     "uploads-recovery", "upload-folder-race", "outbox-mutation-recovery", "native-helper-unicode", "supervise",
     "agent-compatibility", "reach-version", "agent-watch", "source-update-guidance",
     "coding-task-tools", "coding-tasks", "coding-tasks-api", "coding-task-sessions",
+    // Outcome foundation: shared provenance, private persistence and owner APIs.
+    "result-evidence", "outcomes", "outcomes-routes", "workflow-result-evidence", "outcome-coordinator", "workflow-outcome-ui", "workflow-outcome-browser", "outcome-navigation-ui", "outcome-open-app-ui", "outcome-notifications", "workflows", "workflows-openclaw", "relays",
+    // Synthetic app bytes/check subprocesses through workflow, owner HTTP and
+    // real-browser decisions. Provider turns and isolation remain simulated.
+    "workflow-app-repair", "outcome-app-repair-routes", "outcome-app-repair-browser", "outcome-scheduling", "browser-script-string",
+    // Ordinary workflow progress and retained run results on phone layouts.
+    "workflow-run-ui", "workflow-run-browser",
     // Private/direct first, authorized fallback, and automatic recovery on every client.
-    "owner-connections", "owner-connection-ui", "owner-connection-cors", "owner-connection-layout-chrome", "owner-offline-start-chrome",
+    "owner-connections", "owner-connection-ui", "owner-connection-cors", "owner-connection-layout-chrome",
+    "connection-feedback-ui", "connection-status-chrome", "owner-offline-start-chrome",
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-recovery-chrome", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     // The host guard refreshing ahead, and live connections held through a
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
-    "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",
+    "build-reload", "app-boot-ui", "page-recovery-ui", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "face-sign-in-ui",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
@@ -80,14 +88,14 @@ export const suites = {
     // Shared cross-agent archives and bounded context on macOS and Windows.
     "portable-history", "transfer-context", "agent-move", "agent-move-sessions", "move-provider-authorization",
     // Agent parity, workstream A (docs/WINDOWS_AGENT_PARITY.md).
-    "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build",
+    "app-identity", "agent-desktop-windows", "agent-guard-windows", "windows-native-build", "windows-signed-helpers",
     "agent-preset-invite-ui", "browser-platform-invite-ui", "windows-sandbox-grants",
     // Workstream D, the public door (docs/parity/D-public-door.md §7.1).
     "windows-keyed-ingress", "tailscaled-peer", "foreground-funnel", "windows-sign-in", "windows-sign-in-launch",
     "windows-route-audit", "windows-private-folder", "windows-owner-rights", "windows-state-normalization", "private-artifact", "windows-oracle",
     // On by detection, as on a Mac (owner, Oct 13): Face ID join and linked
     // computers over the keyed route.
-    "face-join", "fleet",
+    "face-join", "fleet", "fleet-resume-ui", "fleet-resume-chrome",
     // Workstreams K and L: the PC's process list (one Reach per computer),
     // status, stop, restart and Reach's own window, sleep prevention and the
     // background task, on a real PC.

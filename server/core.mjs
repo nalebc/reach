@@ -624,7 +624,8 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     if (client)
       client.expiresAt ||= Date.parse(client.createdAt) + 30 * 86400000;
     if (client?.kind === "guest") {
-      const roots = client.guestRoots.filter((root) =>
+      // A guest saved without folders has none (not a crash on every call).
+      const roots = (client.guestRoots || []).filter((root) =>
         config.roots.some((shared) => within(shared, root)),
       );
       return { ...client, agentRoots: roots };

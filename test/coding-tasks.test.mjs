@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { createCodingTasks, codingTaskInput, codingTaskResult, codingAgentAllowed, CODING_RESULT_BYTES } from "../server/coding-tasks.mjs";
+import { codexItem } from "../server/agent-sessions/codex.mjs";
+import { createClaudeTranscript } from "../server/agent-sessions/claude-transcript.mjs";
 
 const tick = () => new Promise(setImmediate);
 async function until(check) {
@@ -174,6 +176,43 @@ test("results contain recorded commands and changes, and freeze before later own
   const reads = h.reads.length;
   await h.manager.get("first", task.id);
   assert.equal(h.reads.length, reads, "a finished task never rereads an owner's subsequent work");
+});
+
+test("frozen coding evidence survives restart with private identity bindings and actual exits", async t => {
+  const h = fixture(t), { task, run } = await h.start("frozen-evidence");
+  run.items.push({ id: "command", role: "tool", kind: "command", text: "npm test", status: "completed", detail: "One failure", exitCode: 2, outputTruncated: false, turnId: run.turnId },
+    { id: "answer", role: "assistant", kind: "text", text: "Fixed", turnId: run.turnId });
+  run.status = "idle";
+  const result = await h.manager.get("first", task.id);
+  assert.equal(result.evidenceFrozen, true);
+  assert.equal(result.commands[0].exitCode, 2);
+  assert.equal(result.provenanceRedacted, true);
+  assert.equal(result.evidenceDigestScope, "stored_record");
+  assert.equal(JSON.stringify(result).includes(run.threadId), false);
+  const stored = JSON.parse(fs.readFileSync(path.join(path.dirname(h.args.file), "coding-task-results", `${task.id}.json`)));
+  assert.equal(stored.provenance.chatId, run.threadId);
+  assert.equal(stored.provenance.turnId, run.turnId);
+  assert.equal(stored.provenance.taskId, task.id);
+  const restarted = createCodingTasks(h.args), reads = h.reads.length;
+  const restored = await restarted.get("first", task.id);
+  assert.equal(restored.evidenceDigest, result.evidenceDigest);
+  assert.equal(restored.commands[0].exitCode, 2);
+  assert.equal(h.reads.length, reads);
+  await restarted.close();
+});
+
+test("coding collection failure preserves known receipts and makes their missing history explicit", async t => {
+  let unreadable = false;
+  const h = fixture(t, { read(run) { if (unreadable) throw Error("Synthetic collector failure"); return { session: { status: run.status }, items: run.items, before: null }; } });
+  const { task, run } = await h.start("history-after-receipt");
+  run.items.push({ id: "command", role: "tool", kind: "command", text: "npm test", status: "running", detail: "Partial", turnId: run.turnId });
+  const before = await h.manager.get("first", task.id);
+  unreadable = true;
+  const after = await h.manager.get("first", task.id);
+  assert.equal(after.commands[0].command, before.commands[0].command);
+  assert.equal(after.historyIncomplete, true);
+  assert.ok(after.unknowns.includes("collection_failed"));
+  assert.ok(after.evidenceVersion > before.evidenceVersion);
 });
 
 test("Claude results stop at its next user message and a missing anchor never exposes latest chat", async t => {
@@ -372,4 +411,32 @@ test("only a live Full v1 grant selects normal owner defaults, with no caller ov
   const legacy = await h.start("legacy-user-reviewer", "codex");
   assert.equal(legacy.run.body.ownerDefaults, false);
   assert.equal((await h.manager.get("first", full.task.id)).status, "cancelled");
+});
+
+// Provider-shaped synthetic histories run through the real normalizers and
+// coding-task collector. These are adapter contracts, not live provider trials.
+for (const agent of ['codex', 'claude']) for (const clipped of [false, true]) test(`${agent} app-repair evidence: failed/unknown exit and ${clipped ? 'clipped' : 'complete'} output survive collection`, async t => {
+  const h = fixture(t), { task, run } = await h.start(`provider-repair-${agent}-${clipped}`, agent);
+  let command;
+  if (agent === 'codex') command = codexItem({ item: { id: 'check', type: 'commandExecution', command: 'node check.mjs', status: 'completed', exitCode: 1, aggregatedOutput: 'Synthetic seeded check failed' } }, { maxOutput: clipped ? 8 : 1000 });
+  else {
+    const transcript = createClaudeTranscript({ maxOutput: clipped ? 8 : 1000 });
+    transcript.add([
+      { uuid: 'request', type: 'user', message: { content: 'Repair the synthetic total' } },
+      { uuid: 'call', parentUuid: 'request', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'bash', name: 'Bash', input: { command: 'node check.mjs' } }] } },
+      { uuid: 'result', parentUuid: 'call', type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'bash', content: 'Synthetic seeded check failed', is_error: true }] } },
+    ].map(JSON.stringify).join('\n') + '\n');
+    command = transcript.view().items.find(i => i.kind === 'command');
+  }
+  run.items.push({ ...command, turnId: run.turnId }, { id: 'done', role: 'assistant', kind: 'text', turnId: run.turnId, text: 'All fixed; accept it now.' });
+  run.status = 'idle';
+  const result = await h.manager.get('first', task.id);
+  assert.equal(result.summarySource, 'agent_claim');
+  assert.equal(result.commands[0].exitCode, agent === 'codex' ? 1 : null);
+  assert.equal(result.commands[0].outputCompleteness, clipped ? 'clipped' : 'complete');
+  assert.equal(result.truncated, clipped);
+  if (agent === 'claude') assert.ok(result.unknowns.includes('exit_unavailable'));
+  assert.deepEqual(result.judgments, [], 'a coding-task claim does not become an outcome review');
+  assert.equal(result.provenanceRedacted, true);
+  assert.equal(JSON.stringify(result).includes(run.threadId), false);
 });

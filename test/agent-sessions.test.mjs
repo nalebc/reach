@@ -398,7 +398,7 @@ test("Codex threads and items normalize; approvals read as waiting", () => {
   assert.equal(codexItem({ item: { type: "reasoning", id: "r" } }), null);
   assert.deepEqual(
     codexItem({ item: { type: "commandExecution", id: "c", command: "npm test", aggregatedOutput: "x", exitCode: 1, status: "completed" } }),
-    { id: "c", role: "tool", kind: "command", text: "npm test", detail: "x", status: "failed", at: undefined, turnId: undefined },
+    { id: "c", role: "tool", kind: "command", text: "npm test", detail: "x", outputTruncated: false, exitCode: 1, status: "failed", at: undefined, turnId: undefined },
   );
   assert.equal(codexItem({ item: { type: "userMessage", id: "u", content: [{ type: "text", text: "hi" }] } }).text, "hi");
   assert.equal(codexItem({ item: { type: "fileChange", id: "f", changes: [{ path: "a.ts", diff: "+1" }], status: "completed" } }).text, "a.ts");

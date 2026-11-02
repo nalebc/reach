@@ -6,7 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { fail } from "./core.mjs";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { buildNative, buildWindowsNative } from "./native-build.mjs";
 import { COLD_START_MS, SCRIPT_BLOCKED, powershellFile, scriptBlocked } from "./powershell.mjs";
 import { windowsPath } from "./app-identity.mjs";
@@ -63,6 +63,15 @@ const EXTRA_REFERENCES = { transcribe: ["System.Speech.dll"] };
 // agent desktop's own reading of them (scripts/native/screen-video.cs
 // GuestView), so both decide alike from one copy of that code.
 const EXTRA_SOURCES = { "screen-video": { sources: ["agent-desktop.cs"], main: "ReachVideo.ReachScreenVideo" } };
+// The one helper that is a Windows program with no console of its own (the
+// background task's starter, scripts/background-service.mjs); the others are
+// console programs. A release builds each with the target its caller asks for.
+const TARGETS = { background: "winexe" };
+/** Every Windows helper Reach ships (scripts/native/*.cs; hello.cs is the build test's own, never shipped): [{ kind, target }]. */
+export function windowsHelperKinds() {
+  return readdirSync(native).filter((name) => name.endsWith(".cs") && name !== "hello.cs").map((name) => name.slice(0, -3)).sort()
+    .map((kind) => ({ kind, target: TARGETS[kind] || "exe" }));
+}
 const extraCandidates = (framework, name, env) => {
   const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? env.WINDIR ?? "C:\\Windows";
   const assembly = name.replace(/\.dll$/i, "");
@@ -105,9 +114,20 @@ function helperPlan(kind, { dir, target = "exe", fresh = false } = {}) {
   for (const file of sourceFiles) digest.update(readFileSync(file));
   digest.update(JSON.stringify([flags, extras.length ? [...REFERENCES, ...extras] : REFERENCES]));
   if (manifest) digest.update(manifest);
-  const hash = digest.digest("hex").slice(0, 12);
-  const file = path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`);
-  return { flags, sourceFiles, extras, manifest, manifestFile, file };
+  // The whole digest is what a release's signed helper is matched against
+  // (server/windows-signed-helpers.mjs): built from exactly these sources,
+  // flags and references. Its first 12 characters name the local build.
+  const sourceSha256 = digest.digest("hex");
+  const hash = sourceSha256.slice(0, 12);
+  const file = dir ? path.join(dir, `reach-${kind}-${hash}${fresh ? `-${crypto.randomBytes(4).toString("hex")}` : ""}.exe`) : null;
+  return { flags, sourceFiles, extras, manifest, manifestFile, file, sourceSha256 };
+}
+/** What a helper of `kind` is built from, on any platform: its source digest and files, as a release's manifest records them. */
+export function windowsHelperSource(kind, { target = TARGETS[kind] || "exe" } = {}) {
+  if (typeof kind !== "string" || !/^[a-z0-9-]{1,40}$/.test(kind) || !["exe", "winexe"].includes(target)) throw Error("Unknown helper.");
+  const { sourceSha256, sourceFiles, manifest, manifestFile } = helperPlan(kind, { target });
+  const root = path.resolve(native, "..", "..");
+  return { kind, target, sourceSha256, files: [...sourceFiles, ...(manifest ? [manifestFile] : [])].map((file) => path.relative(root, file).split(path.sep).join("/")) };
 }
 // A helper for a security check (windowsHelper), resolved without ever
 // compiling: its path and noted SHA-256 when it's already built in `dir` and

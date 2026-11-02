@@ -34,7 +34,13 @@ function command(worker: ServiceWorker, value: object, signal?: AbortSignal, tra
 export async function keepReconnectPage() {
   if (!supported()) return false;
   try {
-    return !!((await navigator.serviceWorker.getRegistration("/")) || (await navigator.serviceWorker.register("/sw.js", { scope: "/" })));
+    const registration = (await navigator.serviceWorker.getRegistration("/")) ||
+      (await navigator.serviceWorker.register("/sw.js", { scope: "/" }));
+    // Existing installations need the current recovery code too. Merely
+    // finding a registration leaves its older worker running until the
+    // browser's next automatic update check.
+    void registration.update().catch(() => {});
+    return true;
   } catch { return false; }
 }
 async function worker(register: boolean, signal?: AbortSignal) {
