@@ -147,6 +147,34 @@ test("fetch through the node returns a real streaming Response", async () => {
   assert.deepEqual(h.log, ["read", "read", "read"]);
 });
 
+test("fetch: abort settles a suspended response body without waiting for the relay to answer", async () => {
+  const node = fakeNode();
+  const controller = new AbortController();
+  const reason = new DOMException("The suspended read was cancelled.", "AbortError");
+  let release, began;
+  const started = new Promise(resolve => { began = resolve; });
+  const h = head(200, ["content-type", "application/json"]);
+  h.read = () => { began(); return new Promise(resolve => { release = resolve; }); };
+  node.respond = (_, resolve) => resolve(h);
+  const response = await transport.tailnetFetch(node, "https://computer.t.ts.net/api/device", { signal: controller.signal });
+  const outcome = response.json().then(value => ({ value }), error => ({ error }));
+  await started;
+  controller.abort(reason);
+  let timer;
+  try {
+    const result = await Promise.race([outcome, new Promise(resolve => { timer = setTimeout(() => resolve({ timedOut: true }), 200); })]);
+    assert.equal(result.timedOut, undefined, "cancelled reads must not hold foreground recovery indefinitely");
+    assert.equal(result.error, reason, "preserve the caller's cancellation reason");
+    assert.equal(node.calls.filter(call => call === "abort").length, 1);
+    assert.equal(h.log.filter(call => call === "cancel").length, 1);
+    assert.equal(node.calls.filter(call => typeof call === "object").length, 1, "an unknown request is never replayed");
+  } finally {
+    clearTimeout(timer);
+    release(null);
+    await outcome;
+  }
+});
+
 test("fetch: a mutation aborted during streaming request body preparation is never dispatched", async () => {
   // Request, body consumption and cancellation are real browser-compatible
   // primitives. Only the Go/WASM dispatch boundary is controlled here; this

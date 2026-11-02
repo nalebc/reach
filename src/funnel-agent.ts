@@ -256,7 +256,8 @@ export function createFunnelAgent(dependencies: {
     state: FunnelState,
     operation: Record<string, unknown>,
     signal?: AbortSignal,
-  ) {
+    again = true,
+  ): Promise<Response> {
     if (state.origin !== origin || !/^https:\/\//.test(origin))
       throw endedError();
     const pair = await keyFor(state);
@@ -267,6 +268,9 @@ export function createFunnelAgent(dependencies: {
       x: exported.x,
       y: exported.y,
     };
+    // Private-route startup may span sleep or a network change. Sign only
+    // once the route is ready so its proof is fresh when it leaves.
+    const endpoint = await dependencies.gateway?.endpoint() || origin;
     const payload = JSON.stringify({
       ...operation,
       v: 1,
@@ -289,8 +293,7 @@ export function createFunnelAgent(dependencies: {
         new TextEncoder().encode(JSON.stringify({ crv: "P-256", kty: "EC", x: publicKey.x, y: publicKey.y })),
       ),
     );
-    const endpoint = await dependencies.gateway?.endpoint() || origin;
-    return dependencies.fetch(`${endpoint}/agent-gateway`, {
+    const response = await dependencies.fetch(`${endpoint}/agent-gateway`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Reach-Key": thumbprint },
       body: JSON.stringify({ payload, publicKey, signature }),
@@ -306,6 +309,10 @@ export function createFunnelAgent(dependencies: {
         dependencies.gateway?.failed(endpoint);
       throw error;
     });
+    if (again && !signal?.aborted && response.status === 400 &&
+        response.headers.get("Reach-Not-Run") === "1" && response.headers.get("Reach-Retry") === "fresh-signature")
+      return signed(state, JSON.parse(payload), signal, false);
+    return response;
   }
   // What a refusal means for this page: over (401 unknown or revoked link,
   // 403 declined, 410 ended), or in use in another browser (423). Anything
@@ -513,12 +520,13 @@ export function createFunnelAgent(dependencies: {
     }
     // The session in storage is the one to use: a refresh may have replaced
     // the token a view still holds. Never "ended" from here: only the
-    // computer says that (reconnect).
+    // computer says that (reconnect). A missing local session cannot be
+    // repaired by retrying a file transfer or borrowing another identity.
     if (!state?.session || state.id !== peer.sessionId || peer.url !== origin)
-      throw failure(
+      throw Object.assign(failure(
         503,
-        "This page is reconnecting to the computer. Trying again in a moment.",
-      );
+        "Reopen this agent's existing Reach link to restore its connection.",
+      ), { retryable: false });
     if (!/^\/api\//.test(path) || /[\\#]/.test(path))
       throw Error("This request is outside the shared workspace.");
     const method = (init.method || "GET").toUpperCase();

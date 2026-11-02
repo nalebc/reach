@@ -118,7 +118,10 @@ function toolItem(block, result, cwd) {
   };
   switch (block.name) {
     case "Bash":
-      return { ...base, kind: "command", text: String(input.command ?? ""), detail: output };
+      return { ...base, kind: "command", text: String(input.command ?? ""), detail: output,
+        outputTruncated: result ? result.truncated === true || block.truncated === true : null,
+        // tool_result.is_error is not a process exit code.
+        exitCode: null };
     case "Edit":
     case "MultiEdit":
     case "Write":
@@ -128,6 +131,7 @@ function toolItem(block, result, cwd) {
         kind: "file-change",
         text: relative(input.file_path ?? input.notebook_path ?? "", cwd),
         detail: editDiff(block.name, input, cwd) || (block.name === "Write" ? "Wrote file" : "Edited file"),
+        diffTruncated: block.truncated === true,
       };
     case "TodoWrite":
     case "TaskCreate":
@@ -215,7 +219,8 @@ function slimToolUse(b) {
   const kept = Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, short(input[k])]));
   if (Array.isArray(kept.edits))
     kept.edits = kept.edits.slice(0, 30).map((e) => ({ old_string: short(e?.old_string ?? ""), new_string: short(e?.new_string ?? "") }));
-  return { type: "tool_use", id: b.id, name: b.name, input: kept, key };
+  return { type: "tool_use", id: b.id, name: b.name, input: kept, key,
+    truncated: JSON.stringify(kept) !== JSON.stringify(Object.fromEntries(keep.filter((k) => k in input).map((k) => [k, input[k]]))) };
 }
 const EDIT_MAX = 12000;
 
@@ -307,8 +312,10 @@ function slimEntry(e, results, maxOutput) {
       for (const b of content) {
         if (!b) continue;
         if (b.type === "tool_result") {
-          if (e.type === "user" && b.tool_use_id)
-            results.set(b.tool_use_id, { is_error: !!b.is_error, output: clip(textOf(b.content) || String(b.content ?? ""), maxOutput) });
+          if (e.type === "user" && b.tool_use_id) {
+            const output = textOf(b.content) || String(b.content ?? "");
+            results.set(b.tool_use_id, { is_error: !!b.is_error, output: clip(output, maxOutput), truncated: output.length > maxOutput });
+          }
         } else if (b.type === "tool_use") kept.push(slimToolUse(b));
         else if (b.type === "text") kept.push({ type: "text", text: b.text });
         // What the Claude app shows in grey between steps: the summary of a

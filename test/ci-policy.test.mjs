@@ -91,6 +91,13 @@ test("CI test selection never silently loses a renamed required platform test", 
   for (const suite of Object.keys(suites)) assert.equal(testFiles(suite).length, suites[suite].length);
 });
 
+test("Windows CI retains the shared outcome journey, evidence, coding, owner-route and phone UI regressions", () => {
+  const selected = new Set(testFiles("windows"));
+  for (const name of ["workflow-app-repair", "outcome-app-repair-routes", "outcome-app-repair-browser", "outcome-coordinator", "outcome-scheduling", "result-evidence", "workflow-result-evidence", "coding-tasks", "outcomes-routes", "workflow-outcome-ui", "workflow-outcome-browser", "workflow-run-ui", "workflow-run-browser"]) {
+    assert.ok(selected.has(path.join("test", `${name}.test.mjs`)), `${name} must run on Windows as a shared regression`);
+  }
+});
+
 test("every test runs on Windows unless a lane owns it", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ci-windows-rest-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -329,7 +336,7 @@ test("Windows CI covers shared phone navigation, agent workspace privacy, update
     "screen-owner-first-ui", "screen-presentation", "screen-bar-placement", "screen-bar-ui",
     "screen-typing-integration", "screen-tap-to-type-ui", "field-probe-ui", "field-map", "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui", "desktop-control-reconnect", "screen-typing-reconnect-chrome",
-    "screen-control-diagnostics", "private-recovery-chrome"])
+    "screen-control-diagnostics", "private-recovery-chrome", "fleet-resume-ui", "fleet-resume-chrome"])
     assert.ok(suites.windows.includes(name), `${name} needs the Windows lane`);
 });
 
@@ -520,6 +527,8 @@ test("publishing isolation covers multiline commands, script settings and same-r
 
 test("Windows CI enforces private-first selection, fallback, recovery and private bootstrap boundaries", () => {
   for (const name of [
+    "agent-computer-tools", "mcp-navigation", "agent-runtime-update", "agent-funnel-reconnect",
+    "agent-image-envelope", "agent-image-envelope-integration",
     "private-public-availability", "agent-transport-recovery", "private-recovery-ui", "private-bootstrap-chrome", "connection-report", "private-gateway", "native-fallback-setup", "native-fallback-setup-chrome", "offline-shell", "offline-shell-chrome",
     "one-address-ui", "background-transfer-ui", "security", "delivery", "start-info-route",
     "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway",

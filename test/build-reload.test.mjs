@@ -422,13 +422,34 @@ test("without an offline copy, a page put away or taken up while its new page an
   }
 });
 
-test("a page with an offline copy still reloads as it's put away", () => {
+test("a Home Screen page keeps its document while hidden even with an offline copy", async () => {
   reload.forgetBuild();
-  let reloads = 0;
-  const options = { offlineCopy: () => true, away: () => true, busy: () => false, wait: () => {}, reload: () => reloads++ };
+  let reloads = 0, away = true;
+  const waits = [];
+  const options = { offlineCopy: () => true, away: () => away, busy: () => false, wait: fn => waits.push(fn), reload: () => reloads++ };
   reload.noteBuild("old", options);
+  await Promise.resolve();
   reload.noteBuild("new", options);
+  assert.equal(reloads, 0, "a saved-copy flag cannot make background navigation safe");
+  assert.equal(reload.getUpdateState(), "waiting");
+  away = false;
+  waits.shift()();
   assert.equal(reloads, 1);
+});
+
+test("returning to Reach starts a fresh idle interval before automatic updates", () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    for (const event of ["pageshow", "focus", "visibilitychange"]) {
+      dom.window.dispatchEvent(new dom.window.Event("pointerdown"));
+      now += reload.IDLE_MS + 1000;
+      assert.equal(reload.inUse(dom.document, now), false);
+      (event === "visibilitychange" ? dom.document : dom.window).dispatchEvent(new dom.window.Event(event));
+      assert.equal(reload.inUse(dom.document, now), true, `${event}: opening the app counts as use`);
+    }
+  } finally { Date.now = originalNow; }
 });
 
 test("the new page answers only when the computer serves it: not an error, not the offline copy, not a stalled or closed connection", async (t) => {
@@ -439,6 +460,8 @@ test("the new page answers only when the computer serves it: not an error, not t
   const server = http.createServer((req, res) => {
     asked.push(new URL(req.url, "http://x").searchParams.has("reach-update"));
     if (mode === "stall") return;
+    if (mode === "body-stall") { res.writeHead(200); res.flushHeaders(); return; }
+    if (mode === "empty") return res.writeHead(200).end();
     if (mode === "error") return res.writeHead(503).end();
     res.writeHead(200, mode === "copy" ? { "X-Reach-Cached-Shell": "1" } : {}).end("<!doctype html>");
   });
@@ -453,6 +476,10 @@ test("the new page answers only when the computer serves it: not an error, not t
   assert.equal(await reload.pageAnswers(href, realFetch), false, "an error page");
   mode = "copy";
   assert.equal(await reload.pageAnswers(href, realFetch), false, "the offline copy");
+  mode = "empty";
+  assert.equal(await reload.pageAnswers(href, realFetch), false, "an empty success response would open a blank page");
+  mode = "body-stall";
+  assert.equal(await reload.pageAnswers(href, realFetch, 200), false, "headers alone do not prove the page arrived");
   mode = "stall";
   assert.equal(await reload.pageAnswers(href, realFetch, 200), false, "no reply in time");
   await close();

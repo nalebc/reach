@@ -29,7 +29,7 @@ const hash = (value) =>
   crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const targetUrl = (target) => {
   const params = new URLSearchParams();
-  for (const key of ["page", "agent", "id", "threadId", "needs", "prompt"])
+  for (const key of ["page", "agent", "id", "threadId", "needs", "prompt", "workflow"])
     if (typeof target?.[key] === "string") params.set(key, target[key]);
   return `/?${params}`;
 };
@@ -47,9 +47,26 @@ export function sealNotification(item, binding) {
     _binding: binding,
   };
 }
-export function publicNotification({ _binding, signature, push, bell, category, ...item }) {
+export function publicNotification({ _binding, signature, push, bell, category, privateOutcome, ...item }) {
   return item;
 }
+// Outcome alerts carry fixed copy and an opaque workflow locator only. Evidence,
+// goal text and decisions stay behind the authenticated result sheet.
+export function outcomeNotification(workflow) {
+  const phase = workflow.outcome?.phase;
+  if (!["ready", "needs_owner", "uncertain", "cancelling", "unavailable"].includes(phase)) return null;
+  const ready = phase === "ready";
+  return sealNotification({
+    id: `outcome:${workflow.id}`, source: "outcome", sender: "Reach", icon: "agent",
+    kind: "outcome", category: "done",
+    title: ready ? "Outcome ready for your review" : "Outcome needs your attention",
+    detail: ready ? "Inspect the current result before accepting." : "Open Reach to inspect the current decision or missing evidence.",
+    signature: `${phase}:${workflow.outcome.version || 0}`,
+    target: { page: "sessions", workflow: workflow.id },
+    actions: [],
+  }, { type: "outcome", workflow: workflow.id, phase, version: workflow.outcome.version || 0 });
+}
+
 export function chatNotifications(session) {
   const source = session.agent;
   const base = {
@@ -445,6 +462,15 @@ function backgroundPush(item) {
 }
 export function notificationPush(item) {
   if (item.source === "openclaw-watch") return backgroundPush(item);
+  if (item.privateOutcome) return {
+    title: "Outcome task needs you", body: "Open Reach to review the current task request.",
+    icon: sourceIcon(item.source), url: targetUrl(item.target),
+    actions: [{ action: "open", title: "Review task request" }],
+  };
+  if (item.source === "outcome") return {
+    title: item.title, body: item.detail, icon: "agent", url: targetUrl(item.target),
+    actions: [{ action: "open", title: "Review outcome" }],
+  };
   const open = item.target?.page === "screen" ? "Open live screen"
     : item.kind === "connection" ? "Review access"
     : item.kind === "question" ? "Reply"
