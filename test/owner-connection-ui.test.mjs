@@ -287,9 +287,9 @@ for (const scenario of ['prepared', 'legacy-unprepared', 'cold-start', 'cold-sta
         peer: f.peer, device: null, visible: true, reconnect: true,
         beginBrowser: (config, browser) => { approval = { config, browser }; },
       }));
-      await f.dom.waitFor(() => f.dom.document.querySelector('.owner-connection-details a'));
-      assert.equal(f.dom.document.querySelector('details').open, true, 'sign-in remains visible without a live device');
-      assert.match(f.dom.document.body.textContent, /Connect securely in this browser/);
+      await f.dom.waitFor(() => f.dom.document.querySelector('.connection-state-actions a'));
+      assert.equal(f.dom.document.querySelectorAll('.connection-state').length, 1, 'sign-in remains the primary feedback without a live device');
+      assert.match(f.dom.document.body.textContent, /One quick sign-in/);
       window.dispatchEvent(new Event('online'));
       assert.equal(wakes, 1, 'a changed network wakes the suspended relay');
     }

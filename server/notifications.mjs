@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import {
   chatNotifications,
+  outcomeNotification,
   browserNotification,
   admissionNotification,
   restartNotification,
@@ -33,6 +34,7 @@ export async function readAttention({
   // What Reach drives, behind or too old (keep-in-sync.mjs): one card each.
   syncOffers = () => [],
   terminalCount = () => 0,
+  workflows = () => [],
   // OpenClaw's background work (openclaw-watch.mjs): pushed, not listed.
   background = () => [],
 }) {
@@ -41,14 +43,18 @@ export async function readAttention({
     Promise.resolve().then(() => openClaw.overview()),
   ]);
   const items = [];
-  const unavailable = new Set();
+  let outcomeUnavailable = false, workflowList = [];
+  try { workflowList = workflows(); for (const w of workflowList) { const item = outcomeNotification(w); if (item) items.push(item); } }
+  catch { outcomeUnavailable = true; }
+  const unavailable = new Set(outcomeUnavailable ? ["outcome"] : []);
   if (agents.status === "fulfilled") {
     for (const source of Object.keys(agents.value.errors || {}))
       unavailable.add(source);
     for (const s of agents.value.sessions || []) {
       if (s.archived || s.status !== "waiting" || unavailable.has(s.agent))
         continue;
-      items.push(...chatNotifications(s));
+      items.push(...chatNotifications(s).map(item => outcomeUnavailable || isOutcomeTask(workflowList, s.agent, s.id)
+        ? { ...item, privateOutcome: true } : item));
     }
     for (const p of agents.value.macPrompts || [])
       items.push({
@@ -273,3 +279,29 @@ export function createNotifications({
     },
   };
 }
+
+// Keep outcome transitions in the existing private away journal. Seed current
+// state on startup; loading retained work is not another event.
+export function createOutcomeJournal({ list, journal, now = Date.now }) {
+  const signature = w => `${w.outcome.phase}:${w.outcome.version || 0}`;
+  const seen = new Map(list().filter(w => w.outcome).map(w => [w.id, signature(w)]));
+  return () => {
+    const current = list().filter(w => w.outcome);
+    for (const id of seen.keys()) if (!current.some(w => w.id === id)) seen.delete(id);
+    for (const w of current) {
+      if (seen.get(w.id) === signature(w)) continue;
+      seen.set(w.id, signature(w));
+      const alert = outcomeNotification(w);
+      if (alert || ["accepted", "cancelled", "changes_requested"].includes(w.outcome.phase)) {
+        try { journal.add({ kind: `outcome-${w.outcome.phase}`, workflow: w.id,
+          title: alert?.title || "Outcome decision recorded", text: alert?.detail || "Inspect the current outcome in Reach.",
+          target: { page: "sessions", workflow: w.id }, at: now() }); } catch {}
+      }
+    }
+  };
+}
+// A provider can finish before its start response binds a chat ID. During
+// that unresolved window keep that provider's transcript pushes private too.
+export const isOutcomeTask = (list, agent, id) => list.some(w => w.outcome &&
+  w.tasks.some(t => [t.chat, ...(t.tries || [])].some(c => c?.agent === agent && c.id === id) ||
+    t.agent === agent && !t.chat && ["starting", "uncertain"].includes(t.state)));

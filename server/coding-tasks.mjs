@@ -6,26 +6,15 @@ import crypto from "node:crypto";
 import { atomicJson, fail, isPlainRecord } from "./core.mjs";
 import { FULL_CONTROL_VERSION, validPresetPolicy } from "./agent-presets.mjs";
 import { turnOutcome } from "./agent-sessions/turn-watch.mjs";
+import { RESULT_BYTES, clipResultText, jsonBytes, recordedTurnResult, readOriginalTurn, restoreResult, resultContentHash, resultWithGaps, stampResult } from "./agent-sessions/result-evidence.mjs";
 
 const ACTIVE = new Set(["starting", "running", "waiting", "cancelling"]);
 const STATES = new Set([...ACTIVE, "completed", "failed", "cancelled", "interrupted", "uncertain"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REQUEST = /^[A-Za-z0-9_-]{8,80}$/;
-export const CODING_RESULT_BYTES = 48 * 1024;
-const blankResult = () => ({ summary: "", commands: [], changes: [], progress: [], truncated: false, historyIncomplete: false });
-const bytes = (value) => Buffer.byteLength(JSON.stringify(value));
-// Bound the encoded JSON too: a control character can cost six bytes.
-function clipped(value, room) {
-  const text = typeof value === "string" ? value : "";
-  if (bytes(text) <= room) return { text, truncated: false };
-  let lo = 0, hi = text.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (bytes(text.slice(0, mid)) <= room - 8) lo = mid;
-    else hi = mid - 1;
-  }
-  return { text: text.slice(0, lo) + "\n…", truncated: true };
-}
+export const CODING_RESULT_BYTES = RESULT_BYTES;
+const bytes = jsonBytes, clipped = clipResultText;
+const blankResult = (binding = {}) => recordedTurnResult([], { binding });
 
 export function codingAgentAllowed(client, agent = "codex") {
   if (client?.kind !== "agent") return false;
@@ -53,33 +42,7 @@ export function codingTaskInput(body) {
 
 // Only material recorded in the initial task turn. Never a worktree-wide diff
 // (which would attribute existing edits to this task), thoughts or app prompts.
-export function codingTaskResult(items, { historyIncomplete = false } = {}) {
-  const result = { ...blankResult(), historyIncomplete };
-  const text = (value, room) => {
-    const piece = clipped(value, room);
-    result.truncated ||= piece.truncated;
-    return piece.text;
-  };
-  const said = items.filter((i) => i?.role === "assistant" && i.kind === "text" && !i.questions?.length);
-  result.summary = text(said.at(-1)?.text || "", 9000);
-  const commands = items.filter((i) => i?.role === "tool" && i.kind === "command");
-  const changes = items.filter((i) => i?.role === "tool" && i.kind === "file-change");
-  const progress = items.filter((i) => i?.role === "assistant" && i.kind === "text");
-  const status = (item) => ["completed", "failed", "inProgress", "running", "declined"].includes(item.status) ? item.status : "unknown";
-  result.commands = commands.slice(-20).map((i) => ({ command: text(i.text, 1000), status: status(i), output: text(i.detail, 3000) }));
-  result.changes = changes.slice(-20).map((i) => ({ files: text(i.text, 1600), status: status(i), diff: text(i.detail, 4000) }));
-  result.progress = progress.slice(-8).map((i) => text(i.text, 700));
-  result.truncated ||= commands.length > 20 || changes.length > 20 || progress.length > 8;
-  while (bytes(result) > CODING_RESULT_BYTES) {
-    result.truncated = true;
-    if (result.progress.length) result.progress.shift();
-    else if (result.commands.length > 1) result.commands.shift();
-    else if (result.changes.length) result.changes.shift();
-    else if (result.commands.length) result.commands.shift();
-    else break;
-  }
-  return result;
-}
+export const codingTaskResult = recordedTurnResult;
 
 export function createCodingTasks({
   file, sessions, authorize, resolveProject, validateProject = () => {}, now = Date.now,
@@ -145,21 +108,14 @@ export function createCodingTasks({
   };
   const resultFor = (r) => {
     if (results.has(r.id)) return results.get(r.id);
-    let value = blankResult();
+    let value = blankResult({ provider: r.agent, chatId: r.threadId, taskId: r.id, attempt: 1, turnId: r.boundary?.turnId });
     if (resultsDir) try {
       const raw = fs.readFileSync(path.join(resultsDir, `${r.id}.json`), "utf8");
       if (Buffer.byteLength(raw) > CODING_RESULT_BYTES + 1024) throw Error();
       const stored = JSON.parse(raw);
-      if (typeof stored.summary !== "string" || ![stored.commands, stored.changes, stored.progress].every(Array.isArray) || bytes(stored) > CODING_RESULT_BYTES) throw Error();
-      // Do not return arbitrary keys from a corrupt/replaced result file.
-      value = codingTaskResult([
-        ...(Array.isArray(stored.progress) ? stored.progress.map((text) => ({ role: "assistant", kind: "text", text })) : []),
-        { role: "assistant", kind: "text", text: stored.summary },
-        ...stored.commands.map((i) => ({ role: "tool", kind: "command", text: i.command, status: i.status, detail: i.output })),
-        ...stored.changes.map((i) => ({ role: "tool", kind: "file-change", text: i.files, status: i.status, detail: i.diff })),
-      ], { historyIncomplete: stored.historyIncomplete === true });
-      value.truncated ||= stored.truncated === true;
-    } catch { value.historyIncomplete = true; }
+      value = restoreResult(stored, { binding: value.provenance, frozen: !ACTIVE.has(r.status) });
+      if (r.resultDigest && (r.resultDigest !== value.evidenceDigest || r.resultVersion !== value.evidenceVersion)) throw Error();
+    } catch { value = stampResult(recordedTurnResult([], { binding: value.provenance, historyIncomplete: true, gaps: ["collection_failed"] }), { frozen: !ACTIVE.has(r.status), at: now() }); }
     results.set(r.id, value);
     return value;
   };
@@ -168,7 +124,16 @@ export function createCodingTasks({
     createdAt: r.createdAt, updatedAt: r.updatedAt, deadline: r.deadline, version: r.version,
     needsOwner: r.status === "waiting", ...(r.cancelRequested && !r.stopConfirmed ? { cancellationPending: true } : {}), ...(r.reason ? { reason: r.reason } : {}),
   });
-  const view = (r) => ({ ...metadata(r), ...resultFor(r) });
+  const view = (r) => {
+    const result = structuredClone(resultFor(r));
+    // Coding-task callers own a delegated task, not its provider chat. Keep
+    // that identity binding in private storage, as before, rather than
+    // granting a locator into owner session/approval APIs through evidence.
+    result.provenance.chatId = null;
+    result.provenance.turnId = null;
+    for (const item of [...result.commands, ...result.changes]) { item.turnId = null; item.itemId = null; }
+    return { ...metadata(r), ...result, source: "provider_reported", provenanceRedacted: true, evidenceDigestScope: "stored_record" };
+  };
   const assertRun = (r) => {
     if (closed || r.cancelRequested) throw fail(409, "This coding task was cancelled.");
     const client = permitted(r.clientId, r);
@@ -205,33 +170,8 @@ export function createCodingTasks({
     // startCodingTask rechecks assertRun, and its late result is still kept.
     return Promise.resolve();
   };
-  const original = async (r) => {
-    let before = null, page, items = [], oldest = false;
-    const seen = new Set();
-    for (let n = 0; n < 4; n++) {
-      assertRun(r);
-      page = await host().read(r.agent, r.threadId, { limit: 200, maxOutput: 4096, ...(before === null ? {} : { before, cursor: before }) });
-      assertRun(r);
-      items = [...(Array.isArray(page.items) ? page.items : []), ...items];
-      if (!page.before) { oldest = true; break; }
-      if (seen.has(page.before)) break;
-      seen.add(page.before);
-      before = page.before;
-    }
-    // A later owner message can quote the task marker verbatim. Only the
-    // first user of this fresh thread is evidence of the delegated request;
-    // prove that boundary by reaching the oldest page, or fail closed.
-    const anchor = items.findIndex((i) => i?.role === "user");
-    if (!oldest || anchor < 0 || !String(items[anchor].text || "").startsWith(`Reach delegated coding task ${r.id}.`))
-      return { items: [], found: false, incomplete: true, session: page?.session };
-    const start = items[anchor];
-    const turnId = r.boundary?.turnId || start.turnId;
-    let end = items.findIndex((i, at) => at > anchor && i?.role === "user" &&
-      (r.agent === "claude" || !turnId || i.turnId !== turnId));
-    if (end < 0) end = items.length;
-    const turn = items.slice(anchor, end).filter((i) => r.agent !== "codex" || !turnId || i.turnId === turnId);
-    return { items: turn, found: true, later: end < items.length, incomplete: false, session: page.session, turnId };
-  };
+  const original = (r) => readOriginalTurn({ read: (...args) => host().read(...args), agent: r.agent, chatId: r.threadId,
+    requestPrefix: `Reach delegated coding task ${r.id}.`, turnId: r.boundary?.turnId, authorize: () => assertRun(r) });
   const refresh = (r) => {
     if (!ACTIVE.has(r.status) || !r.threadId || launches.has(r.id) || r.cancelRequested) return Promise.resolve();
     if (refreshing.has(r.id)) return refreshing.get(r.id);
@@ -251,13 +191,17 @@ export function createCodingTasks({
           status = outcome.kind === "reply" ? "completed" : outcome.kind === "error" ? "failed" : outcome.kind === "stopped" ? "cancelled" : "interrupted";
         } else if (state === "running") status = "running";
         // An unknown/new provider state is still active, never completed.
-        let next = resultFor(r);
-        if (current.found) next = codingTaskResult(current.items, { historyIncomplete: current.incomplete });
-        else next = { ...next, historyIncomplete: true };
-        if (status !== r.status || JSON.stringify(next) !== JSON.stringify(resultFor(r))) {
+        const previous = resultFor(r);
+        const nextBody = current.found ? codingTaskResult(current.items, { historyIncomplete: current.incomplete,
+          gaps: current.gaps, binding: { provider: r.agent, chatId: r.threadId, taskId: r.id, attempt: 1, turnId: current.turnId || r.boundary?.turnId } }) :
+          resultWithGaps(previous, current.gaps);
+        let next = stampResult(nextBody, { version: (previous.evidenceVersion || 0) + 1, frozen: !ACTIVE.has(status), at: now() });
+        if (resultContentHash(next) === resultContentHash(previous) && next.evidenceFrozen === previous.evidenceFrozen) next = previous;
+        if (status !== r.status || next !== previous) {
           if (resultsDir) atomicJson(path.join(resultsDir, `${r.id}.json`), next);
           results.set(r.id, next);
-          change(r, { status, ...(status === "failed" ? { cancelRequested: true, reason: clipped(live.error || "The coding agent ended with an error. See recorded output.", 1000).text } : {}) });
+          change(r, { status, resultVersion: next.evidenceVersion, resultDigest: next.evidenceDigest,
+            ...(status === "failed" ? { cancelRequested: true, reason: clipped(live.error || "The coding agent ended with an error. See recorded output.", 1000).text } : {}) });
           if (status === "failed") await interrupt(r);
         }
       } catch (error) {
@@ -347,7 +291,7 @@ export function createCodingTasks({
       if (!(r.deadline > at)) throw fail(403, "The requesting agent's access has ended.");
       records.set(r.id, r);
       try { save(); } catch (e) { records.delete(r.id); throw e; }
-      results.set(r.id, blankResult());
+      results.set(r.id, blankResult({ provider: r.agent, taskId: r.id, attempt: 1 }));
       // Persist before any provider call; shared in-flight work belongs to
       // this record even if the response is lost or the client rotates keys.
       const pending = Promise.resolve().then(() => launch(r, input)).finally(async () => {

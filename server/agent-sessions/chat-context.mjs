@@ -7,6 +7,7 @@
 import { agentName, clipMiddle } from "./move.mjs";
 import { turnOutcome } from "./turn-watch.mjs";
 import { visibleUserText } from "./message-text.mjs";
+import { recordedTurnResult } from "./result-evidence.mjs";
 
 // Room in characters, as a moved chat counts it.
 export const ROOM = { request: 4000, answer: 16000, diff: 6000, diffs: 40000 };
@@ -15,7 +16,7 @@ export const ROOM = { request: 4000, answer: 16000, diff: 6000, diffs: 40000 };
 // everything the agent said in it, and each file change with its diff. item:
 // a reply further up (a second opinion on it); else the newest. null when the
 // chat doesn't end on (or hold) such a reply.
-export function turnMaterial(items = [], { item = null } = {}) {
+export function turnMaterial(items = [], { item = null, evidence = false, binding = {}, historyIncomplete = false } = {}) {
   let end = items.length;
   if (item) {
     end = items.findIndex((i) => i.id === item) + 1;
@@ -31,6 +32,9 @@ export function turnMaterial(items = [], { item = null } = {}) {
     changes: outcome.turn
       .filter((i) => i.role === "tool" && i.kind === "file-change")
       .map((i) => ({ files: String(i.text || ""), diff: String(i.detail || "") })),
+    // Opt in for durable collection. Handoff clipping above is presentation;
+    // it never supplies a check verdict or replaces these original records.
+    ...(evidence ? { evidence: recordedTurnResult(outcome.turn, { binding, historyIncomplete }) } : {}),
   };
 }
 

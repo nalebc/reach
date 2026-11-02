@@ -22,7 +22,7 @@ function fixture(version = "one") {
       faceId: true, token: "CACHE-MUST-NEVER-CONTAIN-THIS", tailnet: { wasm: runtime[0].path.slice(9), exec: runtime[1].path.slice(9) } } };
 }
 function worker({ address = origin, buckets = new Map(), clients = [{ id: "a", url: address + "/" }], fault = () => false,
-  beforeMatch = () => {}, now = () => Date.now() } = {}) {
+  beforeMatch = () => {}, now = () => Date.now(), fetchNetwork, navigationTimeoutMs = 10000 } = {}) {
   const events = {}, puts = [], network = [];
   const caches = { open: async name => {
     if (!buckets.has(name)) buckets.set(name, new Map());
@@ -36,9 +36,10 @@ function worker({ address = origin, buckets = new Map(), clients = [{ id: "a", u
   const self = { location: { origin: address }, addEventListener(name, callback) { (events[name] ||= []).push(callback); },
     clients: { matchAll: async () => clients, claim: async () => {} }, skipWaiting() {}, registration: {} };
   vm.runInNewContext(fs.readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"),
-    { self, caches, URL, Response, Request, Headers, ArrayBuffer, Uint8Array, TextDecoder, TextEncoder, atob, crypto: crypto.webcrypto, setTimeout, clearTimeout,
+    { self, caches, URL, Response, Request, Headers, ArrayBuffer, Uint8Array, TextDecoder, TextEncoder, atob, crypto: crypto.webcrypto, AbortController,
+      setTimeout: (fn, ms) => setTimeout(fn, ms === 10000 ? navigationTimeoutMs : ms), clearTimeout,
       Date: class extends Date { static now() { return now(); } },
-      fetch: async request => { network.push(request.url); throw Error("private listener unavailable"); } });
+      fetch: async (request, init) => { network.push(request.url); if (fetchNetwork) return fetchNetwork(request, init); throw Error("private listener unavailable"); } });
   const message = async (action, data = {}, source = clients[0]) => {
     const pending = [], values = [];
     for (const callback of events.message) callback({ source, origin: new URL(source.url).origin,
@@ -92,6 +93,74 @@ test("an app-off navigation without saved code stays at its origin and receives 
     assert.deepEqual(w.network, [new URL(pathname, "https://computer.fixture.ts.net").href]);
     assert.equal(await w.fetch("/api/auth/requests", { method: "POST" }), null);
   }
+});
+
+test("stalled navigation headers and bodies receive a bounded reconnect page", async () => {
+  for (const phase of ["headers", "body"]) {
+    let aborted = false;
+    const w = worker({ navigationTimeoutMs: 10, fetchNetwork: (_request, { signal } = {}) => {
+      signal?.addEventListener("abort", () => { aborted = true; });
+      if (phase === "headers") return new Promise(() => {});
+      return new Response(new ReadableStream({ start(stream) {
+        signal?.addEventListener("abort", () => stream.error(Error("connection ended")));
+      } }), { headers: { "Content-Type": "text/html" } });
+    } });
+    let timer;
+    const response = await Promise.race([w.fetch("/?resume=fixture"), new Promise(resolve => { timer = setTimeout(() => resolve(null), 500); })]);
+    clearTimeout(timer);
+    assert.ok(response, `${phase}: a stalled load must finish with a visible document`);
+    assert.equal(response.status, 503, phase);
+    assert.match(await response.text(), /Reconnecting to Reach/, phase);
+    assert.equal(aborted, true, `${phase}: stop the abandoned read`);
+  }
+});
+
+test("reconnect links fetch a new document and retain the owner path, query and fragment", async () => {
+  const w = worker();
+  const response = await w.fetch("/files/example?view=preview&connection=browser#saved-view");
+  const page = await response.text();
+  const refresh = /content="5;url=([^"]+)"/.exec(page)?.[1];
+  assert.ok(refresh);
+  const retry = new URL(refresh.replaceAll("&amp;", "&"));
+  assert.equal(retry.origin, origin);
+  assert.equal(retry.pathname, "/files/example");
+  assert.equal(retry.searchParams.get("view"), "preview");
+  assert.equal(retry.searchParams.get("connection"), "browser");
+  assert.match(retry.searchParams.get("reach-reconnect"), /^\d+$/);
+  assert.equal(retry.hash, "#saved-view");
+  assert.ok(page.includes(`href="${refresh}"`), "manual retry also fetches a document");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+});
+
+test("empty, broken and temporary-error documents recover without masking authorization failures", async () => {
+  for (const kind of ["empty", "whitespace", "broken", "unavailable", "healthy", "denied", "empty-denied"]) {
+    const w = worker({ fetchNetwork: () => {
+      if (kind === "broken") return new Response(new ReadableStream({ start(stream) { stream.error(Error("incomplete document")); } }));
+      const body = ["empty", "empty-denied"].includes(kind) ? "" : kind === "whitespace" ? " \n " : "<html><body>Reach fixture</body></html>";
+      return new Response(body, { status: kind === "unavailable" ? 502 : kind.endsWith("denied") ? 403 : 200 });
+    } });
+    const response = await w.fetch("/");
+    const failed = !["healthy", "denied", "empty-denied"].includes(kind);
+    assert.equal(response.status, failed ? 503 : kind.endsWith("denied") ? 403 : 200, kind);
+    const text = await response.text();
+    if (kind === "empty-denied") assert.equal(text, "");
+    else assert.match(text, failed ? /Reconnecting to Reach/ : /Reach fixture/, kind);
+  }
+});
+
+test("opening an enrolled owner page upgrades its existing reconnect worker", async () => {
+  const dom = await startDom({ url: "https://computer.fixture.ts.net/" });
+  try {
+    let updates = 0, registrations = 0;
+    Object.defineProperty(dom.window.navigator, "serviceWorker", { configurable: true, value: {
+      getRegistration: async () => ({ update: async () => { updates++; } }),
+      register: async () => { registrations++; },
+    } });
+    const { keepReconnectPage } = await dom.load("/src/offline-shell.ts");
+    assert.equal(await keepReconnectPage(), true);
+    assert.equal(updates, 1, "an existing installation gets the fixed worker");
+    assert.equal(registrations, 0);
+  } finally { await dom.close(); }
 });
 
 test("the permanent owner link caches its startup flow before browser enrollment", async () => {

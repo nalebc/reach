@@ -47,6 +47,12 @@ Control the same Mac from your phone with a sharp picture and smooth, real-time 
 - **Your agent chats, in one place.** Read and reply to Claude Code, Codex and OpenClaw chats from your phone. Move chats between Claude Code and Codex, send files and answer approvals.
 - **Files and terminals, wherever you are.** Browse, share and upload files, run commands, and return to your Mac's open terminals.
 
+### Reach Outcomes
+
+Workflows can optionally carry an owner-defined outcome: a goal, success criteria, permitted change paths, pinned checks, a separate reviewer and explicit time/attempt limits. Before Run, Reach shows the plan and any optional single repair branch. For example, ask it to fix a synthetic calculator where `2 + 3` displays `-1`; the review view separates the builder's completion, recorded check results, reviewer findings and your decision on the exact result revision. You can accept that revision or request changes to create a new draft. Acceptance records your decision; it does not merge or deploy.
+
+This is an early implementation with important limits: no production runner is installed, so the UI explains unavailable setup and disables new outcome execution; direct preparation/Run calls fail closed (`503`). Existing results remain inspectable. Trusted profile provisioning is still integration work, not a ready owner setup flow. Provider-reported diffs and commands are not independent proof of the final files. Full independent logs and sealed artifact or before/after previews are not yet served; links to Screen, Apps and Files show current computer state. See [Workflows](docs/WORKFLOWS.md#reach-outcomes) and the [outcome implementation and validation record](docs/OUTCOMES.md).
+
 ## Give agents control of your Mac with CLI and MCP
 
 Your agent can work on your actual laptop: native Mac apps, your signed-in browser, files and shell. Use the tools directly from the command line or through MCP, with the same permissions. Every tool call is checked against the access you grant, which you can pause or revoke from your phone.
