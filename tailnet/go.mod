@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	tailscale.com v1.104.1
+	tailscale.com v1.104.2
 )
 
 require (

@@ -29,6 +29,8 @@ import { PauseButton } from "./PauseControl";
 import { computerWord, pausedIn } from "./pause";
 import HomeStories from "./HomeStories";
 import { ShortcutLifeContext, type ShortcutLife } from "./ToolsPage";
+import { OutcomeEntry, outcomeNeeds } from "./outcome-navigation";
+import type { Workflow } from "./Workflows";
 import "./home-live.css";
 
 // Why the live preview shows no fresh picture, as one short pill ("" while
@@ -96,6 +98,8 @@ export default function HomeLive({
   openTerminal,
   openMacTab,
   agentSessions = [],
+  workflows = [],
+  onOpenWorkflow,
   macPrompts = [],
   openAgentSession,
   showOnScreen,
@@ -123,6 +127,8 @@ export default function HomeLive({
   openMacTab?: (id: string) => void;
   // Codex and Claude Code sessions anywhere on the Mac (the Chat feed).
   agentSessions?: AgentSession[];
+  workflows?: Workflow[];
+  onOpenWorkflow?: (id?: string) => void;
   // What macOS itself is asking right now (answered at the Mac).
   macPrompts?: MacPrompt[];
   openAgentSession?: (session: AgentSession) => void;
@@ -242,6 +248,7 @@ export default function HomeLive({
   const bellNeeds = useBellNeeds(peer);
   const needItems: NeedItem[] = [
     ...bellNeeds,
+    ...(features.owner && onOpenWorkflow ? outcomeNeeds(workflows, onOpenWorkflow) : []),
     ...waitingPeople.items,
     ...agentAdmissions.items,
     ...browserApprovals.items,
@@ -424,6 +431,7 @@ export default function HomeLive({
       <ShortcutLifeContext.Provider value={shortcutLife}>
         {pinnedTools}
       </ShortcutLifeContext.Provider>
+      {features.owner && onOpenWorkflow && <OutcomeEntry list={workflows} runningOnly onOpen={onOpenWorkflow} onAll={() => onOpenWorkflow()} />}
 
       {browserApprovals.review}
       {agentAdmissions.review}

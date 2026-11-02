@@ -28,18 +28,40 @@ test("the app opens Reach's page again by itself after iOS ends it while the com
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   // The computer: Reach's page, which says when it's up. Down, it drops
   // every connection, as an unreachable network does.
-  let down = false;
-  const loads = [], alive = [], refused = [];
+  let down = false, command = "", stall = false;
+  const loads = [], alive = [], refused = [], emptied = [], requests = [];
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://x");
+    requests.push({ method: req.method, path: url.pathname });
     if (url.pathname === "/alive") {
-      alive.push(Date.now());
+      alive.push(url.searchParams.get("view"));
+      return res.writeHead(204).end();
+    }
+    if (url.pathname === "/page-command") {
+      const value = command;
+      command = "";
+      return res.writeHead(200, { "Cache-Control": "no-store" }).end(value);
+    }
+    if (url.pathname === "/emptied") {
+      emptied.push(Date.now());
       return res.writeHead(204).end();
     }
     if (url.pathname !== "/") return res.writeHead(404).end();
     loads.push(Date.now());
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
-    res.end('<!doctype html><meta name="viewport" content="width=device-width"><body><div id="root">Reach</div><script>fetch("/alive?" + Date.now())</script></body>');
+    if (stall && url.searchParams.has("stalled")) {
+      // A committed empty document whose response never ends. WebKit's
+      // isLoading stays true, so an unbounded loading check never probes it.
+      return res.write('<!doctype html><body><div id="root"></div>' + ' '.repeat(16384));
+    }
+    res.end(`<!doctype html><meta name="viewport" content="width=device-width"><body><div id="root">Reach</div><script>
+      fetch('/alive?view=' + encodeURIComponent(location.pathname + location.search + location.hash));
+      setInterval(async () => {
+        const command = await fetch('/page-command', { cache: 'no-store' }).then(response => response.text());
+        if (command === 'empty') { document.getElementById('root').replaceChildren(); fetch('/emptied'); }
+        if (command === 'stall') location.assign('/?stalled=1#saved-view');
+      }, 500);
+    </script></body>`);
   });
   const sockets = new Set();
   server.on("connection", (socket) => {
@@ -93,6 +115,26 @@ test("the app opens Reach's page again by itself after iOS ends it while the com
     }
   };
   await until(() => alive.length >= 1, "the app opened Reach's page", 150000);
+
+  // A body containing #root and a script was previously counted as healthy
+  // even after its actual app disappeared. Recover without closing the app.
+  let count = alive.length;
+  command = "empty";
+  await until(() => emptied.length > 0, "the existing page lost its rendered app", 10000);
+  await until(() => alive.length > count, "the empty app container recovered automatically", 30000);
+
+  // The next load commits an empty page then never finishes its response.
+  // Once the server is healthy, the native deadline must retire that load.
+  count = alive.length;
+  const beforeStall = loads.length;
+  stall = true;
+  command = "stall";
+  await until(() => loads.length > beforeStall, "the empty response started loading", 10000);
+  await pause(2000);
+  stall = false;
+  await until(() => alive.length > count, "a stalled native load recovered automatically", 45000);
+  assert.equal(alive.at(-1), "/?stalled=1#saved-view", "recovery keeps the current view and fragment");
+  assert.ok(requests.every(request => request.method === "GET"), "recovery never replays a write");
 
   // The computer can't be reached, and iOS ends the page's process.
   // An unreachable network ends the open connections too.

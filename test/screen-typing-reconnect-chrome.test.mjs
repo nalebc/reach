@@ -50,6 +50,7 @@ import Screen from ${abs("src/Screen.tsx")};
 import ${abs("src/workspace.css")};
 window.__typing = { toasts: [] };
 window.__typing.requests = [];
+window.__typing.reads = [];
 window.__typing.releases = [];
 window.__typing.enables = [];
 window.__typing.inputEvents = [];
@@ -92,6 +93,7 @@ const fetchActual = window.fetch.bind(window);
 window.fetch = (url, init = {}) => {
   window.__typing.requests.push({ url: String(url), method: init.method || "GET", body: init.body });
   const request = fetchActual(url, init);
+  if ((init.method || "GET") === "GET") window.__typing.reads.push(request.then(response => response.clone().arrayBuffer()).catch(() => {}));
   if (init.body === '{"enabled":false}') window.__typing.releases.push(request.catch(() => {}));
   if (init.body === '{"enabled":true}') window.__typing.enables.push(request.then(response => response.clone().text()).catch(() => {}));
   return request;
@@ -241,9 +243,10 @@ export function useRemoteScreen(peer, enabled, live, display) {
   t.afterEach(writeReport);
   t.after(writeReport);
   const pageOnly = async () => {
-    // Complete the old fixture's real release before changing its accepted
-    // tokens. This neither mocks fetch nor forgives a crossed credential.
-    await tab.evaluate('(async () => { if (window.__typing) { window.__typing.unmount(); await Promise.allSettled(window.__typing.releases); } })()');
+    // Complete the old fixture's reads and releases before changing its
+    // accepted tokens. A late display read still belongs to that old fixture.
+    // This neither mocks fetch nor forgives a crossed credential.
+    await tab.evaluate('(async () => { if (window.__typing) { window.__typing.unmount(); await Promise.allSettled([...window.__typing.reads, ...window.__typing.releases]); } })()');
     holdTyping = false; refuseTyping = false; holdFocus = false; windowSize = 1; deferEnable = false;
     pendingFocus.length = 0;
     for (const origin of origins) acceptedTokens.set(new URL(origin).host, new Set(["fixture-only"]));
@@ -261,6 +264,7 @@ export function useRemoteScreen(peer, enabled, live, display) {
   const visibility = (hidden) => tab.evaluate(`Object.defineProperty(document, "hidden", { configurable: true, value: ${hidden} }); document.dispatchEvent(new Event("visibilitychange"));`);
   const restoreVisibility = () => tab.evaluate('delete document.hidden; document.dispatchEvent(new Event("visibilitychange"));');
   const joinEnables = () => tab.evaluate('(async () => { await Promise.allSettled(window.__typing.enables); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })()');
+  const joinReads = () => tab.evaluate('(async () => { await Promise.allSettled(window.__typing.reads); })()');
   const touchPoint = async (setup) => {
     let signature = "", since = 0, selected;
     await until(async () => {
@@ -493,6 +497,8 @@ export function useRemoteScreen(peer, enabled, live, display) {
     await until(() => typing(next).length === 1, "explicit known-unsent send after URL replacement");
     result.afterConfirmation = typing(next);
     assert.deepEqual(result.afterConfirmation, [{ type: "type-edit", delete: 0, text: "cd", focus: `field-${connections.indexOf(next)}` }]);
+    // Input can be ready before the independent display request completes.
+    await joinReads();
     assert.ok(apiRequests.some(r => r.host === new URL(origins[1]).host && r.method === "OPTIONS" && r.origin === pageOrigin), "actual browser cross-port preflight ran");
     assert.ok(apiRequests.some(r => r.host === new URL(origins[1]).host && r.method === "GET" && r.path === "/api/screen/displays" && r.origin === pageOrigin), "actual cross-origin API response was consumed");
   });
@@ -793,5 +799,6 @@ export function useRemoteScreen(peer, enabled, live, display) {
     assert.equal(returned.received.find(m => m.type === "auth").token, "fixture-only");
     await until(() => apiRequests.slice(apiStart).some(r => r.host === new URL(origins[1]).host && r.authorization === "Bearer fixture-new" && r.body === '{"enabled":false}'), "old alternate grant release");
   });
+  await joinReads();
   assert.deepEqual(tab.problems, []);
 });

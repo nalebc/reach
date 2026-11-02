@@ -28,3 +28,5 @@
 .owner-connection-details p { margin: 0 0 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .owner-connection-details [role="status"] { color: var(--muted); font-size: 13px; }
 .owner-connection-details a { display: inline-flex; align-items: center; min-height: 44px; margin-top: 2px; text-decoration: none; }
+.owner-connection-details button { min-height: 44px; }
+.motion-paused .owner-connection-setup .spin { animation: none; }

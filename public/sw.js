@@ -412,13 +412,37 @@ self.addEventListener("fetch", event => {
   const navigation = request.mode === "navigate" && shellNavigation(url);
   if (request.method !== "GET" || url.origin !== self.location.origin || (url.search && !navigation) || request.headers?.has("Authorization")) return;
   if (!navigation && !shellPath(url.pathname) && !shellRuntime(url.pathname)) return;
-  // A network transition must never reject a document's respondWith promise.
-  // This inert page retries only navigation GETs, never workspace actions.
-  const network = () => fetch(request).catch(error => {
-    if (!navigation) throw error;
-    return new Response('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5"><title>Reconnecting to Reach</title></head><body style="margin:0;padding:32px;background:#111816;color:#edf2ee;font:18px/1.5 system-ui"><h1>Reconnecting to Reach…</h1><p>Your connection changed. Reach will retry automatically at this same link.</p><p>Keep your computer online with Reach and Tailscale running.</p><a href="" style="color:#b9efd8">Try again now</a></body></html>', { status: 503, headers: shellHeaders("text/html; charset=utf-8") });
-  });
-  event.respondWith((async () => {
+  // A stalled fetch does not reject, and receiving headers does not mean the
+  // document arrived. Bound the whole navigation, including cache reads and
+  // the HTML body, before handing it to the browser's Home Screen web view.
+  // Only owner navigation GETs retry; API calls and actions never enter here.
+  const controller = navigation ? new AbortController() : null;
+  const reconnect = () => {
+    // Refreshing a URL with a fragment can become a same-document jump.
+    // Change only the update marker so retries fetch a document while keeping
+    // the original path, query and fragment. Escape it for both attributes.
+    const retry = new URL(request.url);
+    retry.searchParams.set("reach-reconnect", String(Date.now()));
+    const href = retry.href.replace(/[&"<>]/g, char => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[char]);
+    const headers = shellHeaders("text/html; charset=utf-8");
+    headers.set("Cache-Control", "no-store");
+    return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5;url=${href}"><title>Reconnecting to Reach</title></head><body style="margin:0;padding:32px;background:#111816;color:#edf2ee;font:18px/1.5 system-ui"><h1>Reconnecting to Reach…</h1><p>Your connection changed. Reach will retry automatically at this same link.</p><p>Keep your computer online with Reach and Tailscale running.</p><a href="${href}" style="color:#b9efd8">Try again now</a></body></html>`, { status: 503, headers });
+  };
+  const network = async () => {
+    if (!navigation) return fetch(request);
+    const response = await fetch(request, { signal: controller.signal });
+    if (response.type === "opaqueredirect") return response;
+    if (response.status >= 500 || [408, 429].includes(response.status)) {
+      controller.abort();
+      return reconnect();
+    }
+    if (!response.ok) return response;
+    // Read a clone so a failed/truncated body cannot replace Reach with an
+    // empty document. Return the original URL, headers and redirect behavior.
+    if (!(await response.clone().text()).trim()) return reconnect();
+    return response;
+  };
+  const serve = async () => {
     try {
       const cache = await caches.open(shellRecords), bodies = await caches.open(shellBodies), cohorts = await shellCohorts(cache);
       const active = await shellJson(cache, "active");
@@ -444,5 +468,11 @@ self.addEventListener("fetch", event => {
       }
     } catch { /* Incomplete/evicted code never supplies API or workspace data. */ }
     return network();
-  })());
+  };
+  if (!navigation) return event.respondWith(serve());
+  let timer;
+  const deadline = new Promise(resolve => {
+    timer = setTimeout(() => { controller.abort(); resolve(reconnect()); }, 10000);
+  });
+  event.respondWith(Promise.race([serve().catch(() => reconnect()), deadline]).finally(() => clearTimeout(timer)));
 });

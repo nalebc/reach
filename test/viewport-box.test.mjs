@@ -105,3 +105,56 @@ test("while the view is open, Safari scrolling the page underneath (back from th
   window.dispatchEvent(new window.Event("scroll"));
   assert.deepEqual(moves, []);
 });
+
+// Oct 27, an iPhone: "taps and typing do nothing". A sheet (holdPage) and a
+// keyboard view (useViewportBox) each saved and put back the page on its
+// own, so whichever let go last put back a stale copy: a chat opened under
+// a sheet, or a sheet over a chat, left the page pinned with nothing open
+// (drawn in one place, tapped in another on an iPhone). Every order of
+// opening and closing the two: the page is held exactly while something is
+// open, and put back as it was once nothing is.
+test("a sheet and a keyboard view, opened and closed in any order, never leave the page pinned", async () => {
+  const { window, document } = dom;
+  const { holdPage, pageHeld } = await dom.load("/src/page-hold.ts");
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => 0 });
+  Object.defineProperty(window, "scrollX", { configurable: true, get: () => 0 });
+  window.scrollTo = () => {};
+  let setOpen;
+  function Chat() {
+    const ref = React.useRef(null);
+    useViewportBox(ref, true);
+    return React.createElement("main", { ref });
+  }
+  function Root() {
+    const [open, set] = React.useState(false);
+    setOpen = set;
+    return open ? React.createElement(Chat) : null;
+  }
+  const view = await dom.render(React.createElement(Root));
+  const before = document.body.style.cssText;
+  const steps = {
+    chatOpens: () => dom.update(() => setOpen(true)),
+    chatCloses: () => dom.update(() => setOpen(false)),
+  };
+  const orders = [
+    ["sheet", "chatOpens", "sheetCloses", "chatCloses"],
+    ["sheet", "chatOpens", "chatCloses", "sheetCloses"],
+    ["chatOpens", "sheet", "chatCloses", "sheetCloses"],
+    ["chatOpens", "sheet", "sheetCloses", "chatCloses"],
+    ["sheet", "sheet2", "chatOpens", "sheetCloses", "chatCloses", "sheet2Closes"],
+  ];
+  for (const order of orders) {
+    const open = new Set();
+    const letGo = {};
+    for (const step of order) {
+      if (step.startsWith("sheet") && !step.endsWith("Closes")) { letGo[step] = holdPage(); open.add(step); }
+      else if (step.endsWith("Closes") && step.startsWith("sheet")) { letGo[step.replace("Closes", "")](); open.delete(step.replace("Closes", "")); }
+      else { steps[step](); step === "chatOpens" ? open.add("chat") : open.delete("chat"); }
+      const held = document.body.style.position === "fixed";
+      assert.equal(held, open.size > 0, `${order.join(" → ")}: after ${step}, ${[...open].join(", ") || "nothing"} open, the page ${held ? "pinned" : "free"}`);
+      assert.equal(pageHeld(), open.size > 0);
+    }
+    assert.equal(document.body.style.cssText, before, `${order.join(" → ")}: the page as it was`);
+  }
+  await view.unmount();
+});

@@ -30,6 +30,17 @@ function page({ publicStart = false } = {}) {
   return { root, loading };
 }
 
+test("a reconnect restores the saved address without navigating or changing access or history state", async () => {
+  dom.window.history.replaceState({ reach: { page: "files", i: 1 } }, "", "/files/example?view=preview&reach-reconnect=123&connection=browser#saved-view");
+  const length = dom.window.history.length;
+  dom.window.localStorage.setItem("reach.devices", "saved-owner-pairing");
+  await dom.load("/src/reconnect-url.ts");
+  assert.equal(dom.window.location.pathname + dom.window.location.search + dom.window.location.hash, "/files/example?view=preview&connection=browser#saved-view");
+  assert.deepEqual(dom.window.history.state, { reach: { page: "files", i: 1 } });
+  assert.equal(dom.window.history.length, length);
+  assert.equal(dom.window.localStorage.getItem("reach.devices"), "saved-owner-pairing");
+});
+
 test("the initial HTML stays visible before any JavaScript or stylesheet can load", async () => {
   for (const filename of ["index.html", "start.html"]) {
     const html = await fs.readFile(new URL(`../${filename}`, import.meta.url), "utf8");

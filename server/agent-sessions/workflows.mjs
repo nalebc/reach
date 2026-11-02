@@ -15,6 +15,10 @@ import { agentName, clipMiddle } from "./move.mjs";
 import { agentChats, CLAW_NOTE, startMode } from "./relays.mjs";
 import { changesText, materialBlock, turnMaterial } from "./chat-context.mjs";
 import { usageLimited } from "./turn-watch.mjs";
+import path from "node:path";
+import { recordedTurnResult, readOriginalTurn, requestHash, restoreResult, stampResult } from "./result-evidence.mjs";
+import { createOutcomes, newOutcomeRef, outcomeInput, OUTCOME_LIMITS } from "./outcomes.mjs";
+import { createOutcomeCoordinator } from "./outcome-coordinator.mjs";
 
 export const WORKFLOW_AGENTS = ["codex", "claude"];
 // Task agents when Reach has OpenClaw's Gateway. OpenClaw takes tasks (the
@@ -58,6 +62,22 @@ const BUSY = new Set(["running", "waiting"]);
 // task the next one gets.
 const KEEP = { answer: 8000, diffs: 12000, files: 200 };
 const PASS = { answer: 16000, diffs: 30000, older: 1500, task: 2000 };
+// The handoff is what later tasks received, not a check receipt. Keep it
+// separately inspectable when Mark done uses an owner's later chat turn.
+const retainedHandoff = (material, source = "task_reply") => {
+  const files = [...new Set(material.changes.flatMap((c) => c.files.split(", ")).filter(Boolean))];
+  const diffs = changesText(material.changes);
+  return {
+    answer: clipMiddle(material.answer, KEEP.answer),
+    files: files.slice(0, KEEP.files),
+    diffs: clipMiddle(diffs, KEEP.diffs),
+    handoffSource: source,
+    handoffTruncated: material.answer.length > KEEP.answer || diffs.length > KEEP.diffs || files.length > KEEP.files ||
+      /\n… \(\d+ characters (?:omitted|left out)\) …\n/.test(material.answer + diffs),
+  };
+};
+const retainedResults = (task) => [...(task.resultHistory || []), ...(task.result ? [{ attempt: task.attempt, result: task.result }] : [])];
+const attemptNumber = (value) => Number.isSafeInteger(value) && value > 0 ? value : null;
 // A task's whole message stays under the agents' 50,000-character limit
 // (claude-host.mjs, codex-live.mjs); material is cut to fit, never below SHORTEST.
 const MESSAGE_MAX = 48000;
@@ -312,7 +332,6 @@ const settled = (t) => t.state === "done" || t.state === "skipped";
 const troubled = (t) => t.state === "stopped" || t.state === "uncertain";
 const atWork = (t) => t.state === "working" || t.state === "starting";
 // A build that holds its folder: OpenClaw works in its own place.
-const building = (t) => t.kind === "build" && t.agent !== "openclaw" && atWork(t);
 
 export function createWorkflows({
   // The chats (agent-sessions/index.mjs): list, read, start, stop.
@@ -323,8 +342,11 @@ export function createWorkflows({
   // The relay engine (relays.mjs): watch, get, cancel, onChange.
   relays,
   file = null,
+  outcomes = createOutcomes({ directory: file ? path.join(path.dirname(file), "workflow-outcomes") : null, now: () => now() }),
+  outcomeRunner = null,
   // (owner) → why a task can't start now ("" when it can).
   authorized = () => "",
+  ownerAuthorized = authorized,
   // A workflow's folder, checked as a new chat's.
   folder = (cwd) => cwd,
   // The modes Codex offers now (whether "Approve for me" is on).
@@ -376,6 +398,11 @@ export function createWorkflows({
           w.updatedAt = now();
         }
       }
+  // Unsupported/missing attachments never fall back to ordinary dispatch.
+  for (const w of workflows) if (w.outcomeRef && w.state === "running") {
+    w.state = "paused";
+    w.problem = "Outcome execution is unavailable. Inspect the retained outcome before continuing.";
+  }
   let revision = 0;
   const listeners = new Set();
   const save = () => {
@@ -383,7 +410,8 @@ export function createWorkflows({
     // Running and paused ones stay; drafts and finished ones a week, 50 at most.
     const week = now() - 7 * 24 * 60 * 60 * 1000;
     const keep = (w) => w.state === "running" || w.state === "paused" || w.updatedAt > week;
-    workflows = workflows.filter(keep).slice(-50);
+    const ordinary = workflows.filter((w) => !w.outcomeRef && keep(w)).slice(-50);
+    workflows = workflows.filter((w) => w.outcomeRef || ordinary.includes(w));
     if (file) {
       const tmp = `${file}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(workflows), { mode: 0o600 });
@@ -396,6 +424,13 @@ export function createWorkflows({
     if (!w) throw bad("That workflow is gone.", 404);
     return w;
   };
+  const occupies = (w, t) => {
+    if (atWork(t)) return true;
+    if (!w.outcomeRef) return false;
+    try { return outcomes.pendingTask(w.outcomeRef, w) === t.id; }
+    catch { return t.state === 'uncertain'; }
+  };
+  const holdsBuild = (w, t) => t.kind === 'build' && t.agent !== 'openclaw' && occupies(w, t);
   const nextId = (w) => `t${(w.seq = (w.seq || 0) + 1)}`;
   const touch = (w) => {
     w.updatedAt = now();
@@ -426,8 +461,9 @@ export function createWorkflows({
     createdAt: w.createdAt,
     updatedAt: w.updatedAt,
     ...(w.planner ? { planner: plannerView(w) } : {}),
+    ...(w.outcomeRef ? { outcome: outcomes.summary(w.outcomeRef, w) } : {}),
     // tries: the chats a retried task had before (its chat list groups them).
-    tasks: w.tasks.map(({ id, title, agent, kind, together, model, effort, state, chat, tries, problem }) => ({
+    tasks: w.tasks.map(({ id, title, agent, kind, together, model, effort, state, chat, tries, problem, outcomeRole, cycle, selection }) => ({
       id,
       title,
       agent,
@@ -436,6 +472,7 @@ export function createWorkflows({
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
       state,
+      ...(outcomeRole ? { outcomeRole, cycle, selection: selection || 'selected' } : {}),
       ...(chat ? { chat } : {}),
       ...(tries?.length ? { tries } : {}),
       ...(problem ? { problem } : {}),
@@ -460,8 +497,17 @@ export function createWorkflows({
       ...(t.chat ? { chat: t.chat } : {}),
       ...(t.tries?.length ? { tries: t.tries } : {}),
       ...(t.problem ? { problem: t.problem } : {}),
+      ...(t.outcomeRole ? { outcomeRole: t.outcomeRole, cycle: t.cycle, selection: t.selection || 'selected' } : {}),
+      ...(attemptNumber(t.attempt) ? { attempt: t.attempt } : {}),
+      ...(t.result || t.resultHistory?.length ? {
+        resultAvailable: true,
+        resultAttempts: retainedResults(t).map((entry) => attemptNumber(entry.attempt)).filter(Boolean),
+        omittedResultAttempts: t.omittedResultAttempts || 0,
+      } : {}),
       ...(t.result?.answer ? { summary: t.result.answer.replace(/\s+/g, " ").trim().slice(0, 280) } : {}),
       ...(t.result?.files?.length ? { files: t.result.files.slice(0, 50) } : {}),
+      ...(t.result?.evidence ? { resultEvidence: { version: t.result.evidence.evidenceVersion, digest: t.result.evidence.evidenceDigest,
+        frozen: t.result.evidence.evidenceFrozen, historyIncomplete: t.result.evidence.historyIncomplete, truncated: t.result.evidence.truncated } } : {}),
       ...(t.startedAt ? { startedAt: t.startedAt } : {}),
       updatedAt: t.updatedAt,
     })),
@@ -478,20 +524,35 @@ export function createWorkflows({
 
   // What a finished task passes on, read from its chat once: its reply (as
   // the turn it ended on has it), the files it changed and their diffs.
-  const resultOf = async (t, item) => {
+  const resultOf = async (w, t, item, { dispositionUnknown = false } = {}) => {
+    const binding = { workflowId: w.id, taskId: t.id, attempt: t.attempt, provider: t.chat?.agent, chatId: t.chat?.id,
+      contractRevision: t.resultBoundary?.contractRevision, turnId: t.resultBoundary?.turnId };
+    let evidence = recordedTurnResult([], { binding, historyIncomplete: true, gaps: ["original_turn_unavailable"] });
     try {
+      const current = WORKFLOW_AGENTS.includes(t.chat.agent) && t.resultBoundary?.requestDigest ? await readOriginalTurn({
+        read: (...args) => sessions.read(...args), agent: t.chat.agent, chatId: t.chat.id,
+        requestDigest: t.resultBoundary.requestDigest, turnId: t.resultBoundary.turnId, replyId: item,
+      }) : null;
+      // Legacy handoffs retain their previous presentation. No original
+      // boundary was persisted for them, so they cannot supply new receipts.
+      // Handoff presentation is independent of the stricter evidence read.
+      // A bounded history gap must not erase an ordinary workflow's reply.
       const page = await sessions.read(t.chat.agent, t.chat.id, { limit: 200 });
-      const m = turnMaterial(page.items || [], item ? { item } : {});
+      const items = page?.items || [];
+      const m = turnMaterial(items, item ? { item } : {});
+      evidence = recordedTurnResult(current?.items || [], { binding: { ...binding, turnId: current?.turnId || binding.turnId },
+        historyIncomplete: !current || current.incomplete || dispositionUnknown,
+        gaps: [...(current?.gaps || ["legacy_result"]), ...(dispositionUnknown ? ["execution_disposition_unknown"] : [])] });
       if (m)
         return {
-          answer: clipMiddle(m.answer, KEEP.answer),
-          files: [...new Set(m.changes.flatMap((c) => c.files.split(", ")).filter(Boolean))].slice(0, KEEP.files),
-          diffs: clipMiddle(changesText(m.changes), KEEP.diffs),
+          ...(current?.found && current.replyMatched === false && current.later ? { originalTurnMismatch: true } : {}),
+          ...retainedHandoff(m),
+          evidence: stampResult(evidence, { at: now() }),
         };
     } catch {
-      /* passed on without it */
+      evidence = recordedTurnResult([], { binding, historyIncomplete: true, gaps: ["collection_failed"] });
     }
-    return { answer: "", files: [], diffs: "" };
+    return { answer: "", files: [], diffs: "", evidence: stampResult(evidence, { at: now() }) };
   };
   // Why a task's turn ended without a reply, in a line.
   const endedHow = async (t, r) => {
@@ -534,19 +595,25 @@ export function createWorkflows({
   // One task's chat, started once: marked as starting first (so a restart
   // never starts it again), then watched for how its turn ends.
   const start = async (w, t, at) => {
+    const unsent = () => { if (w.outcomeRef) coordinator.taskNotDispatched(w, t); };
+    if (w.outcomeRef && !coordinator.taskCurrent(w, t)) return unsent();
     const reason = authorized(w.owner);
-    if (reason) return pause(w, reason);
+    if (reason) { unsent(); return pause(w, reason); }
     t.state = "starting";
     t.updatedAt = now();
     // Each try its own (OpenClaw's request id: one chat per try).
     const attempt = t.attempt || 0;
     t.attempt = attempt + 1;
     save();
-    const text = taskMessage({ workflow: w, task: t, n: w.tasks.indexOf(t) + 1, total: w.tasks.length, before: materialBefore(w, at) });
+    let text = taskMessage({ workflow: w, task: t, n: w.tasks.indexOf(t) + 1, total: w.tasks.length, before: materialBefore(w, at) });
+    if (w.outcomeRef) text = coordinator.message(w, t, text);
+    if (w.outcomeRef && text.length > MESSAGE_MAX) throw bad('The approved outcome context exceeds the provider message limit. Inspect and shorten a new draft.', 409);
+    t.resultBoundary = { requestDigest: requestHash(text), attempt: t.attempt, contractRevision: w.outcomeRef ? outcomes.get(w.outcomeRef, w).contractRevision : null };
+    save();
     const name = oneLine(`Workflow · ${t.title}`, 120);
     let started;
     try {
-      const cwd = folder(w.cwd);
+      const cwd = folder(w.outcomeRef ? coordinator.workspace(w, t) : w.cwd);
       if (!(await available()).includes(t.agent)) throw bad(`${agentName(t.agent)} is unavailable. Choose an available agent for this task.`);
       // Its model and effort, as the agent offers them now (else it stops).
       const picked = t.agent !== "openclaw" && (t.model || t.effort) ? fitModel(t, (await catalogs([t.agent]))[t.agent]) : {};
@@ -555,12 +622,17 @@ export function createWorkflows({
       const mode = await startMode({ kind: t.kind, agent: t.agent }, modes);
       // Discovery can wait on another process. Stop/revocation during it
       // must prevent the first provider turn, not just stop it afterwards.
-      if (w.state !== "running" || t.state !== "starting" || !workflows.includes(w)) return;
+      if (w.state !== "running" || t.state !== "starting" || !workflows.includes(w)) return unsent();
       const denied = authorized(w.owner);
       if (denied) {
         t.state = "waiting";
+        unsent();
         return pause(w, denied);
       }
+      if (w.outcomeRef && !coordinator.taskCurrent(w, t)) return unsent();
+      // This durable marker separates read-only discovery from a provider
+      // call whose delivery may be unknown after cancellation or restart.
+      if (w.outcomeRef) coordinator.taskDispatching(w, t);
       started = await sessions.start(t.agent, {
         cwd,
         text,
@@ -574,6 +646,12 @@ export function createWorkflows({
         ...(t.agent === "openclaw" ? { requestId: `wf-${w.id}-${t.id}-${attempt}`, authorize: allowed(w.owner) } : { keepOut: true }),
       });
     } catch (e) {
+      if (w.outcomeRef) {
+        const notDispatched = coordinator.taskNotDispatched(w, t);
+        if (!notDispatched) t.state = 'uncertain';
+        coordinator.taskFailed(w, { dispatched: !notDispatched });
+        return;
+      }
       t.state = "stopped";
       t.problem = words(e?.message, 300) || "It couldn't start.";
       t.updatedAt = now();
@@ -582,6 +660,8 @@ export function createWorkflows({
       return pause(w, `“${t.title}” couldn't start: ${t.problem}`);
     }
     t.chat = { agent: t.agent, id: started.threadId, title: name };
+    if (typeof started.turnId === "string") t.resultBoundary.turnId = started.turnId;
+    if (w.outcomeRef) coordinator.taskStarted(w, t, started);
     t.startedAt = now();
     t.updatedAt = now();
     // Stopped (or let go) while it was starting: its chat stops too.
@@ -590,13 +670,14 @@ export function createWorkflows({
       t.state = "stopped";
       t.problem = denied || "The workflow was stopped.";
       save();
-      await sessions.stop?.(t.agent, started.threadId).catch(() => {});
+      if (w.outcomeRef) await coordinator.cancel(w, { requestId: `stop-${randomUUID()}`, expectedVersion: outcomes.get(w.outcomeRef, w).version }, w.owner).catch(() => coordinator.taskFailed(w));
+      else await sessions.stop?.(t.agent, started.threadId).catch(() => {});
       if (denied) pause(w, denied);
       return;
     }
     t.state = "working";
     delete t.problem;
-    t.relay = relays.watch({ owner: w.owner, from: { agent: t.agent, id: started.threadId, title: name, cwd: w.cwd }, workflow: w.id, task: t.id });
+    t.relay = relays.watch({ owner: w.owner, from: { agent: t.agent, id: started.threadId, title: name, cwd: w.cwd }, expect: text, workflow: w.id, task: t.id });
     touch(w);
     save();
   };
@@ -605,6 +686,13 @@ export function createWorkflows({
   // at work in all and one build in a folder (any workflow's).
   const advance = async (w) => {
     if (w.state !== "running") return;
+    if (w.outcomeRef) {
+      return coordinator.advance(w, {
+        capacity: (t, cwd) => workflows.flatMap(x => x.tasks.filter(other => occupies(x, other))).length < WORKFLOW_LIMITS.working &&
+          !(t.kind === 'build' && workflows.some(x => x.tasks.some(other => holdsBuild(x, other) && (x.outcomeRef ? coordinator.workspace(x, other) : x.cwd) === cwd))),
+        start: t => start(w, t, w.tasks.indexOf(t)),
+      });
+    }
     const stages = stagesOf(w.tasks);
     const at = stages.findIndex((s) => !s.every(settled));
     if (at < 0) {
@@ -618,9 +706,10 @@ export function createWorkflows({
     for (const t of stages[at]) {
       if (w.state !== "running") return;
       if (t.state !== "waiting") continue;
-      const working = workflows.flatMap((x) => x.tasks.filter(atWork));
+      const working = workflows.flatMap((x) => x.tasks.filter(t => occupies(x, t)));
       if (working.length >= WORKFLOW_LIMITS.working) return;
-      if (t.kind === "build" && t.agent !== "openclaw" && workflows.some((x) => x.cwd === w.cwd && x.tasks.some(building))) continue;
+      if (t.kind === "build" && t.agent !== "openclaw" && workflows.some((x) => x.tasks.some(other => holdsBuild(x, other) &&
+          (x.outcomeRef ? coordinator.workspace(x, other) : x.cwd) === w.cwd))) continue;
       await start(w, t, at);
     }
   };
@@ -630,6 +719,7 @@ export function createWorkflows({
     let listed = null;
     const list = async () => (listed ??= await Promise.resolve(sessions.list()).then((l) => l?.sessions || [], () => []));
     for (const w of [...workflows]) {
+      if (w.outcomeRef) { try { await coordinator.supervise(w); } catch { pause(w, 'Outcome data needs inspection.'); } }
       for (const t of w.tasks) {
         if (t.state !== "working" || !t.relay) continue;
         const r = relays.get(t.relay);
@@ -641,16 +731,48 @@ export function createWorkflows({
           t.updatedAt = now();
           touch(w);
           save();
-          t.result = await resultOf(t, r.item);
+          // Pin the identity across the async read: an owner action must not
+          // let a late collector overwrite a newer attempt.
+          const attempt = t.attempt, chat = t.chat;
+          const result = await resultOf(w, t, r.item);
+          if (!workflows.includes(w) || t.attempt !== attempt || t.chat !== chat) continue;
+          t.result = result;
+          t.updatedAt = now();
+          touch(w);
+          if (result.originalTurnMismatch) {
+            t.state = 'uncertain';
+            t.problem = 'A later chat turn cannot finish the original task. Inspect its disposition.';
+            if (w.outcomeRef) coordinator.taskFailed(w);
+            pause(w, t.problem);
+          }
+          let evidenceSaved = true;
+          if (w.outcomeRef) try { outcomes.appendResult(w.outcomeRef, w, result.evidence); }
+          catch (error) {
+            evidenceSaved = false;
+            coordinator.taskFailed(w);
+            if (!["stopped", "done"].includes(w.state)) w.state = "paused";
+            w.problem = error.message;
+            touch(w);
+          }
+          if (w.outcomeRef && evidenceSaved && !result.originalTurnMismatch) coordinator.taskCompleted(w, t, result);
           save();
           continue;
         }
-        t.state = "stopped";
+        t.state = r?.state === 'uncertain' ? 'uncertain' : "stopped";
         t.updatedAt = now();
         touch(w);
         save();
-        t.problem = r ? await endedHow(t, r) : "Reach lost track of how this task ended. Check its chat.";
+        const attempt = t.attempt, chat = t.chat, snapshot = { ...t };
+        const problem = r ? await endedHow(snapshot, r) : "Reach lost track of how this task ended. Check its chat.";
+        if (!workflows.includes(w) || t.attempt !== attempt || t.chat !== chat || !troubled(t)) continue;
+        const result = chat && !t.result?.evidence ? await resultOf(w, snapshot, r?.item, { dispositionUnknown: true }) : null;
+        if (!workflows.includes(w) || t.attempt !== attempt || t.chat !== chat || !troubled(t)) continue;
+        t.problem = problem;
+        if (result) t.result = result;
+        t.updatedAt = now();
+        touch(w);
         save();
+        if (w.outcomeRef) coordinator.taskFailed(w);
         pause(w, `“${t.title}”: ${t.problem}`);
       }
       const p = w.planner;
@@ -671,6 +793,7 @@ export function createWorkflows({
           } catch {
             /* said below */
           }
+          if (!workflows.includes(w)) continue;
           if (w.state !== "draft") {
             save();
             continue;
@@ -679,7 +802,7 @@ export function createWorkflows({
             const offered = await available();
             const draft = readDraft(answer, offered, await catalogs(offered));
             p.problem = "";
-            if (!w.edited || !w.tasks.length) useDraft(w, draft);
+            if (!w.outcomeRef && (!w.edited || !w.tasks.length)) useDraft(w, draft);
             else w.proposal = draft;
           } catch (e) {
             p.problem = `Its last reply had no plan Reach could use: ${e.message}`;
@@ -703,6 +826,13 @@ export function createWorkflows({
   // same step as its last round, so no ask falls between.
   let ticking = null;
   let again = false;
+  const outcomeAdvancing = new Map();
+  const advanceOutcome = w => {
+    if (outcomeAdvancing.has(w.id)) return;
+    const pending = advance(w).catch(() => pause(w, 'Outcome progress needs inspection.'))
+      .finally(() => outcomeAdvancing.delete(w.id));
+    outcomeAdvancing.set(w.id, pending);
+  };
   const tick = () => {
     if (ticking) {
       again = true;
@@ -714,7 +844,12 @@ export function createWorkflows({
         do {
           again = false;
           await sync();
-          for (const w of workflows.filter((x) => x.state === "running")) await advance(w);
+          for (const w of workflows.filter((x) => x.state === "running")) {
+            // A pinned check can run for minutes. Its own outcome remains
+            // serialized while ordinary dispatch and relay collection proceed.
+            if (w.outcomeRef) advanceOutcome(w);
+            else await advance(w);
+          }
         } while (again);
       } finally {
         ticking = null;
@@ -723,7 +858,16 @@ export function createWorkflows({
     return ticking;
   };
   relays.onChange?.(() => void tick());
-  const timer = setEvery(() => void tick(), everyMs);
+  const supervising = new Map();
+  const timer = setEvery(() => {
+    // A provider read/check may be held. Authorization and deadline sweeps
+    // must still interrupt owned work while the scheduler awaits its reply.
+    for (const w of workflows.filter(w => w.outcomeRef)) if (!supervising.has(w.id)) {
+      const pending = coordinator.supervise(w).catch(() => {}).finally(() => supervising.delete(w.id));
+      supervising.set(w.id, pending);
+    }
+    void tick();
+  }, everyMs);
   timer?.unref?.();
 
   // A planner's draft into the editor (its title too, unless you'd named it).
@@ -743,6 +887,7 @@ export function createWorkflows({
   // Back to running once nothing's in the way, from the phone of the person
   // who said so.
   const goOn = (w, owner) => {
+    if (w.outcomeRef) outcomes.assertDispatch(w.outcomeRef, w);
     if (w.tasks.some(troubled)) return;
     const reason = authorized(owner);
     if (reason) throw bad(reason, 403);
@@ -759,10 +904,137 @@ export function createWorkflows({
     return t;
   };
 
+  const coordinator = createOutcomeCoordinator({ store: outcomes, runner: outcomeRunner, authorized, ownerAuthorized, folder, now, save, cancelWatch });
+  const outcomeCapabilities = () => {
+    const executionAvailable = !!outcomeRunner && ['prepare', 'baseline', 'capture', 'check', 'verify', 'stop', 'stopTask'].every(k => typeof outcomeRunner[k] === 'function');
+    return { executionAvailable, reason: executionAvailable ? '' : 'Outcome execution needs a trusted candidate and independent check runner. Setup is not available on this computer yet.' };
+  };
+  // A deletion marker wins a crash before the workflow-list write. Finish
+  // its storage cleanup rather than strand a removed attachment in quota.
+  for (const w of [...workflows].filter(w => w.outcomeRef)) {
+    try {
+      if (!outcomes.isRemoved(w.id)) continue;
+      try {
+        outcomes.remove(w.outcomeRef, w, { pending: w.outcomeCreating === true });
+        workflows = workflows.filter(other => other !== w);
+      } catch {
+        w.state = 'stopped';
+        w.problem = 'Outcome deletion is recorded. Retry Remove to finish cleaning its retained storage.';
+      }
+      save();
+    } catch { /* unreadable deletion state stays fail-closed in recovery */ }
+  }
+  for (const w of workflows.filter(w => w.outcomeRef)) {
+    try { if (!outcomes.isRemoved(w.id)) coordinator.recover(w); } catch { w.problem = 'Outcome data needs inspection. This attachment remains blocked.'; }
+  }
+  const requireOutcome = id => { const w = find(id); if (!w.outcomeRef) throw bad('This workflow has no outcome.', 404); return w; };
+  const changesDraft = (w, result, owner) => {
+    const draftId = result.operation.draftId;
+    // A durable deletion is different from a crash before materialization.
+    // Retrying its original decision must never recreate a removed draft.
+    if (outcomes.isRemoved(draftId)) return { ...result, draft: null, draftRemoved: true };
+    let copy = workflows.find(w => w.id === draftId);
+    if (!copy) {
+      const outcome = outcomes.raw(w.outcomeRef, w), decision = outcome.decisions.find(d => d.draftId === draftId);
+      const contract = structuredClone(outcome.contracts[decision.tuple.contractRevision - 1].contract);
+      contract.repair = { preapproved: false, maxCycles: 0 }; contract.limits.maxBuildAttempts = 1;
+      contract.limits.maxTotalCheckRuns = Math.min(contract.limits.maxTotalCheckRuns, contract.checks.length * 2); contract.limits.maxTotalReviewAttempts = 1;
+      const builder = w.tasks.find(t => !t.outcomeRole || t.outcomeRole === 'builder');
+      copy = { id: draftId, owner, title: w.title, named: true, state: 'draft', cwd: w.cwd, seq: 1, createdAt: now(), updatedAt: now(), tasks: [{
+        id: 't1', title: builder.title, agent: builder.agent, kind: 'build', together: false,
+        task: words(clipMiddle(builder.task, WORKFLOW_LIMITS.task - 5000) + (decision.note ? `\n\nOwner requested changes:\n${decision.note}` : ''), WORKFLOW_LIMITS.task),
+        ...(builder.model ? { model: builder.model } : {}), ...(builder.effort ? { effort: builder.effort } : {}), state: 'waiting', updatedAt: now() }],
+        outcomeRef: newOutcomeRef(), outcomeCreating: true, sourceOutcome: { workflowId: w.id, requestId: decision.requestId } };
+      workflows.push(copy); save();
+      try { outcomes.put(copy.outcomeRef, copy, { requestId: `draft-${draftId}`, expectedVersion: 0, contract }, { create: true, actor: owner }); delete copy.outcomeCreating; save(); }
+      catch (error) { copy.problem = 'The requested draft needs its contract save retried.'; save(); throw error; }
+    } else if (copy.outcomeCreating) {
+      const outcome = outcomes.raw(w.outcomeRef, w), decision = outcome.decisions.find(d => d.draftId === draftId), contract = structuredClone(outcome.contracts[decision.tuple.contractRevision - 1].contract);
+      contract.repair = { preapproved: false, maxCycles: 0 }; contract.limits.maxBuildAttempts = 1;
+      contract.limits.maxTotalCheckRuns = Math.min(contract.limits.maxTotalCheckRuns, contract.checks.length * 2); contract.limits.maxTotalReviewAttempts = 1;
+      outcomes.put(copy.outcomeRef, copy, { requestId: `draft-${draftId}`, expectedVersion: 0, contract }, { create: true, actor: owner }); delete copy.outcomeCreating; save();
+    }
+    return { ...result, draft: view(copy) };
+  };
+  for (const w of [...workflows].filter(w => w.outcomeRef)) {
+    try {
+      const record = outcomes.raw(w.outcomeRef, w);
+      for (const op of record.operations.filter(op => op.kind === 'request_changes'))
+        if (!workflows.some(copy => copy.id === op.draftId) || workflows.find(copy => copy.id === op.draftId)?.outcomeCreating)
+          changesDraft(w, { outcome: outcomes.get(w.outcomeRef, w), operation: op }, op.actor);
+    } catch { /* preserve the decision and blocked draft for an exact retry */ }
+  }
   return {
     list: () => workflows.map(summary),
     get: (id) => view(find(id)),
     revision: () => revision,
+    outcomeCapabilities,
+    getOutcome(id) { const w = find(id); return { outcome: w.outcomeRef ? outcomes.get(w.outcomeRef, w) : null, capabilities: outcomeCapabilities() }; },
+    putOutcome(id, body, owner) {
+      const w = find(id), input = outcomeInput(body);
+      const create = !w.outcomeRef || w.outcomeCreating === true;
+      if (!w.outcomeRef) {
+        if (w.state !== "draft") throw bad("Attach outcomes only to a draft workflow.", 409);
+        if (input.expectedVersion !== 0) throw bad("The outcome changed. Refresh before saving.", 409);
+        if (workflows.filter((w) => w.outcomeRef).length >= OUTCOME_LIMITS.outcomes) throw bad("Outcome history is full.", 429);
+        // Persist the capability marker first. A crash/storage failure between
+        // stores leaves a blocked attachment, never an ordinary runnable plan.
+        w.outcomeRef = newOutcomeRef();
+        w.outcomeCreating = true;
+        save();
+      }
+      const result = outcomes.put(w.outcomeRef, w, input, { create, actor: owner || w.owner });
+      delete w.outcomeCreating;
+      touch(w);
+      save();
+      return result;
+    },
+    outcomeOperation(id, requestId) {
+      const w = find(id), result = w.outcomeRef ? outcomes.operation(w.outcomeRef, w, requestId) : { status: "unknown", requestId };
+      return result.operation?.draftId && outcomes.isRemoved(result.operation.draftId) ? { ...result, draftRemoved: true } : result;
+    },
+    prepareOutcome(id, body, owner) { return coordinator.prepare(requireOutcome(id), body, owner); },
+    runOutcome(id, body, owner) { const result = coordinator.run(requireOutcome(id), body, owner); void tick(); return result; },
+    async acceptOutcome(id, body, owner) {
+      const result = await coordinator.accept(requireOutcome(id), body, owner);
+      // The ledger owns this decision. Publish its new summary to the existing
+      // feed, notification scan and journal without rewriting workflow state.
+      revision++;
+      for (const listener of listeners) listener(revision);
+      return result;
+    },
+    requestOutcomeChanges(id, body, owner) { const w = requireOutcome(id); return changesDraft(w, coordinator.requestChanges(w, body, owner), owner); },
+    observeOutcome(id, body, owner) { const w = requireOutcome(id), result = coordinator.observation(w, body, owner); if (result.outcome.phase === 'ready') w.state = 'done'; save(); return result; },
+    cancelOutcome(id, body, owner) { return coordinator.cancel(requireOutcome(id), body, owner); },
+    taskResult(id, taskId, { attempt } = {}) {
+      const w = find(id), t = w.tasks.find((t) => t.id === taskId);
+      if (!t) throw bad("That task is gone.", 404);
+      if (attempt !== undefined && (!Number.isSafeInteger(attempt) || attempt < 1)) throw bad("Use a positive attempt number.");
+      const known = retainedResults(t);
+      const entry = attempt === undefined ? known.at(-1) : known.find((entry) => entry.attempt === attempt);
+      if (!entry) throw bad("No result was retained for that task attempt.", 404);
+      let result;
+      try { result = entry.result.evidence ? restoreResult(entry.result.evidence) : stampResult(recordedTurnResult([
+        { role: "assistant", kind: "text", text: entry.result.answer || "" },
+      ], { binding: { workflowId: w.id, taskId: t.id, attempt: entry.attempt, provider: t.agent }, historyIncomplete: true, gaps: ["legacy_result"] }), { at: 0 }); }
+      catch { throw bad("This attempt's stored evidence is unavailable. It was not recollected from a later turn.", 503); }
+      const saved = entry.result;
+      const answer = typeof saved.answer === 'string' ? saved.answer : '';
+      const diffs = typeof saved.diffs === 'string' ? saved.diffs : '';
+      const files = Array.isArray(saved.files) ? saved.files.filter((file) => typeof file === 'string') : [];
+      return {
+        result, source: 'provider_reported',
+        attempt: attemptNumber(entry.attempt),
+        attempts: known.map((entry) => ({ attempt: attemptNumber(entry.attempt), current: entry.result === t.result })),
+        omittedAttempts: t.omittedResultAttempts || 0,
+        handoff: {
+          answer: clipMiddle(answer, KEEP.answer), files: files.slice(0, KEEP.files).map((file) => file.slice(0, 1600)), diffs: clipMiddle(diffs, KEEP.diffs),
+          source: ['task_reply', 'owner_marked_done'].includes(saved.handoffSource) ? saved.handoffSource : 'legacy',
+          truncated: saved.handoffTruncated === true || answer.length > KEEP.answer || diffs.length > KEEP.diffs || files.length > KEEP.files ||
+            files.some((file) => file.length > 1600) || /\n… \(\d+ characters (?:omitted|left out)\) …\n/.test(answer + diffs),
+        },
+      };
+    },
     onChange(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -856,6 +1128,7 @@ export function createWorkflows({
     // hasn't started, after the last task that has (those stay as they are).
     update(id, { title, cwd, tasks } = {}) {
       const w = find(id);
+      if (w.outcomeRef && (cwd !== undefined && cwd !== w.cwd || tasks !== undefined)) throw bad("The outcome pins this plan. Save plan edits before attaching its contract.", 409);
       if (!["draft", "running", "paused"].includes(w.state)) throw bad("A finished workflow can't change. Run it again to make a copy.", 409);
       if (title !== undefined) {
         w.title = oneLine(title, WORKFLOW_LIMITS.title) || w.title;
@@ -891,6 +1164,7 @@ export function createWorkflows({
     // The planner's newer draft, over your edits.
     useProposal(id) {
       const w = find(id);
+      if (w.outcomeRef) throw bad("The outcome pins this plan. Its proposal cannot replace it.", 409);
       if (w.state !== "draft" || !w.proposal) throw bad("There's no newer plan to use.", 409);
       useDraft(w, w.proposal);
       touch(w);
@@ -903,6 +1177,7 @@ export function createWorkflows({
     // Run: from the phone that taps it, which each start checks again.
     run(id, owner) {
       const w = find(id);
+      if (w.outcomeRef) outcomes.assertDispatch(w.outcomeRef, w);
       if (w.state !== "draft") throw bad("It's already been run. Run it again to make a copy.", 409);
       if (!w.tasks.length) throw bad("Add a task first.");
       // Every task says what to do now; a title left empty takes its first line.
@@ -925,6 +1200,7 @@ export function createWorkflows({
     // Paused for something besides a task (access, Reach paused): on again.
     resume(id, owner) {
       const w = find(id);
+      if (w.outcomeRef) outcomes.assertDispatch(w.outcomeRef, w);
       if (w.state !== "paused") throw bad("That workflow isn't paused.", 409);
       if (w.tasks.some(troubled)) throw bad("Retry, skip or finish the stopped task first.", 409);
       goOn(w, owner);
@@ -935,12 +1211,19 @@ export function createWorkflows({
     // A stopped task again, in a new chat (its old chat stays).
     retry(id, taskId, owner) {
       const w = find(id);
+      if (w.outcomeRef) outcomes.assertDispatch(w.outcomeRef, w);
       const t = troubledTask(w, taskId);
+      if (t.result) {
+        const history = [...(t.resultHistory || []), { attempt: t.attempt, result: t.result }];
+        t.omittedResultAttempts = (t.omittedResultAttempts || 0) + Math.max(0, history.length - 5);
+        t.resultHistory = history.slice(-5);
+      }
       if (t.chat) t.tries = [...(t.tries || []), t.chat].slice(-5);
       delete t.chat;
       delete t.relay;
       delete t.problem;
       delete t.result;
+      delete t.resultBoundary;
       t.state = "waiting";
       t.updatedAt = now();
       goOn(w, owner);
@@ -952,6 +1235,7 @@ export function createWorkflows({
     // On without it.
     skip(id, taskId, owner) {
       const w = find(id);
+      if (w.outcomeRef) outcomes.assertDispatch(w.outcomeRef, w);
       const t = troubledTask(w, taskId);
       t.state = "skipped";
       t.updatedAt = now();
@@ -964,10 +1248,19 @@ export function createWorkflows({
     // Sorted out in its chat: done, with what that chat ends on.
     async done(id, taskId, owner) {
       const w = find(id);
+      if (w.outcomeRef) outcomes.assertDispatch(w.outcomeRef, w);
       const t = troubledTask(w, taskId);
       if (!t.chat) throw bad("This task never started. Retry or skip it.", 409);
-      const result = await resultOf(t, null);
+      const attempt = t.attempt, chat = t.chat;
+      // Ordinary Mark done keeps its existing handoff behaviour, including
+      // an owner's continuation. That later reply never becomes evidence of
+      // the original attempt, whose frozen receipts stay separate.
+      const page = await sessions.read(t.chat.agent, t.chat.id, { limit: 200 });
+      const material = turnMaterial(page.items || []);
+      const original = t.result?.evidence ? t.result : await resultOf(w, t, null);
+      const result = material ? { ...original, ...retainedHandoff(material, "owner_marked_done") } : { ...original, answer: "" };
       if (!result.answer) throw bad("Its chat doesn't end with a reply yet.", 409);
+      if (t.attempt !== attempt || t.chat !== chat) throw bad("This task attempt changed while its reply was being read.", 409);
       if (!troubled(t)) throw bad("That task isn't stopped.", 409);
       t.result = result;
       t.state = "done";
@@ -980,8 +1273,9 @@ export function createWorkflows({
       return { workflow: view(w) };
     },
     // Stop: the tasks at work stop (their chats stay), the rest never start.
-    async stop(id) {
+    async stop(id, owner) {
       const w = find(id);
+      if (w.outcomeRef) return coordinator.cancel(w, { requestId: `stop-${randomUUID()}`, expectedVersion: outcomes.get(w.outcomeRef, w).version }, owner || w.owner);
       if (w.state !== "running" && w.state !== "paused") return { stopped: false };
       w.state = "stopped";
       w.problem = "";
@@ -1000,6 +1294,8 @@ export function createWorkflows({
     // A copy as a new draft, to run again.
     again(id, owner) {
       const w = find(id);
+      const contract = w.outcomeRef ? outcomes.get(w.outcomeRef, w).contract : null;
+      if (contract && workflows.filter((w) => w.outcomeRef).length >= OUTCOME_LIMITS.outcomes) throw bad("Outcome history is full.", 429);
       const copy = {
         id: randomUUID(),
         owner,
@@ -1012,7 +1308,7 @@ export function createWorkflows({
         createdAt: now(),
         updatedAt: now(),
       };
-      copy.tasks = w.tasks.map(({ title, agent, kind, task, together, model, effort }) => ({
+      copy.tasks = w.tasks.filter(t => !t.outcomeRole || t.outcomeRole === 'builder').map(({ title, agent, kind, task, together, model, effort }) => ({
         title,
         agent,
         kind,
@@ -1025,19 +1321,33 @@ export function createWorkflows({
         updatedAt: now(),
       }));
       workflows.push(copy);
+      if (contract) {
+        copy.outcomeRef = newOutcomeRef();
+        copy.outcomeCreating = true;
+        save();
+        contract.repair = { preapproved: false, maxCycles: 0 };
+        contract.limits.maxBuildAttempts = 1;
+        contract.limits.maxTotalCheckRuns = Math.min(contract.limits.maxTotalCheckRuns, contract.checks.length * 2);
+        contract.limits.maxTotalReviewAttempts = 1;
+        try { outcomes.put(copy.outcomeRef, copy, { requestId: `copy-${copy.id}`, expectedVersion: 0, contract }, { create: true }); delete copy.outcomeCreating; }
+        catch (error) { workflows = workflows.filter(x => x !== copy); save(); throw error; }
+      }
       save();
       return { workflow: view(copy) };
     },
     // A draft or a finished one, gone (its chats stay).
     remove(id) {
       const w = find(id);
-      if (w.state === "running" || w.state === "paused") throw bad("Stop it first.", 409);
+      if (w.outcomeRef) outcomes.remove(w.outcomeRef, w, { pending: w.outcomeCreating === true });
+      else if (w.state === "running" || w.state === "paused") throw bad("Stop it first.", 409);
       cancelWatch(w.planner?.relay);
       workflows = workflows.filter((x) => x !== w);
       save();
       return { removed: true };
     },
-    sync: tick,
+    // Explicit callers may await this pass's outcome work. The scheduler
+    // lock itself is already released, so other events can still make progress.
+    async sync() { await tick(); await Promise.all([...outcomeAdvancing.values()]); },
     stopTimer: () => clearEvery(timer),
   };
 }
