@@ -8,6 +8,36 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-11-03
+
+Early-access maintenance release for foreground recovery and a quieter,
+consistent connection interface across supported hosts and phone clients.
+
+### Fixed
+
+- Blank or clipped pages after a long idle period are detected independently
+  of the main interface. Recovery checks a usable Reach document before
+  reloading, and stalled reads cannot hold later recovery attempts.
+- Reload Reach stays available in the workspace header, including phone and
+  tablet layouts. Recovery keeps the same link and does not replay actions.
+- Connected workspaces no longer show background browser-access preparation
+  as another connection wait. Enrollment continues across page navigation;
+  stale reports are discarded when the computer or owner access changes.
+
+### Changed
+
+- Opening and reconnecting share one connection page and one progress
+  indicator. Sign-in and retry actions remain available in Connection
+  settings; preview reconnection is labeled separately.
+- Home and chat no longer repeat Outcomes promotion cards. Existing task
+  results and actionable requests remain available through their normal views.
+
+### Validation limits
+
+- Automated browser, simulator and host checks do not establish physical
+  iPhone, iPad or Android recovery. Physical long-idle and connection-handoff
+  acceptance remains pending; this release does not claim that qualification.
+
 ## [0.5.1] — 2026-11-02
 
 Early-access release focused on reliable agent access, recovery after sleep,
