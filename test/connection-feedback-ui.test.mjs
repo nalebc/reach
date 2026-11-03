@@ -210,7 +210,7 @@ test("standby preparation stays silent while a connected owner keeps working", a
   const fixture = ownerFixture({ state: "preparing" });
   let view;
   try {
-    view = await renderOwner();
+    view = await renderOwner({ visible: false });
     assert.equal(view.container.textContent, "");
     assert.equal(fixture.starts, 1, "quiet preparation still starts enrollment");
     dom.update(() => clock.advance(8000));
@@ -224,6 +224,27 @@ test("standby preparation stays silent while a connected owner keeps working", a
     assert.equal(fixture.stops, 0);
   } finally { await view?.unmount(); clock.restore(); }
   assert.equal(fixture.stops, 1);
+});
+
+test("Settings retains an explicit retry for a long standby wait without another loader", async () => {
+  const clock = feedbackClock();
+  const fixture = ownerFixture({ state: "preparing" });
+  let view;
+  try {
+    view = await renderOwner();
+    assert.equal(view.container.textContent, "", "ordinary standby setup stays quiet");
+    dom.update(() => clock.advance(8000));
+    assert.match(view.container.textContent, /Browser access.*Needs attention/);
+    assert.match(view.container.textContent, /Reach is connected/);
+    assert.equal(view.container.querySelector(".spin,.connection-loading-dot,.connection-state"), null);
+    dom.update(() => fixture.update({ state: "signin", url: "" }));
+    assert.ok(view.container.querySelector("button"), "polling does not reset the long-wait recovery action");
+    dom.update(() => view.container.querySelector("button").click());
+    await settle();
+    assert.equal(fixture.starts, 2);
+    assert.equal(fixture.stops, 1);
+    assert.equal(view.container.textContent, "", "an explicit retry starts a fresh quiet wait");
+  } finally { await view?.unmount(); clock.restore(); }
 });
 
 test("owner setup distinguishes sign-in, errors, and completion", async () => {

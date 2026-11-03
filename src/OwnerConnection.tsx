@@ -4,7 +4,7 @@ import type { Device, Peer } from "./api";
 import { watchOwnerEnrollment, type OwnerSetup } from "./owner-connection";
 import type { StartConfig } from "./start-flow";
 import type { TailnetNode } from "./tailnet-transport";
-import ConnectionStatus from "./ConnectionStatus";
+import ConnectionStatus, { useConnectionWait } from "./ConnectionStatus";
 import "./owner-connection.css";
 
 type BrowserApproval = (config: StartConfig, node: TailnetNode) => void;
@@ -43,21 +43,28 @@ export function useOwnerConnection(peer: Peer | undefined, device: Device | null
 
 // Actionable standby setup belongs in Settings, outside the connection wait.
 export function OwnerSetupNotice({ setup, onRetry }: { setup: OwnerSetup; onRetry: () => void }) {
-  if (setup.state === "ready" || setup.state === "preparing" || (setup.state === "signin" && !setup.url)) return null;
+  const waiting = setup.state === "preparing" || (setup.state === "signin" && !setup.url);
+  const [attempt, setAttempt] = useState(0);
+  const slow = useConnectionWait(waiting, attempt);
+  if (setup.state === "ready" || (waiting && !slow)) return null;
   return <details className="owner-connection-setup">
     <summary>
       <Link2 size={20} aria-hidden="true" />
       <span>
         <strong>Browser access</strong>
-        <small>{setup.state === "error" ? "Needs attention" : "Sign-in required"}</small>
+        <small>{setup.state === "error" || slow ? "Needs attention" : "Sign-in required"}</small>
       </span>
       <ChevronDown size={16} aria-hidden="true" />
     </summary>
     <div className="owner-connection-details">
       <p>Reach is connected. Finish browser access to keep using this link with your phone’s Tailscale app off.</p>
+      {slow && <p>Browser access is taking longer than usual. You can retry setup and keep working.</p>}
       {setup.state === "error" && <p role="status">{setup.message || "Browser access couldn’t finish."} Reach will retry automatically.</p>}
       {setup.url && <a className="button primary" href={setup.url} target="_blank" rel="noopener noreferrer">Sign in to Tailscale</a>}
-      {setup.state === "error" && <button className="button secondary" onClick={onRetry}>Try setup again</button>}
+      {(setup.state === "error" || slow) && <button className="button secondary" onClick={() => {
+        setAttempt(n => n + 1);
+        onRetry();
+      }}>Try setup again</button>}
     </div>
   </details>;
 }
