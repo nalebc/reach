@@ -28,6 +28,7 @@ before(async () => {
     '/api/sessions/logos': () => ({ version: '1', logos: {} }),
     '/api/sessions/health': () => ({ agents: health }),
     '/api/sessions/models': () => ({ models: [], modes: [] }),
+    '/api/sessions/openclaw/overview': () => ({ connected: true, sessions: [], approvals: [] }),
     '/api/sessions/codex/build-chat': () => ({ session, items: [] }),
     '/api/sessions/codex/build-chat/live': async () => { await settle(60); return { status: 'idle', items: 0, prompts: [], streaming: '' }; },
   } });
@@ -44,7 +45,7 @@ const el = (component, props) => dom.React.createElement(component, props);
 const button = (text, root = dom.document) => [...root.querySelectorAll('button')].find(b => b.textContent.includes(text));
 const feed = list => ({ sessions: [session], workflows: list, health, errors: {}, relays: [], teams: [], macPrompts: [] });
 
-test('Home reuses Needs you for review and blockers, with a compact running state and outcome entry', async () => {
+test('Home shows outcome decisions in Needs you without a separate Outcomes card', async () => {
   const list = ['ready', 'needs_owner', 'running'].map((phase, i) => ({ ...outcomeWorkflowFixture(), id: `flow-${i}`, title: `Outcome ${i}`, state: i === 2 ? 'running' : 'done', outcome: { phase, acceptance: { eligible: i === 0, status: 'not_accepted' } } }));
   const opened = [];
   view = await dom.render(el(Home, { features: { owner: true, screen: false }, device: { name: 'Computer', roots: [] }, peer, active: peer.id,
@@ -53,33 +54,43 @@ test('Home reuses Needs you for review and blockers, with a compact running stat
   const needs = dom.document.querySelector('.home-needs');
   assert.match(needs.textContent, /Ready for your review/);
   assert.match(needs.textContent, /Blocked · needs you/);
-  assert.equal(dom.document.querySelectorAll('.outcome-entry-row').length, 1);
+  assert.equal(dom.document.querySelector('[aria-label="Outcomes"]'), null);
+  assert.doesNotMatch(dom.document.querySelector('.home-live').textContent, /Outcome 2/);
   button('Review outcome', needs).click(); await settle();
-  button('Outcomes', dom.document.querySelector('.outcome-entry')).click();
-  assert.deepEqual(opened, ['flow-0', 'all']);
+  assert.deepEqual(opened, ['flow-0']);
   assert.equal(dom.document.querySelectorAll('.home-needs').length, 1);
 });
 
-test('Home and workflow rows show the verification queue without turning it into an owner decision', async () => {
+test('the verification queue stays in Workflows without promoting it on Home as an owner decision', async () => {
   const queued = { ...outcomeWorkflowFixture(), state: 'running', outcome: { phase: 'running', waitingForVerification: true, acceptance: { eligible: false, status: 'not_accepted' } } };
   assert.equal(navigation.outcomeState(queued), 'Waiting for checks');
   assert.equal(navigation.outcomeNeedsOwner(queued), false);
   view = await dom.render(el(Home, { features: { owner: true, screen: false }, device: { name: 'Computer', roots: [] }, peer, active: peer.id,
     connections: { computer: { state: 'connected' } }, connection: 'Private', chats: [], pending: [], navigate() {}, openChat() {}, decide() {},
     workflows: [queued], onOpenWorkflow() {}, refreshSessions() {}, toast() {} }));
-  assert.match(dom.document.querySelector('.outcome-entry-row').textContent, /Waiting for checks/);
+  assert.equal(dom.document.querySelector('[aria-label="Outcomes"]'), null);
   assert.equal(button('Review outcome'), undefined);
+  await view.unmount();
+  view = await dom.render(el(WorkflowsPage, { peer, workflows: [queued], logos: {}, onOpen() {}, onNew() {}, onClose() {} }));
+  assert.match(dom.document.querySelector('.workflows-page').textContent, /Waiting for checks/);
 });
 
-test('All chat hub keeps completed tasks awaiting review visible and opens the current result without a task chat', async () => {
+test('chat lists keep Outcomes in Workflows and can open a result without a task chat', async () => {
   workflow = outcomeWorkflowFixture(); state = outcomeResultFixture();
-  localStorage.setItem('reach.chatAgent', 'all');
-  view = await dom.render(el(Everything, { peer, feed: feed([workflow]) }));
-  const entry = dom.document.querySelector('.chat-hub .outcome-entry');
-  assert.match(entry.textContent, /Ready for your review/);
-  button('Synthetic outcome', entry).click();
-  await dom.waitFor(() => dom.document.querySelector('.wf-outcome'));
-  assert.match(dom.document.querySelector('.wf-outcome').textContent, /Result revision 1/);
+  for (const agent of ['all', 'codex', 'claude', 'openclaw']) {
+    localStorage.setItem('reach.chatAgent', agent);
+    view = await dom.render(el(Everything, { peer, feed: { ...feed([workflow]), health: [...health, { agent: 'openclaw', installed: true, signedIn: true }] } }));
+    assert.equal(dom.document.querySelector('[aria-label="Outcomes"]'), null, agent);
+    const entry = dom.document.querySelector('button[title="Workflows"]');
+    assert.ok(entry, `${agent} keeps the Workflows shortcut`);
+    entry.click();
+    await dom.waitFor(() => dom.document.querySelector('.workflows-page'));
+    assert.match(dom.document.querySelector('.workflows-page').textContent, /Ready for your review/);
+    button('Synthetic outcome', dom.document.querySelector('.workflows-page')).click();
+    await dom.waitFor(() => dom.document.querySelector('.wf-outcome'));
+    assert.match(dom.document.querySelector('.wf-outcome').textContent, /Result revision 1/);
+    await view.unmount(); view = null; sessionStorage.clear();
+  }
 });
 
 test('notification targets open the latest outcome even absent from chat feed; stale or repeated Accept taps cannot silently accept', async () => {
@@ -172,7 +183,7 @@ test('New outcome opens its own criteria-first composer without a workflow plann
   workflow = outcomeWorkflowFixture(); state = outcomeResultFixture();
   localStorage.setItem('reach.chatAgent', 'all');
   view = await dom.render(el(Everything, { peer, feed: feed([workflow]) }));
-  button('Outcomes', dom.document.querySelector('.outcome-entry')).click();
+  dom.document.querySelector('button[title="Workflows"]').click();
   await dom.waitFor(() => button('New outcome') && !button('New outcome').disabled);
   button('New outcome').click();
   await dom.waitFor(() => dom.document.querySelector('textarea[aria-label="Outcome to build"]'));
