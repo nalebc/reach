@@ -1,22 +1,57 @@
+import { interfaceDocument } from "./interface-document";
+
 // A restored document can keep its scripts and an empty React container.
 // A body element count calls that healthy, even though there is no page.
 export function pageHasContent(doc: Document) {
+  const win = doc.defaultView;
+  const styles = new Map<Element, CSSStyleDeclaration>();
+  const styleOf = (element: Element) => {
+    if (!win) return undefined;
+    let style = styles.get(element);
+    if (!style) { style = win.getComputedStyle(element); styles.set(element, style); }
+    return style;
+  };
+  const viewportStyle = styleOf(doc.documentElement);
+  const bodyOverflowIsViewport = viewportStyle?.overflowX === "visible" && viewportStyle?.overflowY === "visible";
   const visible = (element: Element) => {
-    const win = doc.defaultView;
+    const clips: { rect: DOMRect; x: boolean; y: boolean }[] = [];
+    let positioned: "absolute" | "fixed" | undefined;
     for (let parent: Element | null = element; parent; parent = parent.parentElement) {
       if (parent.hasAttribute("hidden")) return false;
-      const style = win?.getComputedStyle(parent);
+      const style = styleOf(parent);
       if (style?.display === "none" || style?.opacity === "0" ||
         style?.getPropertyValue("content-visibility") === "hidden") return false;
+      // Positioned descendants escape overflow until their containing block.
+      // A visible fullscreen control must not be mistaken for a blank page.
+      if (parent !== element && style && positioned &&
+        ((positioned === "absolute" && !!style.position && style.position !== "static") ||
+          [style.transform, style.perspective, style.filter, style.getPropertyValue("backdrop-filter")].some(value => value && value !== "none") ||
+          /\b(layout|paint|strict|content)\b/.test(style.contain) ||
+          /\b(transform|perspective|filter)\b/.test(style.willChange) ||
+          style.getPropertyValue("content-visibility") === "auto")) positioned = undefined;
+      if (parent !== element && style && !positioned && parent !== doc.documentElement &&
+        !(parent === doc.body && bodyOverflowIsViewport)) {
+        const x = /^(hidden|clip|scroll|auto)$/.test(style.overflowX);
+        const y = /^(hidden|clip|scroll|auto)$/.test(style.overflowY);
+        if (x || y) clips.push({ rect: parent.getBoundingClientRect(), x, y });
+      }
+      if (!positioned && (style?.position === "fixed" || style?.position === "absolute")) positioned = style.position;
     }
-    const style = win?.getComputedStyle(element);
+    const style = styleOf(element);
     if (style?.visibility === "hidden" || style?.visibility === "collapse") return false;
     // Parsed HTML and DOM-only tests have no viewport. A rendered page must
     // actually put its content on screen, rather than retain offscreen nodes.
     const width = doc.documentElement.clientWidth, height = doc.documentElement.clientHeight;
     if (!win || !width || !height) return true;
-    return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0 &&
-      rect.right > 0 && rect.bottom > 0 && rect.left < width && rect.top < height);
+    return [...element.getClientRects()].some(rect => {
+      let left = Math.max(0, rect.left), right = Math.min(width, rect.right);
+      let top = Math.max(0, rect.top), bottom = Math.min(height, rect.bottom);
+      for (const clip of clips) {
+        if (clip.x) { left = Math.max(left, clip.rect.left); right = Math.min(right, clip.rect.right); }
+        if (clip.y) { top = Math.max(top, clip.rect.top); bottom = Math.min(bottom, clip.rect.bottom); }
+      }
+      return right > left && bottom > top;
+    });
   };
   const roots = [doc.getElementById("root"), doc.getElementById("start")]
     .filter((root): root is HTMLElement => !!root);
@@ -47,7 +82,7 @@ async function documentAnswers(href: string, signal: AbortSignal) {
   });
   if (!response.ok || response.headers.get("X-Reach-Cached-Shell")) return false;
   const html = await response.text();
-  return pageHasContent(new DOMParser().parseFromString(html, "text/html"));
+  return interfaceDocument(html);
 }
 
 // Recovery only reads the document and reopens its current address. It never

@@ -133,10 +133,13 @@ test("reconnect links fetch a new document and retain the owner path, query and 
 });
 
 test("empty, broken and temporary-error documents recover without masking authorization failures", async () => {
-  for (const kind of ["empty", "whitespace", "broken", "unavailable", "healthy", "denied", "empty-denied"]) {
+  for (const kind of ["empty", "whitespace", "doctype", "truncated", "wrong-document", "broken", "unavailable", "healthy", "denied", "empty-denied"]) {
     const w = worker({ fetchNetwork: () => {
       if (kind === "broken") return new Response(new ReadableStream({ start(stream) { stream.error(Error("incomplete document")); } }));
-      const body = ["empty", "empty-denied"].includes(kind) ? "" : kind === "whitespace" ? " \n " : "<html><body>Reach fixture</body></html>";
+      const body = ["empty", "empty-denied"].includes(kind) ? "" : kind === "whitespace" ? " \n " :
+        kind === "doctype" ? "<!doctype html>" : kind === "truncated" ? '<html><head><script type="module" src="/assets/r2-index-fixture.js"></script></head>' :
+        kind === "wrong-document" ? "<html><body>Temporary gateway failure</body></html>" :
+        '<html><head><script type="module" src="/assets/r2-index-fixture.js"></script></head><body><div id="root">Reach fixture</div></body></html>';
       return new Response(body, { status: kind === "unavailable" ? 502 : kind.endsWith("denied") ? 403 : 200 });
     } });
     const response = await w.fetch("/");

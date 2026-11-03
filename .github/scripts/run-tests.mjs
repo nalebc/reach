@@ -70,7 +70,7 @@ export const suites = {
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
-    "build-reload", "app-boot-ui", "page-recovery-ui", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "face-sign-in-ui",
+    "build-reload", "app-boot-ui", "page-recovery-ui", "foreground-recovery-chrome", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "face-sign-in-ui",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).

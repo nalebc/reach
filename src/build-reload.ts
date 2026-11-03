@@ -9,6 +9,7 @@
 // cover restored pages and browsers whose connection uses a different port.
 import { reloadFromBase } from "./nav-history";
 import { offlineShellEnabled, prepareInterfaceReload } from "./offline-shell";
+import { interfaceDocument } from "./interface-document";
 let first: string | null = null;
 let waiting = false;
 let generation = 0;
@@ -53,18 +54,30 @@ export const servedOffline = () =>
   offlineShellEnabled() && typeof navigator !== "undefined" && !!navigator.serviceWorker?.controller;
 // The new interface answers right now: asked just before a reload that no
 // offline copy would catch.
-export async function pageAnswers(href = location.href, load: typeof fetch = fetch, timeoutMs = 10000) {
+async function readPage(href: string, load: typeof fetch, timeoutMs: number) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<null>(resolve => {
+    timer = setTimeout(() => { resolve(null); controller.abort(); }, timeoutMs);
+  });
+  const read = async () => {
+    try {
+      const response = await load(href, {
+        cache: "no-store", credentials: "same-origin", signal: controller.signal,
+      });
+      if (!response.ok || response.headers.get("X-Reach-Cached-Shell")) return null;
+      return await response.text();
+    } catch { return null; }
+  };
   try {
-    const response = await load(freshInterfaceUrl(href), {
-      cache: "no-store",
-      credentials: "same-origin",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    return response.ok && !response.headers.get("X-Reach-Cached-Shell") &&
-      !!(await response.text()).trim();
-  } catch {
-    return false;
-  }
+    // Abort is advisory for a suspended/custom transport. Our deadline must
+    // settle the read itself, including its body, so future checks can run.
+    return await Promise.race([read(), expired]);
+  } finally { clearTimeout(timer); }
+}
+export async function pageAnswers(href = location.href, load: typeof fetch = fetch, timeoutMs = 10000) {
+  const html = await readPage(freshInterfaceUrl(href), load, timeoutMs);
+  return html !== null && interfaceDocument(html);
 }
 // The last touch, key, scroll or wheel on the page (its load counts).
 let touched = Date.now();
@@ -187,20 +200,10 @@ export async function currentPageMatches(
   const styles = 'link[rel="stylesheet"][href]';
   const loaded = assets(doc, scripts);
   if (!loaded.length || !/^https?:$/.test(location.protocol)) return true;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await load(location.href, {
-      cache: "no-store",
-      credentials: "same-origin",
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    if (response.headers.get("X-Reach-Cached-Shell")) return null;
-    const page = new DOMParser().parseFromString(
-      await response.text(),
-      "text/html",
-    );
+    const html = await readPage(location.href, load, timeoutMs);
+    if (html === null) return null;
+    const page = new DOMParser().parseFromString(html, "text/html");
     const fresh = assets(page, scripts);
     if (!fresh.length) return null;
     // Vite adds stylesheets for lazy views after loading. Extra loaded styles
@@ -212,8 +215,6 @@ export async function currentPageMatches(
     );
   } catch {
     return null; // an offline page keeps working; presence will retry later
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

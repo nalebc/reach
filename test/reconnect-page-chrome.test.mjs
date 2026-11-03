@@ -153,7 +153,7 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
 
   // A visually blank page may retain its complete HTML. Hidden startup
   // elements and offscreen app content must not suppress visible recovery.
-  for (const style of ["display:none", "opacity:0", "transform:translateX(200vw)"]) {
+  for (const style of ["display:none", "opacity:0", "transform:translateX(200vw)", "height:0;min-height:0;overflow:hidden"]) {
     await tab.evaluate(`document.getElementById('root').style.cssText = ${JSON.stringify(style)}; document.documentElement.dataset.emptyFixture = 'true'; const old = document.createElement('div'); old.id = 'start'; old.hidden = true; old.textContent = 'Opening Reach'; document.body.append(old); window.dispatchEvent(new Event('pageshow'))`);
     await until(`!document.documentElement.dataset.emptyFixture && (${appReady})`, `${style}: retained but invisible content recovers`, 15000);
     assert.equal(await tab.evaluate("localStorage.getItem('reach.recovery.fixture')"), "saved");

@@ -407,6 +407,16 @@ self.addEventListener("message", event => {
   shellMutations = shellMutations.then(run, run);
   event.waitUntil(shellMutations);
 });
+// A worker has no DOMParser. Match the complete shell's boot tags here;
+// the page's interface-document.ts performs the equivalent DOM check.
+const shellDocument = html => {
+  const source = html.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+  return /<\/body\s*>/i.test(source) && /<\/html\s*>/i.test(source) &&
+    /<(?:div|main)\b[^>]*\sid\s*=\s*["'](?:root|start)["']/i.test(source) &&
+    [...source.matchAll(/<script\b[^>]*>/gi)].some(([tag]) =>
+      /\stype\s*=\s*["']module["']/i.test(tag) &&
+      /\ssrc\s*=\s*["']\/(?:assets\/[^"'<>/?#]+\.js|src\/(?:boot|start)\.ts|src\/funnel-agent-entry\.tsx)(?:[?#][^"'<>]*)?["']/i.test(tag));
+};
 self.addEventListener("fetch", event => {
   const request = event.request, url = new URL(request.url);
   const navigation = request.mode === "navigate" && shellNavigation(url);
@@ -439,7 +449,7 @@ self.addEventListener("fetch", event => {
     if (!response.ok) return response;
     // Read a clone so a failed/truncated body cannot replace Reach with an
     // empty document. Return the original URL, headers and redirect behavior.
-    if (!(await response.clone().text()).trim()) return reconnect();
+    if (!shellDocument(await response.clone().text())) return reconnect();
     return response;
   };
   const serve = async () => {
