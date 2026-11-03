@@ -12,7 +12,7 @@ import { findChrome, launchChrome, openTab, testCertificate } from './helpers/he
 
 const binary = findChrome();
 test('real Chrome keeps the permanent owner link usable before browser sign-in, after native HTTP is lost', {
-  skip: !process.env.CI && !binary && 'Chrome is not installed', timeout: 60000,
+  skip: !process.env.CI && !binary && 'Chrome is not installed', timeout: 150000,
 }, async t => {
   assert.ok(binary, 'Chrome is required in CI');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-owner-offline-'));
@@ -62,6 +62,12 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   const bundle = (await build({ stdin: { contents: 'export { watchOwnerEnrollment } from "./src/owner-connection.ts";', resolveDir: process.cwd() },
     bundle: true, write: false, format: 'iife', globalName: 'Fixture', platform: 'browser' })).outputFiles[0].text;
   app.get('/fixture.js', (_req, res) => res.type('js').send(bundle));
+  let workerUnavailableUntil = 0, refusedWorkerRequests = 0;
+  app.get('/sw.js', (_req, res, next) => {
+    if (Date.now() >= workerUnavailableUntil) return next();
+    refusedWorkerRequests++;
+    res.sendStatus(503);
+  });
   app.get('/reach-start.json', (_req, res) => res.json(config));
   app.post('/api/device/owner-connection', (_req, res) => res.json({ connection: '11111111-1111-4111-8111-111111111111' }));
   app.get('/tailnet/' + config.tailnet.wasm, (_req, res) => res.type('application/wasm').send(wasm));
@@ -84,8 +90,27 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
     tab = await openTab(browser); await tab.send('Network.enable');
   };
   // Each expression is fixed test code; it's named on this side if it never holds.
-  const wait = (expression, timeout = 15000) => tab.evaluate(`new Promise((resolve,reject)=>{const until=Date.now()+${timeout};const check=()=>{if(${expression})return resolve(true);if(Date.now()>until)return reject(Error('Missing state'));setTimeout(check,25)};check()})`)
-    .catch(error => { throw Error(`${error.message}: ${expression}`); });
+  const wait = async (expression, timeout = 15000) => {
+    try {
+      // Keep each DevTools command within its own 20 s liveness budget.
+      // A long cache retry wait belongs to the test, not one browser RPC.
+      for (const until = Date.now() + timeout; Date.now() < until;) {
+        try { if (await tab.evaluate(`Boolean(${expression})`)) return; }
+        catch (error) { if (!/navigated|Cannot find context|Execution context was destroyed/.test(error.message)) throw error; }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      throw Error('Missing state');
+    } catch (error) {
+      const state = await tab.evaluate(`(async () => ({
+        visibility: document.visibilityState,
+        enabled: localStorage.getItem('reach.offline-shell.enabled'),
+        setup: globalThis.setupStates?.map(value => value.state),
+        workers: (await navigator.serviceWorker.getRegistrations()).map(value => ({ active: value.active?.state, installing: value.installing?.state, waiting: value.waiting?.state })),
+        caches: await caches.keys(),
+      }))()`).catch(() => null);
+      throw Error(`${error.message}: ${expression}; ${JSON.stringify({ state, refusedWorkerRequests, requests: calls.slice(-20), problems: tab.problems })}`);
+    }
+  };
   // Values go to fixed page code as DevTools call arguments, never spliced in.
   const call = async (fn, ...args) => {
     const { result: page } = await tab.send('Runtime.evaluate', { expression: 'globalThis' });
@@ -95,13 +120,20 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
     return result.value;
   };
   await fresh(); await tab.navigate(origin + '/');
+  // Startup keeps working and retries its public code cache while the worker
+  // endpoint is temporarily unavailable. This exceeds the old 15 s cache wait.
+  workerUnavailableUntil = Date.now() + 20000;
   const peer = { id: 'fixture', computerId: 'computer', name: 'Mac', platform: process.platform, url: origin, token: 'FIXTURE-NATIVE-ONLY' };
   await call(`function (peer) {
     localStorage.setItem('reach.ways','1');localStorage.setItem('reach.devices',JSON.stringify([peer]));localStorage.setItem('reach.active','fixture');
     globalThis.setupStates=[];globalThis.stopSetup=Fixture.watchOwnerEnrollment(peer,s=>setupStates.push(s));
   }`, peer);
   await wait('setupStates.at(-1)?.state === "signin"');
-  await wait('localStorage.getItem("reach.offline-shell.enabled") === "v1"');
+  // prepareOfflineShell has a 90 s deadline. Its worker bootstrap can fail
+  // temporarily and retry while sign-in remains usable; that is not a 15 s
+  // latency guarantee. Keep every recovery/access assertion after readiness.
+  await wait('localStorage.getItem("reach.offline-shell.enabled") === "v1"', 90000);
+  assert.ok(refusedWorkerRequests >= 2, 'worker startup failures are retried before browser sign-in finishes');
   assert.equal(await tab.evaluate('localStorage.getItem("reach.browser.devices")'), null, 'cache readiness does not pretend browser approval is finished');
   const native = await tab.evaluate('localStorage.getItem("reach.devices")');
   const leaks = await tab.evaluate(`(async()=>{for(const name of await caches.keys()){if(!name.startsWith('reach-static-'))continue;const cache=await caches.open(name);for(const key of await cache.keys()){if((await (await cache.match(key)).text()).includes('FIXTURE-NATIVE-ONLY'))return true}}return false})()`);
