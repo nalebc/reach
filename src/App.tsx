@@ -40,6 +40,7 @@ import {
   Command,
   Settings,
   RefreshCw,
+  RotateCw,
   Link2,
   LogOut,
   Check,
@@ -1025,12 +1026,19 @@ function ReachWorkspace() {
               <i className={`status-dot ${device && !error ? "" : "off"}`} />
               {device ? (error ? "Reconnecting…" : "Computer connected") : "Disconnected"}
             </span>
+            <button
+              className="icon-button"
+              title="Refresh connection" aria-label="Refresh connection"
+              onClick={refreshDevice}
+            >
+              <RefreshCw size={17} />
+            </button>
             <a
               className="icon-button workspace-refresh"
               title="Reload Reach" aria-label="Reload Reach"
               href={reconnectUrl(location.href)}
             >
-              <RefreshCw size={17} />
+              <RotateCw size={17} />
             </a>
             <span className="avatar small">
               {peer?.name.slice(0, 1).toUpperCase()}
