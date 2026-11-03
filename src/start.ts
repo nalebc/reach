@@ -32,6 +32,7 @@ import {
 } from "./passkeys";
 import { bindPrivatePeer, installPrivateRouting, installTailnet, usePrivateWay, type TailnetNode } from "./tailnet-transport";
 import { watchNativeStart } from "./start-native";
+import { connectionLoading } from "./connection-loading";
 import reachMascot from "./assets/reach-mascot.svg";
 import {
   appLink,
@@ -102,7 +103,7 @@ function render(parts: {
   card.dataset.busy = String(!!parts.busy || !!parts.action?.busy);
   card.setAttribute("aria-labelledby", "start-title");
   const mark = document.createElement("div");
-  mark.className = "start-mark";
+  mark.className = "start-mark connection-loading-mark";
   mark.setAttribute("aria-hidden", "true");
   const mascot = document.createElement("img");
   mascot.src = reachMascot;
@@ -130,6 +131,7 @@ function render(parts: {
     const status = document.createElement("p");
     status.className = "start-status";
     const dot = document.createElement("span");
+    dot.className = "connection-loading-dot";
     dot.setAttribute("aria-hidden", "true");
     status.append(dot, parts.status);
     card.append(status);
@@ -285,10 +287,8 @@ async function browserMode(
   // does Face ID sign-in (one step: Face ID).
   const JOIN = guest || face ? undefined : "Step 1 of 2 · Join your network";
   render({
-    title: `Connecting to ${config.name}…`,
-    detail: "Keep this page open. Reach will continue when the connection is ready.",
+    ...connectionLoading(),
     busy: true,
-    status: "Starting secure connection",
     hint: !guest,
     step: JOIN,
   });
@@ -484,10 +484,8 @@ async function browserMode(
         running();
       } else if (state === "Starting")
         render({
-          title: `Joining your network…`,
-          detail: "Finishing the secure connection. This page will continue automatically.",
+          ...connectionLoading(),
           busy: true,
-          status: "Connecting securely",
           hint: true,
           step: JOIN,
         });
@@ -619,10 +617,8 @@ async function main() {
     return;
   }
   render({
-    title: "Opening Reach…",
-    detail: "Finding your computer and checking your saved access.",
+    ...connectionLoading(),
     busy: true,
-    status: "Checking connection",
   });
   const config = await loadConfig();
   if (!config) {

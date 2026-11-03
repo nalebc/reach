@@ -29,4 +29,19 @@
 .owner-connection-details [role="status"] { color: var(--muted); font-size: 13px; }
 .owner-connection-details a { display: inline-flex; align-items: center; min-height: 44px; margin-top: 2px; text-decoration: none; }
 .owner-connection-details button { min-height: 44px; }
-.motion-paused .owner-connection-setup .spin { animation: none; }
+.gs-group .owner-connection-setup {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+.workspace-settings { position: relative; }
+.connection-attention-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--needs-you);
+}

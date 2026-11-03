@@ -15,7 +15,7 @@ import { ALL_SCOPES } from "../server/core.mjs";
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const require = createRequire(import.meta.url);
 const binary = findChrome();
-test("pending owner setup stays below Home content and out of working views", { skip: !binary }, async t => {
+for (const platform of ["darwin", "win32"]) test(`connected Home stays clear while enrollment supplies Settings actions (${platform})`, { skip: !binary }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-setup-layout-"));
   const report = process.env.REACH_TEST_SETUP_LAYOUT_EVIDENCE || path.join(dir, "evidence");
   fs.mkdirSync(report, { recursive: true });
@@ -26,13 +26,20 @@ test("pending owner setup stays below Home content and out of working views", { 
 import React from "react";
 import { createRoot } from "react-dom/client";
 ${["styles", "atmosphere", "workspace", "identity", "workspace-pages", "app-style"].map(f => `import ${abs(`src/${f}.css`)};`).join("\n")}
-const peer = { id: "mac", name: "Studio-Mac", url: location.origin, token: "fixture", platform: "darwin" };
+const platform = new URL(location.href).searchParams.get("host") === "win32" ? "win32" : "darwin";
+const peer = { id: "mac", name: platform === "win32" ? "Studio-PC" : "Studio-Mac", url: location.origin, token: "fixture", platform };
 const device = { ...peer, ownerConnection: 1, access: { kind: "device", scopes: ${JSON.stringify(ALL_SCOPES)} }, roots: [], memory: { total: 1, free: 1 }, network: { connected: true, peers: [] }, capabilities: { files: true, terminal: true, apps: true, screen: true } };
 const sessions = Array.from({ length: 8 }, (_, i) => ({ agent: "claude", id: "fixture-" + i, title: "Project conversation " + (i+1), cwd: "/work/reach", status: "idle", updatedAt: Date.now() - i*60000, createdAt: Date.now(), preview: "", archived: false, inApp: true }));
 const routes = { "/api/device": device, "/api/terminals": [], "/api/terminals/desktop": { sessions: [] }, "/api/terminals/agents": { agents: [] }, "/api/handoffs": [], "/api/chats": [], "/api/codex": { sessions: [] }, "/api/activity": { activities: [] }, "/api/sessions": { sessions, errors: {} }, "/api/sessions/health": { agents: [{ agent: "claude", name: "Claude", installed: true, signedIn: true, usable: true, supported: true }] }, "/api/sessions/logos": { version: "1", logos: {} }, "/api/sessions/models": { models: [], modes: [], mode: null }, "/api/sessions/commands": { commands: [] }, "/api/clients": { current: "me", clients: [] }, "/api/browser/agents": { agents: [] }, "/api/agents/shortcuts": { shortcuts: [], running: null }, "/api/agents/services": { access: [] }, "/api/agents/admissions": [], "/api/agents/browser-requests": [], "/api/agents/permissions": { permissions: [] }, "/api/notifications": { items: [] }, "/api/screen/displays": { displays: [] }, "/api/screen/control": { enabled: true } };
 window.fetch = async input => new Response(JSON.stringify(routes[new URL(typeof input === "string" ? input : input.url, location.href).pathname] || {}), { headers: { "Content-Type": "application/json" } });
-window.WebSocket = class { close() {} send() {} };
-window.__ownerSetup = { starts: 0, stops: 0, state: { state: "signin", url: "https://login.tailscale.com/a/fixture" }, update(state) { this.state = state; this.report?.(state); } };
+window.WebSocket = class {
+  constructor(url) { this.url = url; queueMicrotask(() => { if (!this.closed) this.onopen?.(); }); }
+  close() { this.closed = true; }
+  send() { if (new URL(this.url).pathname === "/ws/presence") queueMicrotask(() => {
+    if (!this.closed) this.onmessage?.({ data: JSON.stringify({ type: "presence", devices: [] }) });
+  }); }
+};
+window.__ownerSetup = { starts: 0, stops: 0, state: { state: "preparing" }, update(state) { this.state = state; this.report?.(state); } };
 localStorage.setItem("reach.devices", JSON.stringify([peer]));
 localStorage.setItem("reach.active", peer.id);
 localStorage.setItem("reach.chatAgent", "claude");
@@ -59,11 +66,12 @@ createRoot(document.getElementById("root")).render(<App/>);
   });
   const server = http.createServer((req, res) => {
     if (req.url === "/favicon.ico") return res.writeHead(204).end();
-    if (req.url === "/") return res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/entry.css"><div id="root"></div><script type="module" src="/entry.js"></script>');
-    if (req.url !== "/entry.js" && req.url !== "/entry.css") return res.writeHead(404).end();
-    res.writeHead(200, { "Content-Type": req.url.endsWith("css") ? "text/css" : "text/javascript" });
+    const route = new URL(req.url, "http://fixture").pathname;
+    if (route === "/") return res.end('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/entry.css"><div id="root"></div><script type="module" src="/entry.js"></script>');
+    if (route !== "/entry.js" && route !== "/entry.css") return res.writeHead(404).end();
+    res.writeHead(200, { "Content-Type": route.endsWith("css") ? "text/css" : "text/javascript" });
     // Only these two built files, by fixed name (CodeQL js/path-injection).
-    res.end(fs.readFileSync(path.join(dir, "page", req.url === "/entry.js" ? "entry.js" : "entry.css")));
+    res.end(fs.readFileSync(path.join(dir, "page", route === "/entry.js" ? "entry.js" : "entry.css")));
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
@@ -77,7 +85,7 @@ createRoot(document.getElementById("root")).render(<App/>);
       if (await tab.evaluate(expression)) return;
       await new Promise(r => setTimeout(r, 30));
     }
-    assert.fail(`Timed out: ${expression}; ${JSON.stringify(tab.problems)}`);
+    assert.fail(`Timed out: ${expression}; ${JSON.stringify(tab.problems)}; ${await tab.evaluate("document.body.innerText.slice(0, 2000)")}`);
   };
   // Each target is a fixed element lookup written here, never a value
   // spliced into page code (CodeQL js/bad-code-sanitization).
@@ -96,7 +104,9 @@ createRoot(document.getElementById("root")).render(<App/>);
     // Assertions above wait for their actual UI state, independently of this.
     await tab.evaluate("Promise.all([document.fonts.ready, new Promise(r => setTimeout(r, 120))])");
     await frame();
+    await tab.evaluate("(() => { const mask = document.createElement('style'); mask.id = 'fixture-screen-mask'; mask.textContent = 'canvas,video { visibility:hidden !important }'; document.head.append(mask); })()");
     const capture = await tab.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    await tab.evaluate("document.getElementById('fixture-screen-mask').remove()");
     fs.writeFileSync(path.join(report, name + ".png"), Buffer.from(capture.data, "base64"));
   };
   await tab.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
@@ -111,8 +121,8 @@ createRoot(document.getElementById("root")).render(<App/>);
       screenOrientation: { type: width > height ? "landscapePrimary" : "portraitPrimary", angle: width > height ? 90 : 0 } });
     const safeTop = width < 600 ? 44 : 24;
     await tab.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: safeTop, bottom: 34, left: 0, right: 0 } });
-    await tab.navigate(`http://${host}:${server.address().port}/`);
-    await waitFor("!!document.querySelector('.owner-connection-setup')");
+    await tab.navigate(`http://${host}:${server.address().port}/?host=${platform}`);
+    await waitFor("!!document.querySelector('.home-live') && __ownerSetup.starts === 1 && document.querySelector('.home-connection-line').textContent.includes('Connected')");
     await frame();
     const reload = await tab.evaluate(`(() => {
       const link = document.querySelector('.workspace-refresh');
@@ -121,30 +131,30 @@ createRoot(document.getElementById("root")).render(<App/>);
     })()`);
     assert.ok(reload.width >= 40 && reload.height >= 40 && reload.reachable, `Reload Reach stays visible and tappable at ${width}px`);
     assert.ok(new URL(reload.href).searchParams.has("reach-reconnect"), "reload makes a fresh document request");
-    await shot(`initial-${width}`);
+    await shot(`initial-${platform}-${width}`);
     assert.ok(await tab.evaluate("!!document.querySelector('.home-hero')"), await tab.evaluate("document.body.innerText"));
     const home = await tab.evaluate(`(() => {
       const rect = s => document.querySelector(s).getBoundingClientRect().toJSON();
-      return { hero: rect('.home-hero'), shortcuts: rect('.home-pinned'), notice: rect('.owner-connection-setup'), nav: rect('.mobile-nav'), open: document.querySelector('.owner-connection-setup').open, width: document.documentElement.scrollWidth };
+      return { hero: rect('.home-hero'), shortcuts: rect('.home-pinned'), nav: rect('.mobile-nav'), width: document.documentElement.scrollWidth,
+        notice: !!document.querySelector('.owner-connection-setup'), loaders: document.querySelectorAll('.connection-state,.connection-loading-dot').length };
     })()`);
-    assert.equal(home.open, false, "setup starts collapsed");
-    assert.ok(home.notice.y >= home.shortcuts.bottom, "setup follows the primary Home content");
-    assert.ok(home.notice.height <= 96, "pending setup is a compact row");
-    // Home may be taller than the screen (the circles of what's running sit
-    // above it): scrolled to, the reminder is never left behind the bar.
-    await tab.evaluate("document.scrollingElement.scrollTo({ top: document.scrollingElement.scrollHeight, behavior: 'instant' })");
-    await frame();
-    const shown = await tab.evaluate(`(() => {
-      const r = document.querySelector('.owner-connection-setup').getBoundingClientRect();
-      return { bottom: r.bottom, nav: document.querySelector('.mobile-nav').getBoundingClientRect().top, y: scrollY };
-    })()`);
-    assert.ok(shown.bottom <= shown.nav, `reminder and navigation don't overlap (${JSON.stringify({ ...shown, width })})`);
+    assert.equal(home.notice, false, "preparing standby access does not add a Home card");
+    assert.equal(home.loaders, 0, "a usable workspace has no connection loader");
+    assert.equal(await tab.evaluate("!!document.querySelector('.connection-attention-dot')"), false, "background work asks for no attention");
     assert.ok(home.width <= width, "Home fits the viewport");
-    await shot(`home-${width}`);
+    await tab.evaluate("__ownerSetup.update({state:'signin', url:'https://login.tailscale.com/a/fixture'})");
+    await frame();
+    assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "standby sign-in does not interrupt Home");
+    assert.equal(await tab.evaluate("document.querySelector('.workspace-settings').getAttribute('aria-describedby')"), "owner-connection-attention", "actionable setup has one discoverable Settings cue");
+    await click(`document.querySelector('.workspace-settings')`);
+    await waitFor("!!document.querySelector('.settings-workspace .owner-connection-setup')");
+    assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup').closest('.gs-group').querySelector('.connection-row')"), true, "setup lives with the existing Connection settings");
     await click(`document.querySelector('.owner-connection-setup > summary')`);
-    assert.equal(await tab.evaluate("document.querySelector('.owner-connection-setup').open"), true);
     assert.equal(await tab.evaluate("document.querySelector('.owner-connection-details a').href"), "https://login.tailscale.com/a/fixture");
-    await shot(`setup-open-${width}`);
+    assert.equal(await tab.evaluate("document.querySelectorAll('.owner-connection-setup .spin,.owner-connection-setup .connection-loading-dot').length"), 0, "Settings offers an action rather than another loader");
+    await shot(`setup-open-${platform}-${width}`);
+    await click(`document.querySelector('.mobile-nav [aria-label="Home"]')`);
+    await waitFor("!!document.querySelector('.home-live')");
     await click(`document.querySelector('.mobile-nav [aria-label="Tools"]')`);
     await waitFor("!!document.querySelector('.tools-page')");
     await click(`document.querySelector('.tool-open[aria-label="Chat"]')`);
@@ -163,7 +173,7 @@ createRoot(document.getElementById("root")).render(<App/>);
     assert.equal(chat.starts, 1, "navigation keeps the enrollment subscription");
     assert.equal(chat.stops, 0, "working elsewhere doesn't stop setup");
     if (chat.quick?.height) assert.ok(chat.quick.bottom <= chat.nav.top, "chat action and tabs don't overlap");
-    await shot(`chat-${width}`);
+    await shot(`chat-${platform}-${width}`);
     await tab.evaluate("__ownerSetup.update({state:'error', message:'Sign-in needs attention.'})");
     await frame();
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "setup errors don't interrupt Chat");
@@ -172,15 +182,21 @@ createRoot(document.getElementById("root")).render(<App/>);
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "Screen remains clear of setup");
     await click(`document.querySelector('.mobile-nav [aria-label="Home"]')`);
     await waitFor("!!document.querySelector('.home-live')");
-    assert.match(await tab.evaluate("document.querySelector('.owner-connection-setup summary').textContent"), /needs attention/);
+    assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "standby errors do not add a Home warning");
     await click(`document.querySelector('.workspace-settings')`);
     await waitFor("!!document.querySelector('.settings-workspace')");
-    assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), true, "setup is also reachable from Settings");
+    assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), true, "actionable setup remains reachable in Settings");
+    assert.match(await tab.evaluate("document.querySelector('.owner-connection-setup summary').textContent"), /Needs attention/);
+    await click(`document.querySelector('.owner-connection-setup > summary')`);
+    await click(`document.querySelector('.owner-connection-details button')`);
+    assert.equal(await tab.evaluate("__ownerSetup.starts"), 2, "explicit retry restarts one enrollment watcher");
+    assert.equal(await tab.evaluate("__ownerSetup.stops"), 1, "retry retires the previous watcher");
     await tab.evaluate("__ownerSetup.update({state:'ready'})");
     await frame();
     assert.equal(await tab.evaluate("!!document.querySelector('.owner-connection-setup')"), false, "completion removes the reminder");
-    evidence.push({ width, home, chat });
+    assert.equal(await tab.evaluate("!!document.querySelector('.connection-attention-dot')"), false, "finished setup clears the Settings cue");
+    evidence.push({ platform, width, home, chat });
   }
-  fs.writeFileSync(path.join(report, "layout.json"), JSON.stringify({ evidence, problems: tab.problems }, null, 2));
+  fs.writeFileSync(path.join(report, `layout-${platform}.json`), JSON.stringify({ evidence, problems: tab.problems }, null, 2));
   assert.deepEqual(tab.problems, []);
 });

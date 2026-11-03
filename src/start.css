@@ -1,4 +1,5 @@
 @import "./tokens.css";
+@import "./connection-loading.css";
 :root {
   font-family: var(--font-body);
 }
@@ -20,23 +21,7 @@ body {
   gap: 16px;
   text-align: center;
 }
-.start-mark {
-  display: grid;
-  place-items: center;
-  width: 104px;
-  height: 104px;
-  margin: 0 auto 6px;
-}
-.start-mark img {
-  display: block;
-  width: 84px;
-  height: 84px;
-  border-radius: var(--r-xl);
-  box-shadow: 0 12px 32px #0003;
-}
-.start-card[data-busy="true"] .start-mark img {
-  animation: start-mascot-bob 2.4s ease-in-out infinite;
-}
+.start-mark { margin-bottom: 6px; }
 .start h1 {
   margin: 0;
   font-size: clamp(24px, 6vw, 28px);
@@ -58,16 +43,6 @@ body {
   color: var(--mint);
   font-size: 13px;
   font-weight: 500;
-}
-.start-status span {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-.start-card[data-busy="true"] .start-status span {
-  animation: start-status-pulse 1.6s ease-in-out infinite;
 }
 .start-action {
   display: flex;
@@ -176,20 +151,10 @@ body {
   letter-spacing: 0.01em;
 }
 
-@keyframes start-mascot-bob {
-  0%, 100% { transform: translateY(0) rotate(-2deg); }
-  50% { transform: translateY(-6px) rotate(2deg); }
-}
-@keyframes start-status-pulse {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 1; }
-}
 @keyframes start-spin {
   to { transform: rotate(360deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .start-card[data-busy="true"] .start-mark img,
-  .start-card[data-busy="true"] .start-status span,
   .start-action[aria-busy="true"]::before {
     animation: none;
   }

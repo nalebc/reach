@@ -9,7 +9,7 @@ import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
 import FallbackSetup, { FallbackNotice } from "./FallbackSetup";
 import KeepInSync from "./KeepInSync";
-import OwnerConnection from "./OwnerConnection";
+import { OwnerSetupNotice, useOwnerConnection } from "./OwnerConnection";
 import ConnectionStatus from "./ConnectionStatus";
 import { ComputerSwitcher } from "./FleetMesh";
 import {
@@ -194,7 +194,6 @@ function ReachWorkspace() {
     } | null>(null),
     [error, setError] = useState(""),
     [connectionDenied, setConnectionDenied] = useState(false),
-    [ownerSetupActive, setOwnerSetupActive] = useState(false),
     [loading, setLoading] = useState(false),
     [notice, setNotice] = useState(""),
     [terminals, setTerminals] = useState<Session[]>([]),
@@ -250,7 +249,6 @@ function ReachWorkspace() {
     setPeers(saved);
     setActive(saved[0]?.id || "");
     setError("");
-    setOwnerSetupActive(false);
   };
   useEffect(() => {
     if (guestPeers() || peer?.transport === "funnel" || (device && (device.access?.kind !== "device" || !device.access.scopes.includes("admin")))) return;
@@ -865,6 +863,12 @@ function ReachWorkspace() {
     if (kind === "terminal" ? features.terminal : features.codex)
       setNewSession({ kind, path, root });
   };
+  const ownerConnection = useOwnerConnection(peer, device, {
+    reconnect: !device && !loading && !!error && !guestPeers(),
+    beginBrowser: beginBrowserApproval,
+  });
+  const connectionAction = features.owner && (ownerConnection.setup.state === "error" ||
+    (ownerConnection.setup.state === "signin" && !!ownerConnection.setup.url));
   if (!peers.length)
     return (
       <>
@@ -1005,10 +1009,12 @@ function ReachWorkspace() {
               <button
                 className="icon-button workspace-settings"
                 aria-label="Settings"
-                title="Settings"
+                title={connectionAction ? "Settings · Finish browser access" : "Settings"}
+                aria-describedby={connectionAction ? "owner-connection-attention" : undefined}
                 onClick={() => navigate("settings")}
               >
                 <Settings size={20} />
+                {connectionAction && <><i className="connection-attention-dot" aria-hidden="true" /><span id="owner-connection-attention" hidden>Browser access needs attention in Connection settings.</span></>}
               </button>
             )}
             {page !== "screen" && features.shortcuts && (
@@ -1060,18 +1066,15 @@ function ReachWorkspace() {
             onHome={() => navigate("overview")}
           >
             {!device && (loading || error) ? (
-              <>
-                {(!ownerSetupActive || loading) && <ConnectionStatus
+                <ConnectionStatus
                   error={loading ? "" : error}
                   needsApproval={!loading && connectionDenied}
                   onRetry={refreshDevice}
                   onConnect={() => setPairing(true)}
+                  setup={ownerConnection.setup}
+                  onSetupRetry={ownerConnection.retry}
                   diagnostics={<ConnectionReport peer={peer} toast={toast} />}
-                />}
-                {!loading && !guestPeers() && <OwnerConnection peer={peer} device={null} visible reconnect
-                  onActive={setOwnerSetupActive} beginBrowser={beginBrowserApproval}
-                  diagnostics={<ConnectionReport peer={peer} toast={toast} />} />}
-              </>
+                />
             ) : device && peer && pageAccessible(page, features) ? (
               <>
                 {error && <FallbackNotice peer={peer} device={device} />}
@@ -1283,6 +1286,7 @@ function ReachWorkspace() {
                     peer={peer}
                     device={device}
                     connection={connections[peer.id]?.state}
+                    connectionSetup={features.owner && <OwnerSetupNotice setup={ownerConnection.setup} onRetry={ownerConnection.retry} />}
                     toast={toast}
                     onChanged={refreshDevice}
                     invite={() => navigate("invite")}
@@ -1297,12 +1301,6 @@ function ReachWorkspace() {
               </>
             ) : null}
           </ScreenBoundary>
-          {device && <OwnerConnection
-            key={`${peer.id}:${peer.url}:${peer.token}`}
-            peer={peer}
-            device={device}
-            visible={features.owner && (page === "overview" || page === "settings")}
-          />}
         </main>
         <MobileNav
           items={mobilePages.map((p) => ({
@@ -1777,6 +1775,7 @@ export function SettingsPage({
   peer,
   device,
   connection,
+  connectionSetup,
   toast,
   forget,
   onChanged,
@@ -1785,6 +1784,7 @@ export function SettingsPage({
   device: Device;
   // This computer's live link to the phone (useFleetConnections).
   connection?: FleetConnection["state"];
+  connectionSetup?: import("react").ReactNode;
   toast: (s: string) => void;
   forget: () => void;
   invite: () => void;
@@ -1833,6 +1833,7 @@ export function SettingsPage({
           </span>
         </div>
         <FallbackSetup peer={peer} device={device} />
+        {connectionSetup}
       </div>
 
       <h2 className="gs-title">This computer</h2>

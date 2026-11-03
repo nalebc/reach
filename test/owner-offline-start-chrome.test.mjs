@@ -68,7 +68,7 @@ test('real Chrome keeps the permanent owner link usable before browser sign-in, 
   app.get('/tailnet/' + config.tailnet.exec, (_req, res) => res.type('js').send(glue));
   app.use((req, res, next) => {
     if (req.path === '/' && seed) return res.type('html').send('<!doctype html><title>Owner setup</title><script src="/fixture.js"></script>');
-    if (req.path === '/' || req.path.startsWith('/files/')) return res.sendFile(path.join(dist, workspace ? 'index.html' : 'start.html'));
+    if (req.path === '/' || req.path.startsWith('/files/')) return res.sendFile(workspace ? 'index.html' : 'start.html', { root: dist });
     next();
   });
   app.use(express.static(dist));

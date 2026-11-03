@@ -1,5 +1,5 @@
 .connection-state {
-  width: min(100%, 440px);
+  width: min(100%, 380px);
   min-height: min(560px, 68svh);
   margin: 0 auto;
   padding: 24px 0;
@@ -9,18 +9,13 @@
   justify-content: center;
   text-align: center;
 }
-.connection-state .connection-state-scene {
-  width: min(100%, 340px);
-  aspect-ratio: 480 / 265;
-  margin-bottom: 26px;
-}
 .connection-state-copy {
   width: 100%;
 }
 .connection-state h1 {
   margin: 0;
-  font-size: clamp(23px, 4vw, 28px);
-  font-weight: 500;
+  font-size: clamp(24px, 6vw, 28px);
+  font-weight: 600;
   font-family: var(--font-display);
   line-height: 1.2;
   letter-spacing: -0.7px;
@@ -30,8 +25,8 @@
   max-width: 320px;
   margin: 12px auto 0;
   color: var(--muted);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.55;
   text-wrap: pretty;
 }
 .connection-state-status {
@@ -39,14 +34,11 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 36px;
+  min-height: 20px;
   max-width: 100%;
-  margin-top: 22px;
-  padding: 6px 12px;
-  border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--mint) 4%, transparent);
+  margin-top: 16px;
   color: var(--lime);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
 }
 .connection-state-status svg { flex: none; }
@@ -72,13 +64,4 @@
   line-height: 1.6;
   text-align: left;
   overflow-wrap: anywhere;
-}
-.connection-state.needs-attention .connection-state-scene * {
-  animation-play-state: paused !important;
-}
-.motion-paused .connection-state-status .spin {
-  animation: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .connection-state *, .owner-connection-setup .spin { animation: none !important; }
 }
