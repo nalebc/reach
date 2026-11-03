@@ -88,7 +88,8 @@ test("the start page retries failed Face ID preparation, then the sign-in tap go
   assert.equal(sent.id, "ask-1");
   assert.equal(sent.credential.rawId, "AQID");
   assert.equal(sent.credential.response.userHandle, "BQ");
-  await dom.waitFor(() => /Connecting to Mac A/.test(view.textContent));
+  await dom.waitFor(() => view.querySelector('h1')?.textContent === "Connecting to your computer");
+  assert.equal(view.querySelectorAll('.connection-loading-dot').length, 1, "Face ID continues through the shared connection wait");
   // The ticket waits for Connect; this browser's device is a Face ID one.
   assert.equal(dom.window.localStorage.getItem(face.FACE_DEVICE), "1");
   assert.equal(face.hasTicket(), true);
