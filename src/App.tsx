@@ -4,6 +4,7 @@ import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import { watchStalls } from "./stall-watch";
+import { reconnectUrl } from "./page-recovery";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
 import FallbackSetup, { FallbackNotice } from "./FallbackSetup";
@@ -39,6 +40,7 @@ import {
   Command,
   Settings,
   RefreshCw,
+  RotateCw,
   Link2,
   LogOut,
   Check,
@@ -1031,6 +1033,13 @@ function ReachWorkspace() {
             >
               <RefreshCw size={17} />
             </button>
+            <a
+              className="icon-button workspace-refresh"
+              title="Reload Reach" aria-label="Reload Reach"
+              href={reconnectUrl(location.href)}
+            >
+              <RotateCw size={17} />
+            </a>
             <span className="avatar small">
               {peer?.name.slice(0, 1).toUpperCase()}
             </span>

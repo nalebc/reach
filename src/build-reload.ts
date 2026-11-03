@@ -183,7 +183,7 @@ export async function currentPageMatches(
       .map((el) => el.getAttribute("src") || el.getAttribute("href") || "")
       .filter((url) => url.startsWith("/assets/"))
       .sort();
-  const scripts = 'script[type="module"][src]';
+  const scripts = 'script[type="module"][src], script[data-reach-recovery][src]';
   const styles = 'link[rel="stylesheet"][href]';
   const loaded = assets(doc, scripts);
   if (!loaded.length || !/^https?:$/.test(location.protocol)) return true;

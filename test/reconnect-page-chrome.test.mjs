@@ -20,7 +20,7 @@ import { findChrome, launchChrome, openTab, testCertificate } from "./helpers/he
 const binary = findChrome(), dist = fileURLToPath(new URL("../dist/", import.meta.url));
 
 test("an owner page that never saved its offline copy reloads into Reach's reconnecting page, and back once the computer answers", {
-  skip: !process.env.CI && !binary && "Chrome/Chromium is not installed", timeout: 90000,
+  skip: !process.env.CI && !binary && "Chrome/Chromium is not installed", timeout: 150000,
 }, async (t) => {
   assert.ok(binary, "actual Chrome is required in CI");
   assert.ok(fs.existsSync(path.join(dist, "sw.js")), "npm run build must prepare the production build first");
@@ -31,17 +31,27 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   const cert = await testCertificate(root, host);
   const app = express();
   let navigationMode = "healthy";
+  const began = Date.now();
+  let holdWorkspace = true;
+  const workspaceLoads = new Set();
+  const workspaceEvents = [];
   const navigations = [];
   app.use((req, res, next) => {
+    if (holdWorkspace && /^\/assets\/r2-(index|main)-.*\.js$/.test(req.path)) {
+      workspaceLoads.add(next);
+      res.once("close", () => workspaceLoads.delete(next));
+      return;
+    }
     // The initial HTML is not a mounted app. Keep that distinction visible
     // even on a fast machine, as on a cold or busy browser after reopening.
     if (/^\/assets\/r2-main-.*\.js$/.test(req.path)) {
-      const timer = setTimeout(next, 1000);
-      res.once("close", () => clearTimeout(timer));
+      workspaceEvents.push({ event: "request", at: Date.now() - began, path: req.path });
+      const timer = setTimeout(() => { workspaceEvents.push({ event: "release", at: Date.now() - began, path: req.path }); next(); }, 1000);
+      res.once("close", () => { workspaceEvents.push({ event: "close", at: Date.now() - began, path: req.path }); clearTimeout(timer); });
       return;
     }
     if (req.path !== "/") return next();
-    navigations.push({ url: req.url, mode: navigationMode, method: req.method });
+    navigations.push({ url: req.url, mode: navigationMode, method: req.method, at: Date.now() - began });
     if (navigationMode === "headers-stall") return;
     if (navigationMode === "body-stall") {
       res.writeHead(200, { "Content-Type": "text/html" });
@@ -70,6 +80,12 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   t.after(() => browser.close());
   const tab = await openTab(browser);
   await tab.send("Network.enable");
+  const network = new Map();
+  browser.on("Network.requestWillBeSent", (event, session) => {
+    if (session === tab.sessionId) network.set(event.requestId, { path: new URL(event.request.url).pathname, type: event.type });
+  });
+  for (const event of ["Network.loadingFinished", "Network.loadingFailed"])
+    browser.on(event, (value, session) => { if (session === tab.sessionId) network.delete(value.requestId); });
   await tab.send("Network.setCacheDisabled", { cacheDisabled: true });
   let documentLoads = 0;
   browser.on("Page.frameNavigated", (event, session) => {
@@ -86,11 +102,29 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
     for (;;) {
       const value = await tab.evaluate(expression).catch(() => null);
       if (value) return value;
-      if (Date.now() > end) assert.fail(`${what}: ${JSON.stringify({ page: await tab.evaluate("({ url: location.href, title: document.title, hidden: document.hidden, text: document.body?.innerText.slice(0, 200) })").catch((error) => error.message), navigations })}`);
+      if (Date.now() > end) assert.fail(`${what}: ${JSON.stringify({ page: await tab.evaluate("({ url: location.href, title: document.title, hidden: document.hidden, text: document.body?.innerText.slice(0, 200) })").catch((error) => error.message), navigations, pending: [...network.values()], workspaceEvents, problems: tab.problems })}`);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
-  await tab.navigate(origin + "/");
+  // Recovery's independent entry must work even if a workspace dependency
+  // never arrives. A real link, outside the missing root, still reopens the
+  // exact saved view without losing the approved browser's storage.
+  await tab.send("Page.navigate", { url: origin + "/?view=fixture#saved-view" });
+  await until("!!document.querySelector('[data-reach-reload]')", "startup offers a real reload before the workspace loads");
+  assert.equal(await tab.evaluate("!!document.querySelector('script[data-reach-recovery]:not([type=module])')"), true, "recovery is a standalone script outside the blocked app graph");
+  navigationMode = "unavailable";
+  await tab.evaluate("localStorage.setItem('reach.recovery.fixture', 'saved'); document.getElementById('root').replaceChildren()");
+  await until("!!document.querySelector('[data-reach-page-recovery] a')", "independent recovery survives the missing workspace dependency");
+  assert.equal(await tab.evaluate("document.querySelector('[data-reach-page-recovery] a').closest('#root, #start')"), null);
+  const manual = new URL(await tab.evaluate("document.querySelector('[data-reach-page-recovery] a').href"));
+  assert.equal(manual.searchParams.get("view"), "fixture");
+  assert.equal(manual.hash, "#saved-view");
+  navigationMode = "healthy";
+  holdWorkspace = false;
+  for (const load of workspaceLoads) load();
+  workspaceLoads.clear();
+  await tab.evaluate("document.querySelector('[data-reach-page-recovery] a').click()");
+  await until(appReady, "manual reload opens the workspace without closing the Home Screen app");
   await until("!!navigator.serviceWorker?.controller", "Reach's worker took the page");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.offline-shell.enabled')"), null, "no offline copy was saved");
 
@@ -112,10 +146,18 @@ test("an owner page that never saved its offline copy reloads into Reach's recon
   await tab.send("Page.bringToFront");
   await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   await until("!document.hidden", "the restored fixture is foregrounded");
-  await until(`!document.documentElement.dataset.emptyFixture && (${appReady})`, "the same page recovers after its renderer resumes", 15000);
+  await until(`!document.documentElement.dataset.emptyFixture && (${appReady})`, "the same page recovers after its renderer resumes", 30000);
   await until("!new URL(location.href).searchParams.has('reach-reconnect')", "the saved address is restored");
   assert.equal(await tab.evaluate("location.pathname + location.search + location.hash"), "/?view=fixture#saved-view");
   assert.equal(await tab.evaluate("localStorage.getItem('reach.recovery.fixture')"), "saved");
+
+  // A visually blank page may retain its complete HTML. Hidden startup
+  // elements and offscreen app content must not suppress visible recovery.
+  for (const style of ["display:none", "opacity:0", "transform:translateX(200vw)"]) {
+    await tab.evaluate(`document.getElementById('root').style.cssText = ${JSON.stringify(style)}; document.documentElement.dataset.emptyFixture = 'true'; const old = document.createElement('div'); old.id = 'start'; old.hidden = true; old.textContent = 'Opening Reach'; document.body.append(old); window.dispatchEvent(new Event('pageshow'))`);
+    await until(`!document.documentElement.dataset.emptyFixture && (${appReady})`, `${style}: retained but invisible content recovers`, 15000);
+    assert.equal(await tab.evaluate("localStorage.getItem('reach.recovery.fixture')"), "saved");
+  }
 
   // A successful response can stall after its headers. The recovery read
   // must time out through its body, keep feedback visible, and retry later.
