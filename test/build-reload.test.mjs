@@ -121,7 +121,7 @@ test("page comparison detects changed hashed assets and tolerates offline respon
 test("a saved interface is completed before reload, and failed saves retry without discarding the page", async () => {
   reload.forgetBuild();
   const waits = []; let attempts = 0, reloads = 0;
-  const options = { busy: () => false, wait: fn => waits.push(fn), reload: () => reloads++,
+  const options = { ...withCopy, busy: () => false, wait: fn => waits.push(fn), reload: () => reloads++,
     prepare: async () => ++attempts > 1, currentPage: async () => true };
   reload.noteBuild("old", options); await Promise.resolve();
   reload.noteBuild("new", options);
@@ -347,6 +347,35 @@ test("a stalled network check times out so later foreground checks can recover",
   );
 });
 
+test("update reads retire on their deadline even when a suspended transport ignores abort", async () => {
+  const doc = dom.document.implementation.createHTMLDocument();
+  doc.head.innerHTML = '<script type="module" src="/assets/main-old.js"></script>';
+  for (const phase of ["headers", "body"]) {
+    const load = async () => phase === "headers" ? new Promise(() => {}) :
+      new Response(new ReadableStream({ start() {} }));
+    const bounded = async promise => Promise.race([
+      promise,
+      new Promise(resolve => setTimeout(() => resolve("still pending"), 100)),
+    ]);
+    assert.equal(await bounded(reload.currentPageMatches(doc, load, { timeoutMs: 5 })), null, `${phase}: comparison releases its check`);
+    assert.equal(await bounded(reload.pageAnswers("https://reach.test/", load, 5)), false, `${phase}: pre-reload read expires`);
+  }
+  reload.forgetBuild();
+  let answer, reopened = 0;
+  const options = { ...withCopy, busy: () => false, reload: () => reopened++,
+    currentPage: () => reload.currentPageMatches(doc, () => new Promise(resolve => { answer = resolve; }), { timeoutMs: 5 }) };
+  reload.checkForUpdates(options);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(reload.getUpdateState(), "offline");
+  reload.checkForUpdates({ ...options, currentPage: async () => true });
+  await Promise.resolve();
+  assert.equal(reload.getUpdateState(), "current", "a later foreground check is free to finish");
+  answer(new Response('<script type="module" src="/assets/main-late.js"></script>'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reload.getUpdateState(), "current", "late results cannot replace the newer check");
+  assert.equal(reopened, 0, "a retired read cannot navigate away from working content");
+});
+
 test("a page in use waits for its update: until it's put away or left untouched for a few minutes", () => {
   const { inUse, IDLE_MS } = reload;
   dom.window.dispatchEvent(new dom.window.Event("scroll"));
@@ -473,8 +502,11 @@ test("the new page answers only when the computer serves it: not an error, not t
     if (mode === "stall") return;
     if (mode === "body-stall") { res.writeHead(200); res.flushHeaders(); return; }
     if (mode === "empty") return res.writeHead(200).end();
+    if (mode === "doctype") return res.writeHead(200).end("<!doctype html>");
+    if (mode === "truncated") return res.writeHead(200).end('<!doctype html><html><head><script type="module" src="/assets/r2-index-fixture.js"></script></head>');
+    if (mode === "wrong-document") return res.writeHead(200).end("<html><body>Temporary gateway failure</body></html>");
     if (mode === "error") return res.writeHead(503).end();
-    res.writeHead(200, mode === "copy" ? { "X-Reach-Cached-Shell": "1" } : {}).end("<!doctype html>");
+    res.writeHead(200, mode === "copy" ? { "X-Reach-Cached-Shell": "1" } : {}).end('<!doctype html><html><head><script type="module" src="/assets/r2-index-fixture.js"></script></head><body><div id="root">Opening Reach</div></body></html>');
   });
   server.on("connection", (socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -489,6 +521,10 @@ test("the new page answers only when the computer serves it: not an error, not t
   assert.equal(await reload.pageAnswers(href, realFetch), false, "the offline copy");
   mode = "empty";
   assert.equal(await reload.pageAnswers(href, realFetch), false, "an empty success response would open a blank page");
+  for (const invalid of ["doctype", "truncated", "wrong-document"]) {
+    mode = invalid;
+    assert.equal(await reload.pageAnswers(href, realFetch), false, `${invalid}: no usable Reach interface arrived`);
+  }
   mode = "body-stall";
   assert.equal(await reload.pageAnswers(href, realFetch, 200), false, "headers alone do not prove the page arrived");
   mode = "stall";
