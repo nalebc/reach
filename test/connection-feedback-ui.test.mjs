@@ -317,6 +317,8 @@ test("App keeps one meaningful connection view through loading and browser sign-
   const socket = globalThis.WebSocket;
   globalThis.WebSocket = class { close() {} send() {} };
   const fixture = ownerFixture({ state: "preparing" });
+  // Starting the subscription does not mean its state reached the DOM yet.
+  fixture.deferInitial = true;
   let view;
   try {
     localStorage.setItem("reach.devices", JSON.stringify([{ ...peer, url: "https://mac.t.ts.net", platform: "darwin" }]));
@@ -334,6 +336,9 @@ test("App keeps one meaningful connection view through loading and browser sign-
 
     releaseDevice();
     await appDom.waitFor(() => fixture.starts === 1);
+    assert.equal(view.container.querySelector(".connection-state"), connectionPage, "waiting for the first setup report keeps the same page mounted");
+    fixture.initialReport();
+    await appDom.waitFor(() => view.container.querySelector(".connection-state h1")?.textContent === "Connecting to your computer");
     assert.equal(view.container.querySelector(".connection-state h1").textContent, "Connecting to your computer");
     assert.equal(count(), 1, "background setup uses the existing connection page");
     assert.equal(view.container.querySelectorAll(".connection-loading-dot").length, 1);
