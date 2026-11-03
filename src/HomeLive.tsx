@@ -46,7 +46,7 @@ export function heroStatus(
     return `${word} asleep`;
   if (!why) return "";
   if (/Screen Recording/i.test(why)) return "Screen Recording off";
-  return stream.error ? "Can't show screen" : "Reconnecting";
+  return stream.error ? "Preview unavailable" : "Preview reconnecting";
 }
 
 function usePageVisible() {

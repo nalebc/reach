@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { ChevronDown, Link2, LoaderCircle } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown, Link2 } from "lucide-react";
 import type { Device, Peer } from "./api";
 import { watchOwnerEnrollment, type OwnerSetup } from "./owner-connection";
 import type { StartConfig } from "./start-flow";
@@ -7,52 +7,78 @@ import type { TailnetNode } from "./tailnet-transport";
 import ConnectionStatus, { useConnectionWait } from "./ConnectionStatus";
 import "./owner-connection.css";
 
-export default function OwnerConnection({ peer, device, visible, reconnect = false, onActive, beginBrowser, diagnostics }: {
-  peer: Peer; device: Device | null; visible: boolean; reconnect?: boolean;
-  onActive?: (active: boolean) => void;
-  beginBrowser?: (config: StartConfig, node: TailnetNode) => void;
-  diagnostics?: ReactNode;
-}) {
-  const [setup, setSetup] = useState<OwnerSetup>({ state: "ready" });
+type BrowserApproval = (config: StartConfig, node: TailnetNode) => void;
+const ready: OwnerSetup = { state: "ready" };
+
+// One subscription belongs to the workspace, independent of its current page.
+// Preparing a standby path must not make a working connection look busy.
+export function useOwnerConnection(peer: Peer | undefined, device: Device | null, {
+  reconnect = false, beginBrowser,
+}: { reconnect?: boolean; beginBrowser?: BrowserApproval } = {}) {
+  const key = peer ? `${peer.id}:${peer.url}:${peer.token}` : "";
+  const [reported, setReported] = useState({ key: "", setup: ready });
   const [attempt, setAttempt] = useState(0);
-  const preparing = setup.state === "preparing" || (setup.state === "signin" && !setup.url);
-  const slow = useConnectionWait(preparing, attempt);
-  const retry = () => setAttempt(n => n + 1);
+  const begin = useRef(beginBrowser);
+  begin.current = beginBrowser;
+  const canBegin = !!beginBrowser;
+  const admin = device?.access?.kind === "device" && device.access.scopes.includes("admin");
+  const connected = !!device;
+  let eligible = false;
+  try {
+    eligible = !!peer && (reconnect || device?.ownerConnection === 1) && (!device || !!admin) &&
+      peer.transport !== "funnel" && location.hostname.endsWith(".ts.net") &&
+      new URL(peer.url).hostname === location.hostname;
+  } catch { /* A malformed saved address cannot start owner enrollment. */ }
   useEffect(() => {
-    if ((!reconnect && device?.ownerConnection !== 1) || (device && (device.access?.kind !== "device" || !device.access.scopes.includes("admin"))) ||
-        peer.transport === "funnel" || !location.hostname.endsWith(".ts.net") ||
-        new URL(peer.url).hostname !== location.hostname) return;
-    const stop = watchOwnerEnrollment(peer, state => { setSetup(state); onActive?.(state.state !== "ready"); }, { resumeOnly: !device, beginBrowser });
-    return () => { stop(); onActive?.(false); };
-  }, [peer.id, peer.url, peer.token, peer.transport, device?.ownerConnection, reconnect, attempt]);
-  // Enrollment keeps running while the owner works in Chat, Screen or Files.
-  // Its reminder belongs to Home/Settings, after the page's primary content.
-  if (!visible || (!reconnect && device?.ownerConnection !== 1) || setup.state === "ready") return null;
-  if (reconnect) return <ConnectionStatus
-    setup={setup}
-    error={setup.state === "error" ? setup.message || "Browser setup couldn’t finish." : ""}
-    onRetry={retry}
-    onConnect={retry}
-    diagnostics={diagnostics}
-  />;
+    setReported({ key, setup: ready });
+    if (!eligible || !peer) return;
+    let current = true;
+    const stop = watchOwnerEnrollment(peer, setup => {
+      if (current) setReported({ key, setup });
+    }, { resumeOnly: !device, beginBrowser: canBegin ? (config, node) => { if (current) begin.current?.(config, node); } : undefined });
+    return () => { current = false; stop(); };
+  }, [key, eligible, connected, canBegin, attempt]);
+  return { setup: eligible && reported.key === key ? reported.setup : ready, retry: () => setAttempt(n => n + 1) };
+}
+
+// Actionable standby setup belongs in Settings, outside the connection wait.
+export function OwnerSetupNotice({ setup, onRetry }: { setup: OwnerSetup; onRetry: () => void }) {
+  const waiting = setup.state === "preparing" || (setup.state === "signin" && !setup.url);
+  const [attempt, setAttempt] = useState(0);
+  const slow = useConnectionWait(waiting, attempt);
+  if (setup.state === "ready" || (waiting && !slow)) return null;
   return <details className="owner-connection-setup">
     <summary>
-      {preparing ? <LoaderCircle className="spin" size={20} aria-hidden="true" /> : <Link2 size={20} aria-hidden="true" />}
-      <span role="status" aria-live="polite" aria-atomic="true">
-        <strong>{setup.state === "error" ? "Connection setup needs attention" : preparing ? "Preparing browser access…" : "Sign in to finish setup"}</strong>
-        <small>{slow ? "Taking longer than usual. Tap for options." : "Works with the Tailscale app off"}</small>
+      <Link2 size={20} aria-hidden="true" />
+      <span>
+        <strong>Browser access</strong>
+        <small>{setup.state === "error" || slow ? "Needs attention" : "Sign-in required"}</small>
       </span>
       <ChevronDown size={16} aria-hidden="true" />
     </summary>
     <div className="owner-connection-details">
-      <p>{setup.state === "error" ? "Browser setup couldn’t finish. You can keep using Reach while it tries again." :
-        preparing ? "Reach is setting up secure access for this browser. You can keep working while it finishes." :
-        "Sign in once so this Reach link also works with your phone’s Tailscale app off."}</p>
-      <p role="status" aria-live="polite">{setup.state === "error" ? `${setup.message || "Setup couldn’t finish."} Reach will retry automatically.` :
-        slow ? "Still preparing. You can try setup again if it’s taking too long." :
-        preparing ? "Preparing secure browser access…" : "Ready to sign in. Return here when you’re done."}</p>
+      <p>Reach is connected. Finish browser access to keep using this link with your phone’s Tailscale app off.</p>
+      {slow && <p>Browser access is taking longer than usual. You can retry setup and keep working.</p>}
+      {setup.state === "error" && <p role="status">{setup.message || "Browser access couldn’t finish."} Reach will retry automatically.</p>}
       {setup.url && <a className="button primary" href={setup.url} target="_blank" rel="noopener noreferrer">Sign in to Tailscale</a>}
-      {(setup.state === "error" || slow) && <button className="button secondary" onClick={retry}>Try setup again</button>}
+      {(setup.state === "error" || slow) && <button className="button secondary" onClick={() => {
+        setAttempt(n => n + 1);
+        onRetry();
+      }}>Try setup again</button>}
     </div>
   </details>;
+}
+
+export default function OwnerConnection({ peer, device, visible, reconnect = false, onActive, beginBrowser, diagnostics }: {
+  peer: Peer; device: Device | null; visible: boolean; reconnect?: boolean;
+  onActive?: (active: boolean) => void; beginBrowser?: BrowserApproval; diagnostics?: ReactNode;
+}) {
+  const { setup, retry } = useOwnerConnection(peer, device, { reconnect, beginBrowser });
+  useEffect(() => {
+    onActive?.(setup.state !== "ready");
+    return () => onActive?.(false);
+  }, [setup.state, onActive]);
+  if (!visible || (!reconnect && device?.ownerConnection !== 1) || setup.state === "ready") return null;
+  return reconnect ? <ConnectionStatus setup={setup} onRetry={retry} onConnect={retry} diagnostics={diagnostics} /> :
+    <OwnerSetupNotice setup={setup} onRetry={retry} />;
 }

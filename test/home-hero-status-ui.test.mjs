@@ -32,10 +32,10 @@ test("the pill names the cause in a few words, and says nothing while live or st
     }),
     "Screen Recording off",
   );
-  assert.equal(heroStatus({ ...quiet, error: "Screen access expired or was revoked." }), "Can't show screen");
+  assert.equal(heroStatus({ ...quiet, error: "Screen access expired or was revoked." }), "Preview unavailable");
   assert.equal(
     heroStatus({ ...quiet, connecting: true, cause: "Screen stream stalled. Reconnecting…" }),
-    "Reconnecting",
+    "Preview reconnecting",
   );
   assert.equal(heroStatus({ ...quiet, connecting: true, idle: "asleep" }, "Windows PC"), "Windows PC asleep");
 });

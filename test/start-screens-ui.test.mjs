@@ -157,7 +157,7 @@ test("start page, without the app: step 1, sign in, joining, waiting for approva
   const page = await startPage();
   try {
     await page.dom.waitFor(() => page.node.cb);
-    assert.match(page.text(), /Connecting to Mac A…/);
+    assert.match(page.text(), /Connecting to your computer/);
     assert.match(page.text(), /Step 1 of 2 · Join your network/);
     assert.match(page.text(), /Get the Tailscale app/, "the faster way, from the first screen");
     page.node.cb.state("NeedsLogin");
@@ -171,7 +171,7 @@ test("start page, without the app: step 1, sign in, joining, waiting for approva
     await page.until(/Waiting for approval/);
     assert.match(page.text(), /Tailscale admin needs to approve this browser/);
     page.node.cb.state("Starting");
-    await page.until(/Joining your network…/);
+    await page.until(/Connecting to your computer/);
   } finally {
     await page.close();
   }

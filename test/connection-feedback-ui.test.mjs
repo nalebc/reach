@@ -66,12 +66,12 @@ test("opening explains the current work and keeps the mascot decorative", async 
   const view = await renderStatus();
   try {
     const status = view.container.querySelector('[role="status"]');
-    assert.match(status.textContent, /Opening your workspace/);
-    assert.match(status.textContent, /Connecting securely to your computer/);
-    assert.match(status.textContent, /Checking your saved access/);
+    assert.match(status.textContent, /Connecting to your computer/);
+    assert.match(status.textContent, /Your workspace will open here/);
+    assert.match(status.textContent, /Connecting securely/);
     assert.equal(status.getAttribute("aria-live"), "polite");
     assert.equal(status.getAttribute("aria-atomic"), "true");
-    assert.equal(view.container.querySelector(".reach-scene").getAttribute("aria-hidden"), "true");
+    assert.equal(view.container.querySelector(".connection-loading-mark").getAttribute("aria-hidden"), "true");
     assert.equal(view.container.querySelector("button"), null, "ordinary loading needs no user action");
   } finally { await view.unmount(); }
 });
@@ -94,7 +94,7 @@ test("a sustained wait gives useful feedback and an explicit retry after eight s
     dom.update(() => retry.click());
     await settle();
     assert.equal(retries, 1);
-    assert.match(view.container.textContent, /Opening your workspace/);
+    assert.match(view.container.textContent, /Connecting to your computer/);
     assert.equal(view.container.querySelector("button"), null, "a retry starts a fresh wait");
   } finally {
     await view?.unmount();
@@ -121,7 +121,7 @@ test("going offline explains the wait, and coming online starts a fresh connecti
       online = true;
       dom.window.dispatchEvent(new dom.window.Event("online"));
     });
-    assert.match(view.container.textContent, /Opening your workspace/);
+    assert.match(view.container.textContent, /Connecting to your computer/);
     assert.doesNotMatch(view.container.textContent, /Still connecting|You’re offline/);
     dom.update(() => clock.advance(8000));
     assert.match(view.container.textContent, /Still connecting/);
@@ -167,21 +167,21 @@ test("network errors keep practical recovery visible and technical details colla
   } finally { await view.unmount(); }
 });
 
-test("the loading mascot respects reduced motion, disabled animation, and hidden pages", async () => {
+test("one loading indicator respects reduced motion, disabled animation, and hidden pages", async () => {
   for (const [preferences, playing] of [
     [{ reduced: false }, true], [{ reduced: true }, false],
     [{ enabled: false }, false], [{ reduced: false, hidden: true }, false],
   ]) {
     const view = await renderStatus({}, preferences);
     try {
-      assert.equal(view.container.querySelector(".reach-scene").classList.contains("is-playing"), playing);
+      assert.equal(view.container.querySelector(".connection-state").dataset.paused === "false", playing);
       assert.match(view.container.querySelector('[role="status"]').textContent, /Connecting securely/);
     } finally { await view.unmount(); }
   }
 });
 
 
-test("attention states pause the mascot while waiting for internet, sign-in, or approval", async () => {
+test("attention states stop progress while waiting for internet, sign-in, or approval", async () => {
   for (const props of [
     { needsApproval: true, error: "Saved access needs approval." },
     { setup: { state: "signin", url: "https://login.tailscale.com/a/fixture" } },
@@ -190,7 +190,7 @@ test("attention states pause the mascot while waiting for internet, sign-in, or 
     online = Object.keys(props).length > 0;
     const view = await renderStatus(props, { reduced: false });
     try {
-      assert.equal(view.container.querySelector(".reach-scene").classList.contains("is-playing"), false);
+      assert.equal(view.container.querySelector(".connection-loading-dot"), null);
     } finally { await view.unmount(); online = true; }
   }
 });
@@ -205,34 +205,46 @@ function ownerFixture(state) {
 }
 const renderOwner = (props = {}) => dom.render(React.createElement(OwnerConnection, { peer, device, visible: true, ...props }));
 
-test("owner preparation keeps its wait across repeated watcher reports and provides a real setup retry", async () => {
+test("standby preparation stays silent while a connected owner keeps working", async () => {
+  const clock = feedbackClock();
+  const fixture = ownerFixture({ state: "preparing" });
+  let view;
+  try {
+    view = await renderOwner({ visible: false });
+    assert.equal(view.container.textContent, "");
+    assert.equal(fixture.starts, 1, "quiet preparation still starts enrollment");
+    dom.update(() => clock.advance(8000));
+    dom.update(() => fixture.update({ state: "signin", url: "" }));
+    assert.equal(view.container.textContent, "", "a pending sign-in URL adds no second loading state");
+    dom.update(() => fixture.update({ state: "preparing" }));
+    assert.equal(view.container.querySelector(".spin, .connection-loading-dot, .connection-state"), null);
+    dom.update(() => fixture.update({ state: "ready" }));
+    assert.equal(view.container.textContent, "");
+    assert.equal(fixture.starts, 1, "quiet updates do not restart the work");
+    assert.equal(fixture.stops, 0);
+  } finally { await view?.unmount(); clock.restore(); }
+  assert.equal(fixture.stops, 1);
+});
+
+test("Settings retains an explicit retry for a long standby wait without another loader", async () => {
   const clock = feedbackClock();
   const fixture = ownerFixture({ state: "preparing" });
   let view;
   try {
     view = await renderOwner();
-    const details = view.container.querySelector("details");
-    assert.equal(details.open, false, "setup does not interrupt the workspace");
-    assert.match(details.querySelector("summary").textContent, /Preparing browser access/);
-    assert.equal(details.querySelector("a"), null, "sign-in is not offered before its URL is ready");
-    dom.update(() => clock.advance(5000));
+    assert.equal(view.container.textContent, "", "ordinary standby setup stays quiet");
+    dom.update(() => clock.advance(8000));
+    assert.match(view.container.textContent, /Browser access.*Needs attention/);
+    assert.match(view.container.textContent, /Reach is connected/);
+    assert.equal(view.container.querySelector(".spin,.connection-loading-dot,.connection-state"), null);
     dom.update(() => fixture.update({ state: "signin", url: "" }));
-    assert.match(details.textContent, /Preparing secure browser access/);
-    dom.update(() => clock.advance(3000));
-    assert.match(details.textContent, /Taking longer than usual/i);
-    dom.update(() => fixture.update({ state: "preparing" }));
-    assert.match(details.textContent, /Taking longer than usual/i, "polling cannot reset the user's wait");
-    const retry = [...details.querySelectorAll("button")].find(button => button.textContent === "Try setup again");
-    assert.ok(retry);
-    dom.update(() => retry.click());
+    assert.ok(view.container.querySelector("button"), "polling does not reset the long-wait recovery action");
+    dom.update(() => view.container.querySelector("button").click());
     await settle();
-    assert.equal(fixture.starts, 2, "retry starts a fresh enrollment watch");
-    assert.equal(fixture.stops, 1, "retry stops the previous enrollment watch");
-    assert.doesNotMatch(details.textContent, /Taking longer than usual/i, "a setup retry starts a fresh wait");
-  } finally {
-    await view?.unmount();
-    clock.restore();
-  }
+    assert.equal(fixture.starts, 2);
+    assert.equal(fixture.stops, 1);
+    assert.equal(view.container.textContent, "", "an explicit retry starts a fresh quiet wait");
+  } finally { await view?.unmount(); clock.restore(); }
 });
 
 test("owner setup distinguishes sign-in, errors, and completion", async () => {
@@ -240,13 +252,13 @@ test("owner setup distinguishes sign-in, errors, and completion", async () => {
   const view = await renderOwner();
   try {
     const summary = () => view.container.querySelector("summary")?.textContent;
-    assert.match(summary(), /Sign in to finish setup/);
+    assert.match(summary(), /Browser access.*Sign-in required/);
     const signIn = view.container.querySelector("a");
     assert.equal(signIn.href, "https://login.tailscale.com/a/fixture");
     assert.equal(signIn.target, "_blank");
     assert.match(signIn.rel, /noopener/);
     dom.update(() => fixture.update({ state: "error", message: "Browser storage is unavailable." }));
-    assert.match(summary(), /Connection setup needs attention/);
+    assert.match(summary(), /Browser access.*Needs attention/);
     assert.match(view.container.textContent, /Browser storage is unavailable/);
     assert.equal(view.container.querySelector("a"), null, "an obsolete sign-in action disappears on failure");
     dom.update(() => fixture.update({ state: "ready" }));
@@ -267,7 +279,7 @@ test("owner reconnect explains browser preparation, offers sign-in when ready, a
     assert.equal(view.container.querySelector("details.owner-connection-setup"), null, "reconnecting uses the same primary feedback as loading");
     assert.equal(view.container.querySelector("a"), null, "preparation does not advertise a sign-in URL it lacks");
     assert.equal(fixture.options.resumeOnly, true, "reconnection can only resume this owner's existing setup");
-    assert.equal(fixture.options.beginBrowser, beginBrowser, "the verified browser handoff remains available");
+    assert.equal(typeof fixture.options.beginBrowser, "function", "the verified browser handoff remains available");
     assert.equal(active.at(-1), true);
 
     dom.update(() => fixture.update({ state: "signin", url: "https://login.tailscale.com/a/fixture" }));
@@ -278,7 +290,7 @@ test("owner reconnect explains browser preparation, offers sign-in when ready, a
     assert.match(signIn.rel, /noopener/);
 
     dom.update(() => fixture.update({ state: "error", message: "The secure browser connection did not answer." }));
-    assert.match(view.container.querySelector('[role="status"]').textContent, /Browser setup needs attention/);
+    assert.match(view.container.querySelector('[role="status"]').textContent, /Your computer is out of reach/);
     assert.equal(view.container.querySelector("a"), null, "a failed attempt never retains the previous sign-in link");
     const retry = [...view.container.querySelectorAll("button")].find(button => /Try (?:setup )?again/.test(button.textContent));
     assert.ok(retry, "a failed browser setup provides an actionable retry");
@@ -315,13 +327,17 @@ test("App keeps one meaningful connection view through loading and browser sign-
     view = await appDom.render(appDom.React.createElement(App));
     assert.deepEqual(appDom.errors, []);
     const count = () => view.container.querySelectorAll(".connection-state").length;
+    const connectionPage = view.container.querySelector(".connection-state");
     assert.equal(count(), 1, view.container.textContent.slice(0, 800));
-    assert.match(view.container.querySelector(".connection-state").textContent, /Opening your workspace/);
+    assert.match(view.container.querySelector(".connection-state").textContent, /Connecting to your computer/);
     assert.equal(view.container.querySelector('[aria-label="Copy connection report"]'), null, "ordinary startup keeps reports out of the loading view");
 
     releaseDevice();
-    await appDom.waitFor(() => view.container.querySelector(".connection-state h1")?.textContent === "Preparing secure access");
-    assert.equal(count(), 1, "owner setup replaces the failed-request view");
+    await appDom.waitFor(() => fixture.starts === 1);
+    assert.equal(view.container.querySelector(".connection-state h1").textContent, "Connecting to your computer");
+    assert.equal(count(), 1, "background setup uses the existing connection page");
+    assert.equal(view.container.querySelectorAll(".connection-loading-dot").length, 1);
+    assert.doesNotMatch(view.container.textContent, /Preparing (?:browser|secure)|Checking your saved/);
     assert.equal(view.container.querySelector(".owner-connection-setup"), null, "reconnection does not add another setup card");
     appDom.update(() => fixture.update({ state: "signin", url: "https://login.tailscale.com/a/fixture" }));
     assert.equal(count(), 1);
@@ -338,6 +354,7 @@ test("App keeps one meaningful connection view through loading and browser sign-
     appDom.update(() => details.querySelector("summary").click());
     assert.equal(details.open, true, "connection details can reveal the report");
     assert.equal(fixture.starts, 1, "the loading-to-setup handoff starts only one enrollment watcher");
+    assert.equal(view.container.querySelector(".connection-state"), connectionPage, "every stage keeps one connection page mounted");
     assert.deepEqual(appDom.errors, []);
   } finally {
     releaseDevice();
@@ -345,4 +362,34 @@ test("App keeps one meaningful connection view through loading and browser sign-
     globalThis.WebSocket = socket;
     deviceResponse = undefined;
   }
+});
+
+
+test("changing computer or losing owner access retires stale setup reports", async () => {
+  const fixture = ownerFixture({ state: "preparing" });
+  let change;
+  function Switch() {
+    const [target, setTarget] = React.useState({ peer, device });
+    change = setTarget;
+    return React.createElement(OwnerConnection, { ...target, visible: true });
+  }
+  const view = await dom.render(React.createElement(Switch));
+  try {
+    const oldReport = fixture.report;
+    const other = { ...peer, id: "pc", token: "other-fixture" };
+    const otherDevice = { ...device, ...other };
+    dom.update(() => change({ peer: other, device: otherDevice }));
+    assert.equal(fixture.starts, 2);
+    assert.equal(fixture.stops, 1);
+    dom.update(() => oldReport({ state: "signin", url: "https://login.tailscale.com/a/obsolete" }));
+    assert.equal(view.container.querySelector("a"), null, "the previous computer cannot advertise its sign-in");
+    dom.update(() => fixture.update({ state: "signin", url: "https://login.tailscale.com/a/current" }));
+    assert.equal(view.container.querySelector("a").href, "https://login.tailscale.com/a/current");
+    const report = fixture.report;
+    dom.update(() => change({ peer: other, device: { ...otherDevice, access: { kind: "guest", scopes: [] } } }));
+    assert.equal(fixture.stops, 2, "losing owner access stops enrollment");
+    dom.update(() => report({ state: "error", message: "Late old setup" }));
+    assert.equal(view.container.textContent, "");
+    assert.equal(fixture.starts, 2, "guest access never starts an owner enrollment");
+  } finally { await view.unmount(); }
 });
