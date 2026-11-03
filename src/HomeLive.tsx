@@ -29,7 +29,7 @@ import { PauseButton } from "./PauseControl";
 import { computerWord, pausedIn } from "./pause";
 import HomeStories from "./HomeStories";
 import { ShortcutLifeContext, type ShortcutLife } from "./ToolsPage";
-import { OutcomeEntry, outcomeNeeds } from "./outcome-navigation";
+import { outcomeNeeds } from "./outcome-navigation";
 import type { Workflow } from "./Workflows";
 import "./home-live.css";
 
@@ -431,7 +431,6 @@ export default function HomeLive({
       <ShortcutLifeContext.Provider value={shortcutLife}>
         {pinnedTools}
       </ShortcutLifeContext.Provider>
-      {features.owner && onOpenWorkflow && <OutcomeEntry list={workflows} runningOnly onOpen={onOpenWorkflow} onAll={() => onOpenWorkflow()} />}
 
       {browserApprovals.review}
       {agentAdmissions.review}

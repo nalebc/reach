@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -25,6 +25,7 @@ import {
   ChatLibraryHeader,
   ago,
   type ChatAppChoice,
+  type WorkflowsEntry,
 } from "./ChatList";
 import { ClawSessionSettings } from "./OpenClawControls";
 import { useViewportBox } from "./useViewportBox";
@@ -584,7 +585,7 @@ export default function OpenClawSpace({
   onOpenChat,
   onScreen,
   onNew,
-  notice,
+  workflows,
 }: {
   peer: Peer;
   apps: ChatAppChoice[];
@@ -604,7 +605,7 @@ export default function OpenClawSpace({
   onScreen?: () => void;
   // A new OpenClaw chat of Reach's own (EverythingChat NewClawChat).
   onNew?: () => void;
-  notice?: ReactNode;
+  workflows?: WorkflowsEntry;
 }) {
   const [refresh, setRefresh] = useState(0);
   const { data, error } = usePolling<Overview>(peer, `${base}/overview`, 5000, refresh, `${base}/changes`);
@@ -716,6 +717,7 @@ export default function OpenClawSpace({
         ) : (
           <>
             <ChatLibraryHeader
+              workflows={workflows}
               health={health}
               peer={peer}
               apps={apps}
@@ -735,7 +737,6 @@ export default function OpenClawSpace({
                 setSearchOpen(!searchOpen);
               }}
             />
-            {notice}
             <div className="chat-library-tools">
               <ChatAppPicker health={health} apps={apps} logos={logos} value="openclaw" onChange={onAppChange} pending={pending} />
               <label className="chat-list-search">

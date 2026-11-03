@@ -43,7 +43,7 @@ import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
 import ChatAppPager from "./ChatAppPager";
 import ChatHub from "./ChatHub";
-import { OutcomeEntry, outcomeNeeds, outcomeForChat, workflowActive } from "./outcome-navigation";
+import { outcomeNeeds, outcomeForChat, workflowActive } from "./outcome-navigation";
 import type { FleetConnections } from "./useFleetConnections";
 import { relayAgents } from "./Relays";
 import { TeamPicker } from "./Teams";
@@ -1324,7 +1324,6 @@ export default function EverythingChat({
         } as AgentSession),
     );
   const chatOutcome = open ? outcomeForChat(workflows, open) : undefined;
-  const outcomeEntry = <OutcomeEntry list={workflows} onAll={() => setFlowsOpen(true)} onOpen={showWorkflow} />;
   const library = (app: ChatAppChoice, active: boolean) => {
     if (app.agent === "all")
       return (
@@ -1365,7 +1364,7 @@ export default function EverythingChat({
         // OpenClaw's chats have no folder: a command runs in the home folder.
         <RunCommandContext.Provider value={runCommand ? (command) => runCommand("", command) : null}>
           <OpenClawSpace peer={peer} active={active} apps={apps} logos={logos}
-            notice={outcomeEntry}
+            workflows={flowEntry}
             onScreen={onScreen}
             openKey={active ? clawOpen : null} onOpened={() => setClawOpen(null)} health={health} onOpenChat={openChat}
             onAppChange={setAgent} appPending={appPending} onDiscover={recheck}
@@ -1390,7 +1389,7 @@ export default function EverythingChat({
             : needsSetup ? <AgentStatus peer={peer} agent={agent} health={appHealth} logos={logos} recheck={recheck} />
             : undefined
           }
-          notice={<>{outcomeEntry}{app.supported && appHealth?.installed && !needsSetup && <AgentUpdate peer={peer} agent={agent} />}</>}
+          notice={app.supported && appHealth?.installed && !needsSetup && <AgentUpdate peer={peer} agent={agent} />}
           workflows={flowEntry}
           projects={(shared || own).projects}
           // Too old: its line above says it (a too-old Codex lists its chats,
