@@ -208,6 +208,17 @@ test(
   },
 );
 
+test("foreground checks detect a recovery-script update even when the app module is unchanged", async () => {
+  const doc = dom.document.implementation.createHTMLDocument();
+  const app = '<script type="module" src="/assets/app-current.js"></script>';
+  const script = name => `<script async src="/assets/${name}.js" data-reach-recovery></script>`;
+  doc.head.innerHTML = app + script("recovery-old");
+  assert.equal(await reload.currentPageMatches(doc, async () => new Response(app + script("recovery-old"))), true);
+  assert.equal(await reload.currentPageMatches(doc, async () => new Response(app + script("recovery-new"))), false);
+  doc.head.innerHTML = app;
+  assert.equal(await reload.currentPageMatches(doc, async () => new Response(app + script("recovery-new"))), false, "older pages also discover the independent recovery entry");
+});
+
 test("lazy workspace styles do not make a current public-start page reload forever", async () => {
   const doc = dom.document.implementation.createHTMLDocument();
   doc.head.innerHTML =
