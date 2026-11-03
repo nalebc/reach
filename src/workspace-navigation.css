@@ -42,7 +42,7 @@
   .app-shell .topbar-status {
     display: none;
   }
-  .app-shell .topbar-right > .workspace-settings {
+  .app-shell .topbar-right > :is(.workspace-settings, .workspace-refresh) {
     display: grid;
     min-width: 44px;
     min-height: 44px;

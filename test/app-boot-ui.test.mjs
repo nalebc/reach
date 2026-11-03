@@ -49,6 +49,9 @@ test("the initial HTML stays visible before any JavaScript or stylesheet can loa
     assert.match(loading.textContent, /Opening Reach/);
     assert.match(loading.textContent, /refresh/);
     assert.match(loading.getAttribute("style"), /min-height:100dvh/);
+    assert.equal(loading.querySelector("[data-reach-reload]").textContent, "Reload Reach", "an actual recovery link is available before application code");
+    const entries = [...parsed.querySelectorAll('script[type="module"]')].map(script => script.getAttribute("src"));
+    assert.equal(entries[0], "/src/recovery-entry.ts", "recovery loads independently of workspace dependencies");
   }
 });
 

@@ -332,7 +332,9 @@ test("the build manifest follows only the current dependency graph and refuses p
   try {
     fs.mkdirSync(path.join(dir, ".vite")); fs.mkdirSync(path.join(dir, "assets")); fs.mkdirSync(path.join(dir, "pdfjs"));
     for (const name of ["jbig2_nowasm_fallback", "openjpeg_nowasm_fallback"]) fs.writeFileSync(path.join(dir, "pdfjs", name + ".js"), "/* fixed */");
-    fs.writeFileSync(path.join(dir, "index.html"), "<html><head></head><body></body></html>");
+    const recovery = "r2-recovery-0123456789abcdef.js";
+    fs.writeFileSync(path.join(dir, "assets", recovery), "/* standalone recovery */");
+    fs.writeFileSync(path.join(dir, "index.html"), `<html><head><script defer src="/assets/${recovery}" data-reach-recovery></script></head><body></body></html>`);
     fs.writeFileSync(path.join(dir, "manifest.webmanifest"), '{"icons":[]}'); fs.writeFileSync(path.join(dir, "favicon.svg"), "<svg/>");
     fs.writeFileSync(path.join(dir, "assets/current.js"), "current"); fs.writeFileSync(path.join(dir, "assets/lazy.js"), "lazy");
     fs.writeFileSync(path.join(dir, "assets/stale.js"), "PRIVATE-CANARY");
@@ -343,6 +345,7 @@ test("the build manifest follows only the current dependency graph and refuses p
     const result = writeOfflineShell(dir);
     assert.ok(result.entries.some(entry => entry.path === "/assets/lazy.js"));
     assert.ok(result.entries.some(entry => entry.path === "/assets/start.js"));
+    assert.ok(result.entries.some(entry => entry.path === "/assets/" + recovery), "the standalone recovery script is saved with its document");
     assert.ok(result.entries.some(entry => entry.path === "/start.html"));
     assert.match(fs.readFileSync(path.join(dir, "start.html"), "utf8"), new RegExp(result.build));
     assert.equal(JSON.stringify(result).includes("stale"), false);

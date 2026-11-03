@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import fs from "node:fs";
 import path from "node:path";
 import { writeOfflineShell } from "./scripts/offline-shell.mjs";
+import { pageRecovery } from "./scripts/page-recovery.mjs";
 function offlineShell() {
   let dist;
   return { name: "reach-offline-shell", apply: "build", enforce: "post",
@@ -10,6 +11,7 @@ function offlineShell() {
 }
 export default defineConfig({
   plugins: [
+    pageRecovery(),
     offlineShell(),
     {
       name: "reach-pdf-image-fallbacks",

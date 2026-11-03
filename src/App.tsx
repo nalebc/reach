@@ -4,6 +4,7 @@ import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import { watchStalls } from "./stall-watch";
+import { reconnectUrl } from "./page-recovery";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
 import FallbackSetup, { FallbackNotice } from "./FallbackSetup";
@@ -1024,13 +1025,13 @@ function ReachWorkspace() {
               <i className={`status-dot ${device && !error ? "" : "off"}`} />
               {device ? (error ? "Reconnecting…" : "Computer connected") : "Disconnected"}
             </span>
-            <button
-              className="icon-button"
-              title="Refresh connection" aria-label="Refresh connection"
-              onClick={refreshDevice}
+            <a
+              className="icon-button workspace-refresh"
+              title="Reload Reach" aria-label="Reload Reach"
+              href={reconnectUrl(location.href)}
             >
               <RefreshCw size={17} />
-            </button>
+            </a>
             <span className="avatar small">
               {peer?.name.slice(0, 1).toUpperCase()}
             </span>

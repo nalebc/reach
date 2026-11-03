@@ -114,6 +114,13 @@ createRoot(document.getElementById("root")).render(<App/>);
     await tab.navigate(`http://${host}:${server.address().port}/`);
     await waitFor("!!document.querySelector('.owner-connection-setup')");
     await frame();
+    const reload = await tab.evaluate(`(() => {
+      const link = document.querySelector('.workspace-refresh');
+      const rect = link.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, reachable: link.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)), href: link.href };
+    })()`);
+    assert.ok(reload.width >= 40 && reload.height >= 40 && reload.reachable, `Reload Reach stays visible and tappable at ${width}px`);
+    assert.ok(new URL(reload.href).searchParams.has("reach-reconnect"), "reload makes a fresh document request");
     await shot(`initial-${width}`);
     assert.ok(await tab.evaluate("!!document.querySelector('.home-hero')"), await tab.evaluate("document.body.innerText"));
     const home = await tab.evaluate(`(() => {

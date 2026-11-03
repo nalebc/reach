@@ -50,6 +50,11 @@ export function writeOfflineShell(dist) {
   const icons = JSON.parse(readInput(path.join(dist, "manifest.webmanifest")).toString("utf8")).icons;
   for (const icon of icons || []) if (/^\/assets\/[\w.-]+\.png$/.test(icon.src)) names.add(icon.src.slice(1));
   const documents = pages.map(name => ({ name, html: readInput(path.join(dist, name)).toString("utf8").replace(meta, "") }));
+  // The independently loaded recovery script is intentionally outside the
+  // app's module graph, but belongs to the same verified offline generation.
+  for (const { html } of documents)
+    for (const match of html.matchAll(/<script\b[^>]*\bsrc="\/(assets\/r2-recovery-[a-f0-9]{16}\.js)"[^>]*>/g))
+      names.add(match[1]);
   const entries = [];
   for (const name of [...names].sort()) {
     if (pages.includes(name)) continue;
