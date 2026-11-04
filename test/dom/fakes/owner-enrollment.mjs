@@ -4,6 +4,7 @@ export function watchOwnerEnrollment(_peer, report, options) {
   fixture.starts++;
   fixture.options = options;
   fixture.report = report;
-  report(fixture.state);
+  if (fixture.deferInitial) fixture.initialReport = () => report(fixture.state);
+  else report(fixture.state);
   return () => { fixture.stops++; fixture.report = null; };
 }
