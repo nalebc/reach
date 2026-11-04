@@ -678,7 +678,14 @@ test("a declined edit isn't counted as edited or failed; an edit's card shows wh
   assert.deepEqual(dom.errors, []);
 });
 
-test("the Codex composer is one card with its controls inside, and the chat opens on its date", async () => {
+for (const [hour, label, expected] of [[12, "daytime", /^Today \d/], [0, "midnight", /^Yesterday \d/]])
+test(`the Codex composer is one card with its controls inside, and the chat opens on its date (${label})`, async (t) => {
+  // Calendar expectations must not depend on when CI happens to run. Keep
+  // elapsed time advancing so asynchronous waits retain their real deadlines.
+  const realNow = Date.now, began = realNow();
+  const now = new Date(2026, 0, 2, hour, 0, 30).getTime();
+  Date.now = () => now + realNow() - began;
+  t.after(() => { Date.now = realNow; });
   mac.pages[`codex:${CODEX}`].items = [
     {
       id: "u1",
@@ -686,7 +693,7 @@ test("the Codex composer is one card with its controls inside, and the chat open
       kind: "text",
       text: "Fix the login bug",
       turnId: "t1",
-      at: Date.now() - 60000,
+      at: now - 60000,
     },
   ];
   await open(codexSession());
@@ -697,7 +704,7 @@ test("the Codex composer is one card with its controls inside, and the chat open
       box.querySelector(".as-tools .as-mode") &&
       box.querySelector(".as-tools .as-send"),
   );
-  assert.match($(".as-when").textContent, /^Today \d/);
+  assert.match($(".as-when").textContent, expected);
   assert.equal($(".as-hint"), null);
   assert.deepEqual(dom.errors, []);
 });
