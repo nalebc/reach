@@ -63,7 +63,7 @@
   "dependencies": {
     "buffer-crc32": "1.0.0",
     "express": "^5.1.0",
-    "express-rate-limit": "8.7.1",
+    "express-rate-limit": "8.7.2",
     "json5": "^2.2.3",
     "multer": "^2.5.0",
     "node-pty": "1.1.0",
@@ -89,7 +89,7 @@
     "jsdom": "^30.1.2",
     "jsqr": "1.4.0",
     "lucide-react": "^1.53.0",
-    "pdfjs-dist": "6.4.299",
+    "pdfjs-dist": "6.5.438",
     "prettier": "^3.9.9",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
