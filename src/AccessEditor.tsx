@@ -109,8 +109,7 @@ export default function AccessEditor(props: AccessEditorProps) {
 }
 
 // A preset agent: change its preset, apps, folders, editing or hidden apps.
-// Taking the Mac (Full control, Apps), or raising Apps into unrestricted Full
-// control, needs a new invitation from the phone.
+// Apps stays bound to the trusted owner device that approved the invitation.
 type PresetApp = { id: string; name: string; bundleId: string; running: boolean; protected: boolean; reason?: string; runsCommands?: boolean };
 function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEditorProps) {
   const current = (client.policy?.preset || "readonly") as Preset;
@@ -176,7 +175,7 @@ function PresetAccessEditor({ peer, device, client, onClose, onSaved }: AccessEd
           label="Access preset"
           value={preset}
           onChange={(next) => { setPreset(next); setError(""); if (next !== "apps") setApps([]); }}
-          options={(["full", "apps", "files", "readonly"] as Preset[]).map((value) => ({
+          options={(["apps", "files", "readonly"] as Preset[]).map((value) => ({
             value, title: PRESET_WORDS[value].title,
             detail: needsInvitation(value) ? "Needs a new invitation from your phone." : PRESET_WORDS[value].detail,
             disabled: needsInvitation(value),

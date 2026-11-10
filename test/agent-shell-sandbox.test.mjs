@@ -6,10 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { createAgentShell, shellSandboxProfile } from "../server/agent-shell.mjs";
 import { agentShellSandbox } from "../server/browser-private-paths.mjs";
-import { presetScopes } from "../server/agent-presets.mjs";
 
-// Full control runs as the OS user. Restricted script jobs still use the
-// shared sandbox profile. All private data and listeners below are fixtures.
+// Test the sandbox helper in isolation with synthetic legacy shell scopes.
+// Browser-agent admission does not issue these scopes anymore.
 
 test("the sandbox profile denies exactly what it's given, quoted", () => {
   const profile = shellSandboxProfile({ readDeny: ['/a "b"\\c'], writeDeny: ["/w"], socketDeny: ["/s"], ports: [4317] });
@@ -56,7 +55,7 @@ test("Full control does not require sandbox-exec", { skip: process.platform !== 
   const shell = createAgentShell({ commandLog: { append: async (record) => records.push(record), history: async () => records },
     home: os.homedir(), sandbox: () => ({ readDeny: ["/nonexistent"] }), sandboxExec: path.join(root, "no-sandbox-exec") });
   const policy = { invite: true, browser: true, preset: "full", roots: [root] };
-  const client = { id: "agent", kind: "agent", name: "Agent", expiresAt: Date.now() + 60000, policy, scopes: presetScopes(policy), agentRoots: [root] };
+  const client = { id: "agent", kind: "agent", name: "Agent", expiresAt: Date.now() + 60000, policy, scopes: ["device", "browser:read", "browser:shell"], agentRoots: [root] };
   try {
     await shell.run(client, { command: `touch ${JSON.stringify(marker)}`, root: 0, cwd: "" },
       { resolve: () => root, authorize: () => client });
@@ -97,7 +96,7 @@ test("Full control reaches fixture sockets, private data and code as the OS user
     });
     const policy = { invite: true, browser: true, preset: "full", roots: [root] };
     const client = { id: "agent", kind: "agent", name: "Agent", expiresAt: Date.now() + 60000, policy,
-      scopes: presetScopes(policy), agentRoots: [root] };
+      scopes: ["device", "browser:read", "browser:shell"], agentRoots: [root] };
     const run = async (command) => {
       const item = await shell.run(client, { command, root: 0, cwd: "work" },
         { resolve: (index, cwd) => path.join(root, cwd), authorize: () => client });

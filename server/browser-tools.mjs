@@ -276,6 +276,7 @@ function presetTools(access) {
 
 /** Tools are created afresh so a caller cannot mutate a shared schema. */
 export function browserToolsFor(access = {}) {
+  if (access.preset === "full") return [];
   if (access.preset !== undefined) return JSON.parse(JSON.stringify(presetTools(access)));
   const firstRoot = access.roots?.[0]?.index ?? 0;
   const tools = [definition("reach_access", "Access", "Read the session's current limits, expiry, shared folders and terminals.", object(), {})];

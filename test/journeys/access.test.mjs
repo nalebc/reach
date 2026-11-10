@@ -22,7 +22,7 @@ test(`Agents & people: inviting an agent or a person offers what this ${word} ca
   // An agent: how it connects, and what it may do.
   await page.tap({ selector: "button.inv-who-row", text: /^An agent/ }, "An agent");
   const presets = await page.see({ js: `(() => { const c = ${choices("Access preset")}; return c.length === 4 && c; })()` }, "what an agent may do", 30000);
-  assert.deepEqual(presets.map((p) => p.name), ["Full control", "Apps", "Files", "Read only"]);
+  assert.deepEqual(presets.map((p) => p.name), ["Apps", "Files", "Read only"]);
   const ways = await page.see({ js: `(() => { const c = ${choices("How the agent connects")}; return c.length && c; })()` }, "how an agent connects");
   assert.ok(ways.length >= 2, JSON.stringify(ways));
   const off = presets.filter((p) => p.off).map((p) => p.name);

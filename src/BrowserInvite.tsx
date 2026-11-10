@@ -42,13 +42,13 @@ import "./browser-workspace.css";
 import "./agent-invite.css";
 
 // Inviting any agent: one that opens a web page, or one that runs Reach's
-// tools (command line or MCP). One choice: a preset. Everything the agent may do follows from it;
-// Full control has no content exclusions; narrower presets keep their limits.
+// tools (command line or MCP). Agents get one of three bounded presets.
 export type Preset = "full" | "apps" | "files" | "readonly";
+const AGENT_PRESETS: Exclude<Preset, "full">[] = ["apps", "files", "readonly"];
 export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
   full: {
-    title: "Full control",
-    detail: "Every app, file and command.",
+    title: "Full control (ended)",
+    detail: "Full control is no longer available to agents.",
   },
   apps: { title: "Apps", detail: "Only the apps you pick." },
   files: { title: "Files", detail: "Only the folders you pick." },
@@ -58,7 +58,6 @@ export const PRESET_WORDS: Record<Preset, { title: string; detail: string }> = {
   },
 };
 const PRESET_ICONS = {
-  full: Monitor,
   apps: AppWindow,
   files: Folder,
   readonly: Eye,
@@ -185,7 +184,7 @@ export const inviteName = (random = Math.random, not = "") => {
     if (name !== not) return name;
   }
 };
-// Apps worth hiding first under Full control: where codes and mail arrive.
+// Apps worth hiding first for read-only agents: where codes and mail arrive.
 const SUGGESTED_HIDDEN = [
   "com.apple.mobilesms",
   "com.apple.mail",
@@ -295,8 +294,7 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
       ).toLowerCase(),
     ),
   );
-  const screenPreset =
-    preset === "full" || preset === "apps" || preset === "readonly";
+  const screenPreset = preset === "apps" || preset === "readonly";
   const desktopReady = options?.desktopAvailable !== false;
   const macHost = (device.platform || peer.platform) === "darwin";
   // What the invite message calls this computer: never "Mac" off a Mac.
@@ -364,7 +362,6 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
           // on your tailnet uses it at once, any other the public link.
           transport: "funnel",
           preset,
-          ...(preset === "full" ? { fullControlVersion: 1 } : {}),
           ...(connect === "hosted" ? { hosted: true } : {}),
           ...(minutes === ALWAYS
             ? { standing: true }
@@ -571,7 +568,7 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         }]
       : []),
   ];
-  const presetChoices = (["full", "apps", "files", "readonly"] as Preset[]).map(
+  const presetChoices = AGENT_PRESETS.map(
     (value) => ({
       value,
       label: PRESET_WORDS[value].title,
@@ -807,9 +804,7 @@ function BrowserInviteForm({ peer, device, onCreated, initialConnect = "tools", 
         )}
         <p className="ag-note">
           <ShieldCheck size={14} />
-          {preset === "full"
-            ? `Full control can access passwords, change security settings, run commands and stop Reach. It runs as you, within ${macHost ? "macOS" : "your account's"} permissions. Approve only an agent you trust.`
-            : "You approve it before it can join. Pause it or end its access any time."}
+          {"You approve it before it can join. Pause it or end its access any time."}
         </p>
         {options && !macHost && !filesSupported && !desktopReady && (
           <>

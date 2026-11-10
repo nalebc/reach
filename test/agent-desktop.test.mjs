@@ -60,7 +60,7 @@ test(`concurrent first looks share one helper startup (${platform} stand-in)`, a
   const gate = new Promise(resolve => { ready = resolve; });
   const w = world({ platform, onSpawn: () => gate });
   t.after(() => { ready(); w.desktop.close(); });
-  const client = w.make("shared-start", "full"), auth = authorize(client);
+  const client = w.make("shared-start", "apps"), auth = authorize(client);
   const looks = [w.desktop.front(client, auth), w.desktop.elements(client, auth), w.desktop.screenshot(client, auth)];
   ready();
   await Promise.all(looks);
@@ -73,7 +73,7 @@ test("cancelled startup cannot attach its helper to a rejoined session", async t
   let starts = 0;
   const w = world({ onSpawn: () => ++starts === 1 ? gate : undefined });
   t.after(() => { ready(); w.desktop.close(); });
-  const client = w.make("rejoined", "full"), auth = authorize(client);
+  const client = w.make("rejoined", "apps"), auth = authorize(client);
   const old = w.desktop.front(client, auth);
   const rejected = assert.rejects(old, /session.*ended/i);
   w.desktop.cancelClient(client.id);
@@ -91,30 +91,29 @@ test("a failed shared startup clears once so a later look can recover", async t 
     if (++starts === 1) { helper.stop(); throw Error("fixture startup failed"); }
   } });
   t.after(() => w.desktop.close());
-  const client = w.make("recover", "full"), auth = authorize(client);
+  const client = w.make("recover", "apps"), auth = authorize(client);
   const results = await Promise.allSettled([w.desktop.front(client, auth), w.desktop.elements(client, auth)]);
   assert.ok(results.every(result => result.status === "rejected" && /startup failed/.test(result.reason.message)));
   assert.equal(starts, 1);
   await w.desktop.front(client, auth);
   assert.equal(starts, 2);
 });
-test("Full control ignores hidden apps and content filters while protecting typed credentials in logs", async t => {
+test("Apps keeps protected targets closed and refuses password text", async t => {
   const w = world();
   t.after(() => w.desktop.close());
-  const client = w.make("trusted", "full", { hidden: [chrome] }), auth = authorize(client);
+  const client = w.make("trusted", "apps"), auth = authorize(client);
   w.setFront({ title: "GitHub - nalebc/reach", path: chrome.id });
   assert.equal((await w.desktop.front(client, auth)).title, "GitHub - nalebc/reach");
-  await w.desktop.openUrl(client, "https://mac.tail1.ts.net/", chrome.id, auth);
-  await w.desktop.act(client, { type: "type", text: "chrome://password-manager/passwords" }, auth);
+  await rejects(() => w.desktop.openUrl(client, "https://mac.tail1.ts.net/", chrome.id, auth), 403, /stays closed/);
+  await rejects(() => w.desktop.act(client, { type: "type", text: "chrome://password-manager/passwords" }, auth), 403, /stays closed/);
   w.setFront({ terminalLike: true, app: "Terminal" });
-  await w.desktop.act(client, { type: "type", text: "sudo echo fixture" }, auth);
+  await rejects(() => w.desktop.act(client, { type: "type", text: "sudo echo fixture" }, auth), 403, /never gets it/);
   w.setFront({ terminalLike: false, secure: true });
-  await w.desktop.act(client, { type: "type", text: "fixture-password", paste: true }, auth);
-  const last = w.helpers[0].requests.filter(r => r.op === "act").at(-1).action;
-  assert.equal(last.secret, true);
-  assert.equal(last.paste, undefined);
+  await rejects(() => w.desktop.act(client, { type: "type", text: "fixture-password", paste: true }, auth), 403, /Password box/);
+  assert.equal(w.helpers[0].requests.filter(r => r.op === "act").length, 0);
   assert.doesNotMatch(JSON.stringify(w.activity), /fixture-password/);
-  assert.deepEqual(w.helpers[0].rules.hiddenApps, []);
+  assert.equal(w.helpers[0].rules.mode, "apps");
+  assert.deepEqual(w.helpers[0].rules.allowedApps, [{ id: chrome.id, bundleId: chrome.bundleId, identity: "" }], "Apps keeps the helper limited to its selected browser");
   w.pause(true);
   await rejects(() => w.desktop.act(client, { type: "key", key: "enter" }, auth), 409, /paused/);
 });
@@ -130,7 +129,7 @@ test("display-specific captures coalesce only for the same display and input kee
     };
   } });
   t.after(() => { release(); w.desktop.close(); });
-  const client = w.make("displays", "full"), auth = authorize(client);
+  const client = w.make("displays", "apps"), auth = authorize(client);
   const first = w.desktop.screenshot(client, auth, { displayId: 2 });
   await started;
   const second = w.desktop.screenshot(client, auth, { displayId: 3 });
@@ -240,11 +239,11 @@ test("missing native Automation permission refuses a tool before its work or lau
 
 test("a helper per session, started with the preset's rules; a changed policy restarts it", async () => {
   const w = world();
-  const full = w.make("muse", "full", { hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] });
+  const full = w.make("muse", "apps");
   const shot = await w.desktop.screenshot(full, authorize(full));
   assert.equal(shot.jpeg[0], 0xff); assert.equal(shot.hidden, 2); assert.equal(shot.width, 100);
   assert.equal(w.helpers.length, 1);
-  assert.equal(w.helpers[0].rules.mode, "full");
+  assert.equal(w.helpers[0].rules.mode, "apps");
   assert.deepEqual(w.helpers[0].rules.hiddenApps, []);
   assert.deepEqual(w.helpers[0].rules.hosts, ["mac.tail1.ts.net"]);
   assert.ok(w.helpers[0].rules.protectedAppIds.includes("com.apple.keychainaccess"));
@@ -360,7 +359,7 @@ test("numbered elements need control, come back clean, and a label click goes to
   const w = world();
   const ro = w.make("ro", "readonly");
   await rejects(() => w.desktop.elements(ro, authorize(ro)), 403);
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   const found = await w.desktop.elements(full, authorize(full));
   assert.equal(found.snapshot, "ab12cd34");
   assert.deepEqual(found.items.map((item) => item.n), [1, 2], "malformed entries are dropped");
@@ -381,7 +380,7 @@ test("region observations reach the native helper with bounded scope and loading
     };
   } });
   t.after(() => w.desktop.close());
-  const client = w.make("reader", "full");
+  const client = w.make("reader", "apps");
   const result = await w.desktop.elements(client, authorize(client), { within: "Invoice A", query: "Balance", displayId: 2 });
   assert.deepEqual(w.helpers[0].requests.at(-1), { op: "elements", displayId: 2, within: "Invoice A" });
   assert.deepEqual(result.scope, { within: "Invoice A" });
@@ -436,12 +435,12 @@ test(`a look after ${input} input does not share a capture started before that i
     };
   } });
   t.after(() => { ready(); w.desktop.close(); });
-  const client = w.make("fresh", "full"), auth = authorize(client);
+  const client = w.make("fresh", "apps"), auth = authorize(client);
   const before = w.desktop.screenshot(client, auth);
   await entered;
   if (input === "browser tool") await w.desktop.withBrowser(client, chrome.id, auth, async guard => { await guard(); });
   else {
-    const actor = input === "another agent" ? w.make("actor", "full") : client;
+    const actor = input === "another agent" ? w.make("actor", "apps") : client;
     await w.desktop.act(actor, { type: "key", key: "tab" }, authorize(actor));
   }
   const after = w.desktop.screenshot(client, auth);
@@ -466,7 +465,7 @@ test("repeated post-input looks share one fresh pending capture instead of build
     };
   } });
   t.after(() => { release(); w.desktop.close(); });
-  const viewer = w.make("viewer", "full"), actor = w.make("actor", "full"), auth = authorize(viewer);
+  const viewer = w.make("viewer", "apps"), actor = w.make("actor", "apps"), auth = authorize(viewer);
   const first = w.desktop.screenshot(viewer, auth);
   await started;
   const later = [];
@@ -504,7 +503,7 @@ test("vault values reach sign-in fields hidden, never a terminal, and plain text
 
 test("typing into a browser does not certify a later terminal focus for command execution", async () => {
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   // Native focus changed to Terminal after the server's browser inspection.
   // The native helper refuses text unless its command check actually ran.
   w.setAct(action => action.terminalLikeChecked
@@ -527,7 +526,7 @@ test("a policy change while the helper starts cannot reveal a screenshot under t
 test("revocation during helper startup prevents opening an app", async () => {
   let allowed = true;
   const w = world({ onSpawn: () => { allowed = false; } });
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   const check = () => { if (!allowed) throw Object.assign(Error("Access ended."), { status: 401 }); return full; };
   await rejects(() => w.desktop.open(full, chrome.id, check), 401, /ended/);
   assert.equal(w.helpers[0].requests.some(request => request.op === "open"), false);
@@ -559,14 +558,14 @@ test("the owner's phone taking control during focus inspection prevents the queu
       return result;
     };
   } });
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   await rejects(() => w.desktop.act(full, { type: "type", text: "hello" }, authorize(full)), 409, /from your phone/, "paused");
   assert.equal(w.helpers[0].requests.some(request => request.op === "act"), false);
 });
 
 test("one agent at a time on the Mac: a short lease, the owner's phone first, helper refusals keep their kind", async () => {
   const w = world({ leaseMs: 2500 });
-  const muse = w.make("Muse", "full"), grok = w.make("Grok", "apps");
+  const muse = w.make("Muse", "apps"), grok = w.make("Grok", "apps");
   await w.desktop.act(muse, { type: "click", x: 0.5, y: 0.5 }, authorize(muse));
   const busy = await w.desktop.act(grok, { type: "click", x: 0.5, y: 0.5 }, authorize(grok)).then(() => null, (error) => error);
   assert.equal(busy.status, 409); assert.equal(busy.kind, "busy"); assert.equal(busy.holder, "Muse"); assert.ok(busy.retryInMs > 0 && busy.retryInMs <= 2500);
@@ -610,7 +609,7 @@ test("one agent at a time on the Mac: a short lease, the owner's phone first, he
 
 test("opening apps, the catalog and Reach's addresses", async () => {
   const w = world();
-  const muse = w.make("Muse", "full");
+  const muse = w.make("Muse", "apps");
   await rejects(() => w.desktop.open(muse, "Safari", authorize(muse)), 400);
   await rejects(() => w.desktop.open(muse, "/Applications/Safari.app\u0000", authorize(muse)), 400);
   const opened = await w.desktop.open(muse, chrome.id, authorize(muse));
@@ -643,7 +642,7 @@ test("native input retains the agent lease until completion, beyond its idle tim
         return send(request, beforeSend);
       };
     } });
-    const first = w.make("First", "full"), second = w.make("Second", "full");
+    const first = w.make("First", "apps"), second = w.make("Second", "apps");
     try {
       const action = () => op === "act"
         ? w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first))
@@ -683,7 +682,7 @@ test("the same agent cannot queue another input, and owner pause prevents its la
       return send(request, beforeSend);
     };
   } });
-  const first = w.make("First", "full");
+  const first = w.make("First", "apps");
   try {
     const pending = w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first));
     await entered.promise;
@@ -705,7 +704,7 @@ test("the same agent cannot queue another input, and owner pause prevents its la
 
 test("failed native input releases its operation while preserving the normal idle lease", async () => {
   const w = world();
-  const first = w.make("First", "full"), second = w.make("Second", "full");
+  const first = w.make("First", "apps"), second = w.make("Second", "apps");
   try {
     w.setAct(() => ({ error: "Protected target", kind: "blocked" }));
     await rejects(() => w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first)), 403, /Protected target/);
@@ -728,7 +727,7 @@ test("revoking a running helper holds input until native termination, then frees
     };
     helper.stop = () => { stop(); reply.reject(Object.assign(new Error("Helper stopped"), { status: 503 })); };
   } });
-  const first = w.make("First", "full"), second = w.make("Second", "full");
+  const first = w.make("First", "apps"), second = w.make("Second", "apps");
   try {
     const pending = w.desktop.act(first, { type: "click", x: 0.5, y: 0.5 }, authorize(first));
     const stopped = rejects(pending, 503, /Helper stopped/);
@@ -753,7 +752,7 @@ function inertQueueWorld() {
   child.stdin.end = () => { child.exitCode = 0; child.emit("exit", 0); };
   child.kill = () => { child.signalCode = "SIGTERM"; child.emit("exit", null, "SIGTERM"); return true; };
   const helper = new AgentDesktopHelper(child);
-  const policy = { invite: true, browser: true, preset: "full", roots: ["/tmp/synthetic"] };
+  const policy = { invite: true, browser: true, preset: "apps", roots: [], apps: [chrome] };
   const client = { id: "synthetic", kind: "agent", name: "Synthetic Agent", policy, scopes: presetScopes(policy), expiresAt: Date.now() + 60000 };
   let current = client, permitted = true, phone = false;
   const authorize = () => { if (!permitted) throw Object.assign(Error("Access ended."), { status: 401 }); return current; };
@@ -968,7 +967,7 @@ test("windows, focus, menus, find, read and open-file go through the helper unde
 
 test("the front answer carries a browser's page and tabs", async () => {
   const w = world();
-  const full = w.make("muse", "full");
+  const full = w.make("muse", "apps");
   w.setFront({ url: "https://www.amazon.ca/", tabs: [{ title: "Amazon", selected: true }, { junk: 1 }, { title: "x".repeat(200), selected: "yes" }] });
   const front = await w.desktop.front(full, authorize(full));
   assert.equal(front.url, "https://www.amazon.ca/");

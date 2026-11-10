@@ -17,7 +17,7 @@ function temporary(t) {
   return dir;
 }
 
-test('only Full and Read only authorize the exact Home, never its ancestors or system roots', (t) => {
+test('only Read only authorizes the exact Home, never its ancestors or system roots', (t) => {
   const dir = temporary(t), home = path.join(dir, 'home');
   fs.mkdirSync(path.join(home, 'Desktop'), { recursive: true });
   const runtime = path.join(home, '.runtime', 'bin', 'node');
@@ -49,25 +49,27 @@ test('Home file operations derive access from authorized policy and retain priva
     assert.doesNotMatch(request.sandbox, /allow file-write/);
     return request.op === 'read' ? { data: Buffer.from('fixture').toString('base64') } : { items: [], truncated: false };
   };
-  for (const preset of ['full', 'readonly']) {
-    const client = { id: preset, policy: policy(preset), agentRoots: [home] };
+  for (const preset of ['readonly']) {
+    const readonlyPolicy = policy(preset);
+    const client = { id: preset, kind: 'agent', policy: readonlyPolicy, scopes: presetScopes(readonlyPolicy), agentRoots: [home] };
     assert.deepEqual(await browserFileOperation({ op: 'list', root: home, path: '' }, () => client, { config: { dataDir }, run }), { items: [], truncated: false });
     assert.equal((await browserFileOperation({ op: 'read', root: home, path: 'synthetic-not-read.txt' }, () => client, { config: { dataDir }, run })).data.toString(), 'fixture');
   }
-  assert.equal(calls, 4);
+  assert.equal(calls, 2);
   for (const currentPolicy of [policy('files'), { browser: true }, undefined]) {
     await assert.rejects(browserFileOperation({ op: 'list', root: home, path: '', policy: policy('full'), allowHome: true },
       () => ({ id: 'narrow', policy: currentPolicy }), { config: { dataDir }, run }), { status: 403 });
   }
-  assert.equal(calls, 4, 'request-supplied policy/flags cannot bypass the grant');
+  assert.equal(calls, 2, 'request-supplied policy/flags cannot bypass the grant');
   let active = true;
   await assert.rejects(browserFileOperation({ op: 'list', root: home, path: '' }, () => {
     if (!active) throw Object.assign(Error('revoked fixture'), { status: 403 });
-    return { id: 'revoked', policy: policy('full') };
+    const revokedPolicy = policy('readonly');
+    return { id: 'revoked', kind: 'agent', policy: revokedPolicy, scopes: presetScopes(revokedPolicy) };
   }, { config: { dataDir }, run: async () => { active = false; return { items: [] }; } }), /revoked fixture/);
 });
 
-test('preset invitations validate explicit and default roots before any credential is issued', async (t) => {
+test('bounded preset invitations validate roots before any credential is issued', async (t) => {
   const home = fs.realpathSync.native(os.homedir());
   const config = { roots: [home] };
   let current = { id: 'owner', kind: 'device', scopes: ['admin'] };
@@ -91,20 +93,17 @@ test('preset invitations validate explicit and default roots before any credenti
   const send = (body, route = '/api/agents/browser-invitations') => fetch(`http://127.0.0.1:${server.address().port}${route}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'fixture', ttlSeconds: 600, ...body }),
   });
-  for (const preset of ['full', 'readonly']) {
-    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}) })).status, 201);
-    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}), folders: [{ root: 0, path: '' }] })).status, 201);
-  }
-  assert.equal(issued.length, 4);
+  assert.equal((await send({ preset: 'readonly' })).status, 201);
+  assert.equal((await send({ preset: 'readonly', folders: [{ root: 0, path: '' }] })).status, 201);
+  assert.equal((await send({ preset: 'full', fullControlVersion: 1 })).status, 403);
+  assert.equal(issued.length, 2);
   assert.equal((await send({ preset: 'files', folders: [{ root: 0, path: '' }] })).status, 403);
   assert.equal((await send({ folders: [{ root: 0, path: '' }] })).status, 403, 'legacy invitations remain strict');
   assert.equal((await send({ preset: 'files', folders: [{ root: 0, path: '' }], allowHome: true })).status, 400);
   config.roots = [path.parse(home).root];
-  for (const preset of ['full', 'readonly']) {
-    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}) })).status, preset === 'full' ? 201 : 403, 'full can use the whole computer');
-    assert.equal((await send({ preset, ...(preset === 'full' ? { fullControlVersion: 1 } : {}), folders: [{ root: 0, path: '' }] })).status, preset === 'full' ? 201 : 403, 'narrow presets still reject filesystem roots');
-  }
-  assert.equal(issued.length, 6, 'only Full control can cover the filesystem root');
+  assert.equal((await send({ preset: 'readonly' })).status, 403);
+  assert.equal((await send({ preset: 'readonly', folders: [{ root: 0, path: '' }] })).status, 403);
+  assert.equal(issued.length, 2, 'no preset can cover a filesystem root');
   current = { id: 'reader', kind: 'agent', policy: policy('readonly'), scopes: presetScopes(policy('readonly')), agentRoots: [home] };
   assert.equal((await send({ op: 'write', root: 0, path: 'synthetic.txt', content: 'never written' }, '/api/browser/files/change')).status, 403);
   assert.equal((await send({ preset: 'full' })).status, 403, 'an agent cannot grant itself another preset');

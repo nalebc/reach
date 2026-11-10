@@ -12,7 +12,7 @@ const names = (preset, extra) => toolsFor(presetScopes({ preset, ...extra }), ac
 test("preset credentials advertise the preset's tools over MCP", () => {
   const reusable = ["reach_tools", "reach_tool_protocol", "reach_define_tool", "reach_tool_operation", "reach_shortcuts", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"];
   const navigation = ["reach_find", "reach_menus", "reach_read_page", "reach_press", "reach_fill", "reach_wait_for", "reach_act", "reach_desktop_apps", "reach_open_app", "reach_open_bank", "reach_open_url", "reach_close_tabs", "reach_focus_window", "reach_mac_shortcuts", "reach_run_mac_shortcut"];
-  assert.deepEqual(names("full"), ["reach_access", "reach_request_permission", "reach_screenshot", "reach_front", "reach_windows", "reach_describe_screen", "reach_elements", ...navigation, "reach_open_file", ...reusable, "reach_list_files", "reach_search_files", "reach_read_file", "reach_change_file", "reach_shell", "reach_shell_history"]);
+  assert.deepEqual(names("full"), ["reach_device"], "a retired Full grant has no browser catalog; only the generic device-status tool remains in this synthetic helper fixture");
   // Apps shares no folders: no file to open.
   assert.deepEqual(names("apps"), ["reach_access", "reach_request_permission", "reach_screenshot", "reach_front", "reach_windows", "reach_describe_screen", "reach_elements", ...navigation, ...reusable]);
   assert.deepEqual(names("files"), ["reach_access", "reach_request_permission", "reach_list_files", "reach_search_files", "reach_read_file"]);
@@ -21,24 +21,19 @@ test("preset credentials advertise the preset's tools over MCP", () => {
 });
 
 test("hints say what touches the Mac and what can't be undone", () => {
-  const accessTool = toolsFor(presetScopes({ preset: "full" }), access("full")).find(tool => tool.name === "reach_access");
-  assert.match(accessTool.description, /no command deny list, protected-window filter or shell sandbox/);
-  assert.match(accessTool.description, /without asking for separate action approval/);
-  assert.match(accessTool.description, /Follow any limits the owner gives; ask for missing information/);
-  assert.match(accessTool.description, /connection approval, pause and revocation still apply/);
-  assert.doesNotMatch(accessTool.description, /anything that moves money or changes the account is refused/);
-  const tools = Object.fromEntries(toolsFor(presetScopes({ preset: "full" }), access("full")).map((tool) => [tool.name, tool.annotations]));
-  for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_windows", "reach_menus", "reach_read_page", "reach_mac_shortcuts", "reach_describe_screen", "reach_elements", "reach_desktop_apps", "reach_list_files", "reach_read_file", "reach_shell_history", "reach_shortcuts"]) assert.equal(tools[name].readOnlyHint, true, name);
+  const accessTool = toolsFor(presetScopes({ preset: "apps" }), access("apps")).find(tool => tool.name === "reach_access");
+  assert.match(accessTool.description, /ask your user before paying, sending a message or deleting something/);
+  assert.match(accessTool.description, /Bank, card and brokerage sites \(reach_open_bank\) are read-only/);
+  assert.doesNotMatch(accessTool.description, /Full control|without asking for separate action approval/);
+  const tools = Object.fromEntries(toolsFor(presetScopes({ preset: "apps" }), access("apps")).map((tool) => [tool.name, tool.annotations]));
+  for (const name of ["reach_access", "reach_screenshot", "reach_front", "reach_windows", "reach_menus", "reach_read_page", "reach_mac_shortcuts", "reach_describe_screen", "reach_elements", "reach_desktop_apps", "reach_shortcuts"]) assert.equal(tools[name].readOnlyHint, true, name);
   // Finding scrolls the window: it touches the Mac.
-  for (const name of ["reach_act", "reach_press", "reach_fill", "reach_find", "reach_focus_window", "reach_open_file", "reach_run_mac_shortcut", "reach_open_app", "reach_open_url", "reach_close_tabs", "reach_change_file", "reach_shell", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
-  for (const name of ["reach_change_file", "reach_shell", "reach_run_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
+  for (const name of ["reach_act", "reach_press", "reach_fill", "reach_find", "reach_focus_window", "reach_run_mac_shortcut", "reach_open_app", "reach_open_url", "reach_close_tabs", "reach_record_shortcut", "reach_save_shortcut", "reach_discard_shortcut", "reach_run_shortcut"]) assert.equal(tools[name].readOnlyHint, false, name);
+  for (const name of ["reach_run_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
   assert.equal(tools.reach_close_tabs.destructiveHint, true, "closing a tab can lose its unsaved page state");
-  for (const name of ["reach_act", "reach_press", "reach_fill", "reach_run_mac_shortcut", "reach_open_file"]) assert.equal(tools[name].destructiveHint, true, name);
-  assert.equal(tools.reach_execute.readOnlyHint, false);
-  assert.equal(tools.reach_execute.destructiveHint, true);
-  assert.equal(tools.reach_execute.openWorldHint, true);
-  for (const name of ["reach_act", "reach_open_url", "reach_shell", "reach_run_mac_shortcut"]) assert.equal(tools[name].openWorldHint, true, name);
-  for (const name of ["reach_access", "reach_list_files", "reach_read_file", "reach_change_file", "reach_shortcuts"]) assert.equal(tools[name].openWorldHint, false, name);
+  for (const name of ["reach_act", "reach_press", "reach_fill", "reach_run_mac_shortcut"]) assert.equal(tools[name].destructiveHint, true, name);
+  for (const name of ["reach_act", "reach_open_url", "reach_run_mac_shortcut"]) assert.equal(tools[name].openWorldHint, true, name);
+  for (const name of ["reach_access", "reach_shortcuts"]) assert.equal(tools[name].openWorldHint, false, name);
   assert.ok(Object.values(tools).every((annotations) => !("example" in annotations)));
 });
 
@@ -52,12 +47,12 @@ test("Read only and Files never advertise saved tasks, including stale cached ca
   const savedTools = [{ id: "11111111-1111-4111-8111-111111111111", name: "Open sample", stepCount: 1, inputs: [] }];
   // Saved tasks (shortcuts), not the Mac's own Shortcuts, which follow the open scope.
   const shortcut = (name) => !name.includes("mac_shortcut") && (name === "reach_shortcuts" || name.endsWith("_shortcut") || name.startsWith("reach_saved_"));
-  const available = names("full", { savedTools });
-  assert.equal(available.filter(shortcut).length, 6, "the same catalog fixture exposes five shortcut tools and one named task with Full control");
+  const available = names("apps", { savedTools });
+  assert.equal(available.filter(shortcut).length, 6, "the same catalog fixture exposes five shortcut tools and one named task to Apps agents");
   for (const preset of ["readonly", "files"]) {
     assert.deepEqual(names(preset, { savedTools }), names(preset), `${preset} ignores saved task metadata`);
     assert.deepEqual(names(preset, { write: true, savedTools }).filter(shortcut), [], `${preset} never gains desktop shortcuts from file write access`);
-    const narrowed = toolsFor(presetScopes({ preset }), access("full", { savedTools })).map((tool) => tool.name);
+    const narrowed = toolsFor(presetScopes({ preset }), access("apps", { savedTools })).map((tool) => tool.name);
     assert.deepEqual(narrowed.filter(shortcut), [], `${preset} scopes remove shortcut tools even when access metadata is stale`);
   }
 });
@@ -82,7 +77,7 @@ test("Command line tools refuse dot and empty ids before any request", async () 
 // the screen comes back with it (Oct 12: one turn per step).
 test("reach_act presses a described control by number; coordinates still work", async () => {
   const { browserToolRequest } = await import("../server/browser-tools.mjs");
-  const full = access("full");
+  const full = access("apps");
   for (const action of [
     { type: "element", snapshot: "ab12cd34", n: 7 },
     { type: "element", snapshot: "ab12cd34", n: 7, button: "right", count: 2 },
@@ -104,7 +99,7 @@ test("reach_act presses a described control by number; coordinates still work", 
 
 test("reach_act sends a batch and describe in one request; one form at a time", async () => {
   const { browserToolRequest } = await import("../server/browser-tools.mjs");
-  const full = access("full");
+  const full = access("apps");
   const actions = [{ type: "element", snapshot: "ab12cd34", n: 3 }, { type: "type", text: "diapers" }, { type: "wait", ms: 400 }, { type: "key", key: "enter" }];
   assert.deepEqual(browserToolRequest("reach_act", { actions, describe: true }, full),
     { route: "/api/browser/desktop/input", method: "POST", body: { actions, describe: true }, response: "json" });
@@ -121,7 +116,7 @@ test("reach_act sends a batch and describe in one request; one form at a time", 
 // the same checks on the Mac as a click or typing; in batches too.
 test("press, fill and wait_for map to the Mac's routes", async () => {
   const { browserToolRequest } = await import("../server/browser-tools.mjs");
-  const full = access("full");
+  const full = access("apps");
   assert.deepEqual(browserToolRequest("reach_press", { name: "Add to cart", role: "Button", describe: true }, full),
     { route: "/api/browser/desktop/input", method: "POST", body: { action: { type: "press", name: "Add to cart", role: "Button" }, describe: true }, response: "json" });
   const fields = [{ label: "Email", text: "from the vault", secret: true }, { label: "Password", text: "from the vault", secret: true }];

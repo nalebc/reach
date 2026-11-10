@@ -113,15 +113,14 @@ export function agentProfile(config, name) {
 export function applyAgentPolicy(client, config) {
   if (client.kind !== "agent") return client;
   // A preset invitation: its scopes come from the preset every time, and its
-  // folders from what Reach still shares, or the entire filesystem for Full control.
+  // folders from what Reach still shares. Legacy Full control grants fail
+  // validPresetPolicy and are rejected at authorization time.
   if (client.policy?.browser === true && client.policy.preset !== undefined) {
     const policy = client.policy;
     if (!validPresetPolicy(policy) || !Array.isArray(client.scopes) || client.browserWorkspaceId !== undefined) return null;
-    const roots = policy.preset === "full"
-      ? [...new Set([...policy.roots, path.parse(process.cwd()).root])]
-      : policy.roots.filter((root) => config.roots.some((shared) => within(shared, root)));
+    const roots = policy.roots.filter((root) => config.roots.some((shared) => within(shared, root)));
     if (policy.preset === "files" && !roots.length) return null;
-    return { ...client, scopes: presetScopes(policy), policy: { ...policy, roots, ...(policy.preset === "full" ? { hidden: [] } : {}) }, agentRoots: roots };
+    return { ...client, scopes: presetScopes(policy), policy: { ...policy, roots }, agentRoots: roots };
   }
   if (client.policy?.browser === true) {
     const policy = client.policy;

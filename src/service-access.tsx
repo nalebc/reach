@@ -153,9 +153,9 @@ export function ServiceAccessPanel({
             <ShieldCheck size={17} /> Service access
           </h3>
           <p>
-            Full control includes services in the agent's allowed browser. Other
-            invitations need approval once per session. Revoking a service stops
-            these tools; existing browser access is managed in Agent Access.
+            Service reads use the agent's allowed browser and need owner
+            approval once per session. Revoking a service stops its tools;
+            agent access is managed separately.
           </p>
         </>
       )}
@@ -178,7 +178,7 @@ export function ServiceAccessPanel({
           <p>
             {entry.permissions.join(", ")} · {entry.account}
           </p>
-          {entry.approval === "invitation" && <p>Included in Full control</p>}
+          {entry.status === "approved" && <p>Owner-approved read-only access</p>}
           <small>
             Until{" "}
             {until(

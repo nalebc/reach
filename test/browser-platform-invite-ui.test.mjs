@@ -41,7 +41,7 @@ for (const platform of ["linux", "win32"]) {
     const { container, calls } = await render(platform, { protectedFilesSupported: false, desktopAvailable: false,
       desktopReason: "The screen helper cannot run here.", filesUnsupportedReason: "The protected file helper cannot run here. Your own Files and terminals remain available." });
     const choices = Object.values(await presets(container));
-    assert.equal(choices.length, 4);
+    assert.equal(choices.length, 3);
     assert.ok(choices.every((choice) => choice.disabled));
     assert.match(container.textContent, /The screen helper cannot run here/);
     assert.match(container.textContent, /The protected file helper cannot run here/);
@@ -60,8 +60,9 @@ test("missing Mac screen permissions leave supported file invitations available"
   const { container } = await render("darwin", { protectedFilesSupported: true, desktopAvailable: false });
   const choices = await presets(container);
   assert.equal(choices.Files.disabled, false);
-  for (const label of ["Full control", "Apps", "Read only"])
+  for (const label of ["Apps", "Read only"])
     assert.equal(choices[label].disabled, true);
+  assert.equal(choices["Full control"], undefined);
   assert.match(container.textContent, /Screen presets need this Mac's Screen Recording and Accessibility/);
   assert.doesNotMatch(container.textContent, /Browser invitations currently require macOS/);
 });

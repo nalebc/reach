@@ -6,7 +6,7 @@ import {
   hasReviewControls,
 } from "./core.mjs";
 import { ServiceConnectorError } from "./service-connectors.mjs";
-import { validPresetPolicy } from "./agent-presets.mjs";
+import { PRESETS } from "./agent-presets.mjs";
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const fingerprint = (client) =>
@@ -27,8 +27,8 @@ const exact = (value, fields) => {
 };
 const copy = (value) => structuredClone(value);
 
-/** Full control includes services; narrower presets need service consent.
- * All access dies with the admitted session; no provider secrets reach the agent. */
+/** Service reads require owner consent for each bounded agent session.
+ * No provider secrets reach the agent. */
 export function createAgentServices({
   verifyClient,
   connectors = [],
@@ -68,8 +68,7 @@ export function createAgentServices({
       !Number.isFinite(client.expiresAt) ||
       client.expiresAt <= now() ||
       browserIdleEnded(client, now()) ||
-      !client.policy?.browser ||
-      !client.policy.preset ||
+      !PRESETS.includes(client.policy?.preset) ||
       !client.scopes?.includes("browser:read")
     )
       throw fail(403, "Services need an active, approved agent connection.");
@@ -150,49 +149,7 @@ export function createAgentServices({
           entry.connectorId === connectorId &&
           entry.fingerprint === fingerprint(client),
       );
-  const fullControl = (client) =>
-    client.policy.preset === "full" &&
-    validPresetPolicy(client.policy) &&
-    client.scopes.includes("browser:shell");
-  const accessFor = (client, connector) => {
-    let entry = latest(client, connector.id);
-    if (
-      !fullControl(client) ||
-      connector.unavailable?.(client) ||
-      ["approved", "denied", "revoked"].includes(entry?.status)
-    )
-      return entry;
-    // The invitation already authorizes this access. Recheck its live grant
-    // before publishing it, just as execution does. Explicit revocation stands.
-    if (fingerprint(agent(verifyClient(client.id))) !== fingerprint(client))
-      throw fail(403, "This agent's access changed. Refresh its services.");
-    if (!entry || entry.status === "expired") {
-      if (entries.size >= 500)
-        throw fail(429, "Too many service requests. Try again later.");
-      entry = {
-        id: crypto.randomUUID(),
-        clientId: client.id,
-        agentName: client.name,
-        connectorId: connector.id,
-        scopes: [...new Set(connector.actions.map((a) => a.scope))],
-        fingerprint: fingerprint(client),
-        createdAt: now(),
-      };
-      entries.set(entry.id, entry);
-    }
-    Object.assign(entry, {
-      status: "approved",
-      approval: "invitation",
-      reason: "Included in the owner's Full control invitation.",
-      expiresAt: client.expiresAt,
-      accessExpiresAt: client.expiresAt,
-    });
-    record(
-      "agent",
-      `${client.name}: ${connector.name} access included in Full control`,
-    );
-    return entry;
-  };
+  const accessFor = (client, connector) => latest(client, connector.id);
   const api = {
     catalog(authorize) {
       const client = agent(authorize());
@@ -254,15 +211,6 @@ export function createAgentServices({
       const existing = accessFor(client, connector);
       if (existing && ["pending", "approved"].includes(existing.status))
         return view(existing);
-      if (
-        fullControl(client) &&
-        existing &&
-        ["denied", "revoked"].includes(existing.status)
-      )
-        throw fail(
-          403,
-          "The owner ended this service access. Ask them to restore it.",
-        );
       if (existing && existing.createdAt > now() - 30000)
         throw fail(429, "Wait a moment before requesting this service again.");
       if (

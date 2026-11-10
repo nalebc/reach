@@ -59,6 +59,8 @@ test("app invitations guard the host before redemption and until expiry", () => 
   assert.equal(browserAppSessionActive(client, 2000), false);
   assert.equal(browserAppSessionActive({ ...client, expiresAt: undefined }, 1000), true);
   assert.equal(browserAppSessionActive({ ...client, kind: "device" }, 1000), false);
+  assert.equal(browserAppSessionActive({ kind: "agent", policy: { browser: true, preset: "full" }, status: "accepted" }, 1000), false,
+    "a revoked legacy Full control agent no longer holds the owner host guard");
   assert.equal(browserAppSessionActive({ ...client, policy: { browser: true, screen: "ask" } }, 1000), false);
   // Declined, or never claimed or answered in time: it can't act, so it
   // locks out none of the owner's other devices (security audit L2).
@@ -219,28 +221,39 @@ test("an unreadable or ambiguous client list fails closed", async () => {
   }
 });
 
-test("only pinned issuer nodes can reach APIs or public admission while app access is active", async () => {
+test("every already paired owner device retains API access and can invite agents", async () => {
   const f = fixture(); f.setActive(true); await f.guard.refresh();
   for (const url of ["/api/files", "/api/auth/requests", "/api/agents/browser-invitations"]) {
     assert.equal(f.guard.allows(f.request("nPhone", { url }), f.owner()), true);
-    assert.equal(f.guard.allows(f.request("nOther", { url }), f.owner("nOther")), false);
+    assert.equal(f.guard.allows(f.request("nOther", { url }), f.owner("nOther")), true);
+    assert.equal(f.guard.allows(f.request("nWasm", { url }), f.owner("nWasm")), true,
+      "an enrolled browser path keeps owner authority without the native Tailscale app");
     assert.equal(f.guard.allows(f.request("nOther", { url }), null), false);
+    assert.equal(f.guard.allows(f.request("nOther", { url }), f.owner()), false, "credentials cannot move between paired devices");
   }
-  await assert.rejects(f.guard.beginInvitation(f.request("nOther"), f.owner("nOther")), { status: 403 });
+  assert.equal(f.guard.allowsConnection(f.request("nOther", { url: "/ws/screen", method: "GET" })), true);
+  const otherOwnerInvite = await f.guard.beginInvitation(f.request("nOther"), f.owner("nOther"));
+  assert.deepEqual(otherOwnerInvite.approver, { nodeId: "nOther", userId: "42", clientId: "owner:nOther" });
+  otherOwnerInvite();
   const release = await f.guard.beginInvitation(f.request(), f.owner());
   assert.deepEqual(release.approver, f.grant().browserAppApprover);
   release();
 });
 
-test("browser/WASM tailnet nodes on the host cannot create invitations or use owner bearers", async () => {
+test("an unpaired browser/WASM identity cannot use owner credentials or create invitations", async () => {
   const f = fixture();
+  f.setClients([f.owner(), f.owner("nOther"), f.grant()]);
   await assert.rejects(f.guard.beginInvitation(f.request("nWasm"), f.owner("nWasm")), { status: 403 });
-  assert.equal(f.guard.isActive(), false);
   f.setActive(true);
   assert.equal(f.guard.allows(f.request("nWasm"), f.owner("nWasm")), false);
-  // Even a pre-existing record that pins a browser node is denied.
-  f.setClients([f.owner("nWasm"), f.grant("nWasm")]);
-  assert.equal(f.guard.allows(f.request("nWasm"), f.owner("nWasm")), false);
+  assert.equal(f.guard.allowsConnection(f.request("nWasm", { url: "/ws/screen", method: "GET" })), false);
+});
+
+test("agent Full control invitations are inactive and cannot reserve the owner host", () => {
+  const f = fixture();
+  f.setClients([f.owner(), { id: "legacy", kind: "agent", policy: { browser: true, preset: "full" }, expiresAt: 100000 }]);
+  assert.equal(f.guard.isActive(), false);
+  assert.equal(f.guard.allows(f.request("nHost"), f.owner("nHost")), true);
 });
 
 test("unknown, expired, tagged or mismatched peer enrollment cannot approve", async () => {
@@ -280,13 +293,13 @@ test("persisted pins survive guard recreation, but expired invitations and revok
   assert.equal(restarted.guard.allows(restarted.request("nHost"), restarted.owner("nHost")), true);
 });
 
-test("missing or fabricated approver records lock owner APIs instead of selecting another device", async () => {
+test("missing or fabricated approver records stop the agent without locking out its owner", async () => {
   const f = fixture(); await f.guard.refresh();
   for (const browserAppApprover of [undefined, {}, { nodeId: "nPhone", userId: "42", clientId: "missing" },
     { nodeId: "nOther", userId: "42", clientId: f.owner().id }]) {
     f.setClients([f.owner(), { ...f.grant(), browserAppApprover }]);
     assert.equal(f.guard.isActive(), true);
-    assert.equal(f.guard.allows(f.request(), f.owner()), false);
+    assert.equal(f.guard.allows(f.request(), f.owner()), true, "the already paired owner still has authority");
   }
 });
 
@@ -331,7 +344,7 @@ test("guest coexistence requires trusted identity and explicit approval for brow
   // An existing native person retains its already bound grant.
   const native = person({ tailscale: { nodeId: "nOther", userId: "42" } });
   assert.equal(f.guard.allows(f.request("nOther"), native), true);
-  assert.equal(f.guard.allows(f.request("nOther"), f.owner("nOther")), false);
+  assert.equal(f.guard.allows(f.request("nOther"), f.owner("nOther")), true);
   f.setClients([f.owner(), f.grant(), approved]);
   assert.equal(f.guard.allowsConnection(f.request("nWasm", { url: "/ws/presence", method: "GET" })), true);
   assert.equal(f.guard.allowsConnection(f.request("nStranger")), false);

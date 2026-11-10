@@ -12,10 +12,10 @@ const reply = (body, status = 200) => new Response(JSON.stringify(body), { statu
 const chrome = { id: "/Applications/Google Chrome.app", name: "Google Chrome", bundleId: "com.google.Chrome" };
 const session = (id, overrides = {}) => ({
   id, name: "Muse", kind: "agent", status: "accepted", createdAt: Date.now() - 60000, expiresAt: Date.now() + 900000,
-  folders: ["/Users/me"], pendingApprovals: 0, activity: { state: "idle" },
-  scopes: ["device", "browser:read", "files:read", "browser:write", "browser:screen", "browser:control", "browser:open", "browser:shell"],
-  policy: { invite: true, browser: true, preset: "full", roots: ["/Users/me"], hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] },
-  preset: "full", using: { at: Date.now(), kind: "click", app: "Google Chrome", bundle: "com.google.Chrome", name: "Muse" }, holdsMac: true,
+  folders: [], pendingApprovals: 0, activity: { state: "idle" },
+  scopes: ["device", "browser:read", "browser:screen", "browser:control", "browser:open"],
+  policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [chrome] },
+  preset: "apps", using: { at: Date.now(), kind: "click", app: "Google Chrome", bundle: "com.google.Chrome", name: "Muse" }, holdsMac: true,
   ...overrides,
 });
 before(async () => {
@@ -58,10 +58,10 @@ test("the panel names the preset, what the agent is using, and pauses it", async
   const view = await dom.render(panel("muse-1"));
   views.add(view);
   const c = view.container;
-  await dom.waitFor(() => /Full control/.test(c.textContent));
+  await dom.waitFor(() => /Apps/.test(c.textContent));
   assert.match(c.textContent, /Using\s*Google Chrome/);
-  assert.doesNotMatch(c.textContent, /Hidden from it/, "legacy hidden selections do not constrain Full control");
-  assert.match(c.textContent, /Reads and changes/);
+  assert.doesNotMatch(c.textContent, /Hidden from it/);
+  assert.match(c.textContent, /No folders/);
   assert.doesNotMatch(c.textContent, /view-only/i);
   await click(button(c, "Pause"));
   await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/browser/agents/pause"));
@@ -86,23 +86,23 @@ test("an Always agent's panel has no Reopen link, since its one link already wor
   assert.equal(button(view.container, "Reopen link"), undefined);
 });
 
-test("Edit access offers the presets and saves the chosen one", async () => {
+test("Edit access offers only bounded presets and saves the chosen one", async () => {
   const calls = mock(() => [session("muse-1")]);
   const view = await dom.render(editor(session("muse-1")));
   views.add(view);
   const sheet = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
   const titles = [...sheet.querySelectorAll('[aria-label="Access preset"] input')].map((input) => [input.getAttribute("aria-label"), input.disabled]);
-  assert.deepEqual(titles, [["Full control", false], ["Apps", false], ["Files", false], ["Read only", false]]);
-  assert.equal(sheet.querySelector('[aria-label="Access preset"] input:checked').getAttribute("aria-label"), "Full control");
+  assert.deepEqual(titles, [["Apps", false], ["Files", false], ["Read only", false]]);
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input:checked').getAttribute("aria-label"), "Apps");
   await click(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Read only"]'));
   await click(button(sheet, "Save"));
   await dom.waitFor(() => calls.some(([method, route]) => method === "POST" && route === "/api/guests/muse-1/access"));
   assert.deepEqual(calls.find(([method, route]) => method === "POST" && route === "/api/guests/muse-1/access")[2], {
-    preset: "readonly", folders: [{ root: 0, path: "" }], hidden: [{ id: "/System/Applications/Messages.app" }],
+    preset: "readonly", folders: [], hidden: [],
   });
 });
 
-test("a Files agent has nothing to pause and cannot be raised into Full control or Apps", async () => {
+test("a Files agent has nothing to pause and cannot be raised into Apps", async () => {
   const reader = session("files-3", { name: "Reader", preset: "files", holdsMac: false, using: undefined, folders: ["/Users/me/Desktop"], policy: { invite: true, browser: true, preset: "files", roots: ["/Users/me/Desktop"], write: true } });
   mock(() => [reader]);
   const view = await dom.render(panel("files-3"));
@@ -112,35 +112,37 @@ test("a Files agent has nothing to pause and cannot be raised into Full control 
   const edit = await dom.render(editor(reader));
   views.add(edit);
   const sheet = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
-  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]').disabled, true);
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]'), null);
   assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Apps"]').disabled, true);
-  assert.match(sheet.textContent, /Needs a new invitation from your phone/);
   assert.equal(sheet.querySelector('[aria-label="Can edit files"]').checked, true);
 });
 
-test("Apps needs a new invitation for Full control, and Read only still reports its hidden apps", async () => {
+test("access edits offer no Full control, and Read only still reports its hidden apps", async () => {
   const appAgent = session("apps-4", { preset: "apps", folders: [], policy: { invite: true, browser: true, preset: "apps", roots: [], apps: [chrome] } });
   const readonly = session("reader-5", { preset: "readonly", policy: { invite: true, browser: true, preset: "readonly", roots: ["/Users/me"], hidden: [{ id: "/System/Applications/Messages.app", name: "Messages" }] } });
   mock(() => [appAgent, readonly]);
   const edit = await dom.render(editor(appAgent));
   views.add(edit);
   const sheet = await dom.waitFor(() => dom.document.querySelector('[aria-label="Edit agent access"]'));
-  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]').disabled, true);
+  assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Full control"]'), null);
   assert.equal(sheet.querySelector('[aria-label="Access preset"] input[aria-label="Apps"]').disabled, false);
-  assert.match(sheet.textContent, /Needs a new invitation from your phone/);
+  assert.doesNotMatch(sheet.textContent, /Full control/);
   const view = await dom.render(panel("reader-5"));
   views.add(view);
   await dom.waitFor(() => /Hidden from it/.test(view.container.textContent));
   assert.match(view.container.textContent, /Hidden from it\s*Messages/);
 });
 
-test("agent cards render without React warnings", () => assert.deepEqual(dom.errors, []));
+test("agent cards render without React warnings", () => {
+  const reactWarnings = dom.errors.filter((warning) => !warning.includes("ExperimentalWarning: localStorage is not available"));
+  assert.deepEqual(reactWarnings, [], JSON.stringify(reactWarnings));
+});
 
 test("an older Full control grant explains re-invitation and offers no pause or access edit", async () => {
   mock(() => [session("old-full", { needsInvitation: true, status: "expired" })]);
   const view = await dom.render(panel("old-full"));
   views.add(view);
-  await dom.waitFor(() => /Create a new invitation to approve unrestricted access/.test(view.container.textContent));
+  await dom.waitFor(() => /Full control for agents is no longer available/.test(view.container.textContent));
   assert.equal(button(view.container, "Pause"), undefined);
   assert.equal(button(view.container, "Edit access"), undefined);
 });

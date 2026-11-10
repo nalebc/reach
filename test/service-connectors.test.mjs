@@ -9,10 +9,7 @@ import { createServiceConnectors } from "../server/service-connectors.mjs";
 import { createAgentTools } from "../server/agent-tools.mjs";
 import { browserToolsFor } from "../server/browser-tools.mjs";
 import { agentRequestTimeout } from "../server/agent-transport.mjs";
-import {
-  FULL_CONTROL_VERSION,
-  presetScopes,
-} from "../server/agent-presets.mjs";
+import { presetScopes } from "../server/agent-presets.mjs";
 import {
   toolAppsFor,
   toolBrowserFixture,
@@ -165,41 +162,21 @@ for (const [platform, browser, alternate] of [
     );
   });
 
-  test(`${platform}/${browser}: Full control runs the Gmail adapter directly using its invitation grant`, async (t) => {
+  test(`${platform}/${browser}: legacy Full control has no service tools or implicit service approval`, async (t) => {
     const f = setup(t);
     f.client.policy = {
       invite: true,
       browser: true,
       preset: "full",
-      fullControlVersion: FULL_CONTROL_VERSION,
+      fullControlVersion: 1,
       roots: [],
     };
-    f.client.scopes = presetScopes(f.client.policy);
-    const result = await f.run("gmail", "find", {
-      browser,
-      account: "0",
-      query: "invoice",
-    });
-    assert.equal(result.data.items[0].label, "Invoice October");
-    const catalog = f.services.catalog(f.authorize);
-    assert.ok(
-      catalog.connectors.every(
-        (connector) => connector.access.status === "approved",
-      ),
-    );
-    const tools = browserToolsFor({ preset: "full", services: catalog });
-    assert.equal(
-      tools.find((tool) => tool.name === "reach_service_request")
-        .approvalRequired,
-      false,
-    );
-    assert.match(
-      tools.find((tool) => tool.name === "reach_service_gmail_find").description,
-      /Run directly/,
-    );
-    assert.ok(
-      f.services.inspect().every((entry) => entry.approval === "invitation"),
-    );
+    f.client.scopes = ["device", "browser:read", "browser:shell"];
+    assert.throws(() => f.services.catalog(f.authorize), { status: 403 });
+    await assert.rejects(f.run("gmail", "find", { browser, account: "0", query: "invoice" }), { status: 403 });
+    assert.deepEqual(browserToolsFor({ preset: "full", services: { connectors: [] } }), []);
+    assert.equal(f.driver.calls.length, 0);
+    assert.deepEqual(f.services.inspect(), []);
   });
 
   test(`${platform}/${browser}: Walmart selection tracks an actual interpreter handle and never accepts a handle from another browser`, async (t) => {
@@ -227,7 +204,9 @@ for (const [platform, browser, alternate] of [
   test(`${platform}/${browser}: Files/Read only/hidden browser permissions cannot be bypassed by a service grant`, async (t) => {
     const f = setup(t);
     for (const preset of ["files", "readonly"]) {
-      f.client.policy.preset = preset;
+      const { apps: _apps, ...bounded } = f.client.policy;
+      f.client.policy = { ...bounded, preset };
+      f.client.scopes = presetScopes(f.client.policy);
       const catalog = f.services.catalog(f.authorize);
       assert.ok(catalog.connectors.every((c) => c.unavailable));
       assert.ok(
@@ -237,8 +216,9 @@ for (const [platform, browser, alternate] of [
       );
       assert.throws(() => f.approve("walmart"), /Agent Access/);
     }
-    f.client.policy = { browser: true, preset: "full", hidden: toolAppsFor(platform) };
-    assert.throws(() => f.approve("gmail"), /Agent Access/);
+    f.client.policy = { invite: true, browser: true, preset: "full", fullControlVersion: 1, roots: [] };
+    f.client.scopes = ["device", "browser:read", "browser:shell"];
+    assert.throws(() => f.approve("gmail"), { status: 403 });
     assert.equal(f.driver.calls.length, 0);
   });
 
@@ -360,23 +340,7 @@ test(
       ).status,
       403,
     );
-    const full = await f.join({ name: "Trusted helper", preset: "full" });
-    const direct = await full.as("/api/browser/services/run", {
-      method: "POST",
-      body: { ...payload, requestId: crypto.randomUUID() },
-    });
-    assert.equal(direct.status, 200, JSON.stringify(direct.body));
-    assert.equal(direct.body.data.items[0].label, "Invoice October");
-    const services = await full.as("/api/browser/services");
-    assert.ok(
-      services.body.connectors.every(
-        (connector) => connector.access.status === "approved",
-      ),
-    );
-    assert.ok(
-      services.body.connectors.every(
-        (connector) => connector.access.approval === "invitation",
-      ),
-    );
+    const legacyInvite = await f.invite({ name: "Trusted helper", preset: "full", fullControlVersion: 1 });
+    assert.equal(legacyInvite.status, 403, JSON.stringify(legacyInvite.body));
   },
 );

@@ -97,11 +97,11 @@ export function isBrowserPrivatePath(target, privatePaths, { platform = process.
     privatePaths.some(p => absolute === p || absolute.startsWith(p + path.sep));
 }
 
-// Narrow file grants stay in data/project folders. The owner-issued Full and
-// Read only presets also permit the exact Home they advertise; their operations
-// still enforce private-name/path exclusions and the native descriptor boundary.
+// Narrow file grants stay in data/project folders. Read only may include the
+// exact Home it advertises; operations still enforce private paths and the
+// native descriptor boundary.
 export function validateBrowserRoot(root, { home = os.homedir(), runtime = process.execPath, policy, platform = process.platform, env = process.env } = {}) {
-  const homePreset = policy?.browser === true && ['full', 'readonly'].includes(policy.preset);
+  const homePreset = policy?.browser === true && policy.preset === 'readonly';
   const error = () => Object.assign(new Error(homePreset
     ? 'Choose Home, a project folder or Desktop. System and application installation folders cannot be shared with agents.'
     : 'Choose a project folder or Desktop. Home, system, and application installation folders cannot be shared with agents.'), { status: 403 });
@@ -112,7 +112,6 @@ export function validateBrowserRoot(root, { home = os.homedir(), runtime = proce
   if (!path.isAbsolute(root)) throw error();
   const canonical = value => { try { return fs.realpathSync.native(value); } catch { return path.resolve(value); } };
   const selected = canonical(root);
-  if (policy?.browser === true && policy.preset === 'full') return selected;
   const within = (value, parent) => value === parent || value.startsWith(parent + path.sep);
   const protectedRoots = ['/Applications', path.join(home, 'Applications'), '/Library', '/System', '/usr', '/bin', '/sbin', '/opt', '/private/etc', '/etc', path.dirname(runtime)]
     .flatMap(value => [path.resolve(value), canonical(value)]);
@@ -140,11 +139,6 @@ function validateBrowserRootWindows(root, { home, runtime, policy, env, homePres
   const canonical = windowsCanonicalPath(root);
   const homeCanonical = windowsCanonicalPath(home);
   const driveRoot = /^[a-z]:\\$/.test(canonical);
-  // Full control may share the exact drive/Home it advertises; its operations
-  // still enforce the private-name/path exclusions and the broker boundary.
-  // The root is returned unchanged (actual case) so the caller's `=== root`
-  // identity check holds; comparisons here and in the helper fold case.
-  if (policy?.browser === true && policy.preset === 'full') return root;
   const programData = abs(env.ProgramData) || abs(env.ALLUSERSPROFILE) || 'C:\\ProgramData';
   const systemRoot = abs(env.SystemRoot) || abs(env.windir) || 'C:\\Windows';
   const protectedRoots = [systemRoot, abs(env.ProgramFiles) || 'C:\\Program Files', abs(env['ProgramFiles(x86)']) || 'C:\\Program Files (x86)',

@@ -14,7 +14,7 @@ const textEdit = "/Applications/TextEdit.app", notes = "/Applications/Notes.app"
 const apple = "a".repeat(64), noteSignature = "b".repeat(64), processInstance = "c".repeat(64);
 const ownerAccount = { userId: "42", login: "owner@example.test" };
 const ORIGIN = "https://computer.example.ts.net";
-const addresses = { nPhone: "100.64.0.1", nHost: "100.64.0.2", nOther: "100.64.0.3", nWasm: "100.64.0.4", nAgent: "100.64.0.5" };
+const addresses = { nPhone: "100.64.0.1", nHost: "100.64.0.2", nOther: "100.64.0.3", nWasm: "100.64.0.4", nAgent: "100.64.0.5", nLoose: "100.64.0.6" };
 const identity = (nodeId) => ({ nodeId, userId: nodeId === "nAgent" ? "" : "42", tagged: nodeId === "nAgent", validUntil: Date.now() + 60000 });
 
 // Real HTTP through the protected Unix listener exercises the actual trusted
@@ -67,6 +67,7 @@ async function fixture(t, hooks = {}) {
         other: { ID: "nOther", OS: "darwin", UserID: 42, Online: true },
         wasm: { ID: "nWasm", OS: "js", UserID: 42, Online: true },
         agent: { ID: "nAgent", OS: "js", Tags: ["tag:agent"] },
+        loose: { ID: "nLoose", OS: "iOS", UserID: 42, Online: true },
       } }) },
   });
   const owners = Object.fromEntries(["nPhone", "nHost", "nOther", "nWasm"].map((nodeId) =>
@@ -163,16 +164,20 @@ test("owner grants one requested app for one invitation and same-name new invite
   assert.equal((await next.as("/api/browser/apps/requests", { method: "POST", body: { appId: terminal, mode: "view" } })).status, 403);
 });
 
-test("private HTTP guard blocks host owner reads/admission and unpinned or browser-node owners", platform, async (t) => {
+test("active agents cannot block paired owner devices or let unpaired devices into owner APIs", platform, async (t) => {
   const f = await fixture(t);
   for (const node of ["nHost", "nWasm"])
     assert.equal((await f.invite(undefined, { node })).status, 403);
   const created = await f.invite(); assert.equal(created.status, 201, JSON.stringify(created.body));
-  for (const node of ["nHost", "nOther", "nWasm"])
+  for (const node of ["nHost", "nLoose", "nAgent"])
     for (const [route, method, body] of [["/api/clients", "GET"], ["/api/device", "GET"],
       ["/api/auth/requests", "POST", { name: "Browser escalation" }]])
       assert.equal((await f.call(route, { node, method, body })).status, 403, `${node} ${route}`);
-  assert.equal((await f.call("/api/clients")).status, 200);
+  for (const node of ["nPhone", "nOther", "nWasm"])
+    for (const route of ["/api/clients", "/api/device"])
+      assert.equal((await f.call(route, { node })).status, 200, `${node} ${route}`);
+  assert.equal((await f.invite(undefined, { node: "nOther" })).status, 201, "another paired owner can also manage Reach");
+  assert.equal((await f.invite(undefined, { node: "nWasm" })).status, 403, "a paired browser path can manage Reach but cannot use native-only invite proof");
   const stored = f.reach.auth.list().find((client) => client.id === created.body.clientId);
   assert.deepEqual(stored.browserAppApprover, { nodeId: "nPhone", userId: "42", clientId: f.owners.nPhone.clientId });
 });

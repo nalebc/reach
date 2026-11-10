@@ -6,7 +6,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { createReach } from "../server/index.mjs";
 import { ALL_SCOPES } from "../server/core.mjs";
-import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs";
 
 const tick = () => new Promise(setImmediate);
 async function until(check) {
@@ -149,18 +148,6 @@ test("coding cancellation has its own per-agent budget", async t => {
   assert.equal((await h.call("/api/coding-tasks")).status, 200, "cancellation does not consume reads");
 });
 
-test("coding creation keeps the same budget after an admitted Full control agent rotates credentials", privateIngressTest, async t => {
-  const p = provider();
-  const f = await presetFixture(t, { overrides: { agentSessions: p.sessions } });
-  const agent = await f.join({ preset: "full", folders: [{ root: 0, path: "Desktop/Project" }] });
-  const body = { requestId: "rotation-rate-limit", agent: "codex", task: "Inspect the disposable fixture", root: 0, path: "" };
-  for (let i = 0; i < 20; i++) assert.equal((await agent.as("/api/coding-tasks", { method: "POST", body })).status, 202);
-  const rotated = await agent.as("/api/device/rotate", { method: "POST", body: {} });
-  assert.equal(rotated.status, 200);
-  assert.equal((await f.call("/api/coding-tasks", { node: "nAgent", token: rotated.body.token, method: "POST", body })).status, 429);
-  assert.equal(p.runs.size, 1);
-});
-
 test("HTTP access revocation interrupts delegated work", async t => {
   const h = await fixture(t);
   const start = await h.call("/api/coding-tasks", h.first.token, "POST", h.input("rotate-request"));
@@ -170,30 +157,4 @@ test("HTTP access revocation interrupts delegated work", async t => {
   assert.equal(revoke.status, 200, JSON.stringify(revoke.body));
   await until(() => h.stopped.length === 1);
   assert.equal((await h.call(`/api/coding-tasks/${start.body.id}`, h.first.token)).status, 401);
-});
-
-test("Full control can delegate Claude; owner pause and supervising-device loss end its task", privateIngressTest, async t => {
-  const p = provider();
-  const f = await presetFixture(t, { overrides: { agentSessions: p.sessions } });
-  const grok = await f.join({ preset: "full", folders: [{ root: 0, path: "Desktop/Project" }] });
-  const start = await grok.as("/api/coding-tasks", { method: "POST", body: { requestId: "full-claude-one", agent: "claude", task: "Edit the disposable project", root: 0, path: "" } });
-  assert.equal(start.status, 202, JSON.stringify(start.body));
-  await until(() => p.runs.size === 1);
-  const rotated = await grok.as("/api/device/rotate", { method: "POST", body: {} });
-  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
-  assert.equal((await f.call(`/api/coding-tasks/${start.body.id}`, { node: "nAgent", token: rotated.body.token })).status, 200, "rotation preserves the creating client ID");
-  const paused = await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: grok.created.clientId, paused: true } });
-  assert.equal(paused.status, 200, JSON.stringify(paused.body));
-  await until(() => p.stopped.length === 1);
-  assert.equal((await grok.as(`/api/coding-tasks/${start.body.id}`)).body.status, "cancelled", "a paused agent can still read its own result");
-  const blocked = await grok.as("/api/coding-tasks", { method: "POST", body: { requestId: "paused-claude", agent: "claude", task: "This must not start" } });
-  assert.equal(blocked.status, 409);
-  await f.call("/api/browser/agents/pause", { method: "POST", body: { clientId: grok.created.clientId, paused: false } });
-  const next = await grok.as("/api/coding-tasks", { method: "POST", body: { requestId: "owner-device-loss", agent: "claude", task: "Another disposable task" } });
-  assert.equal(next.status, 202, JSON.stringify(next.body));
-  await until(() => p.runs.size === 2);
-  f.reach.auth.revoke(f.owners.nPhone.clientId);
-  await f.reach.codingTasks.sweep();
-  await until(() => p.stopped.length === 2);
-  assert.equal(p.stopped.length, 2);
 });

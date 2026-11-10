@@ -6,6 +6,7 @@ import { desktopBinary, spawnVerified } from './desktop-native.mjs';
 import { fail } from './core.mjs';
 import { browserPrivatePaths, browserPrivateNames, validateBrowserRoot } from './browser-private-paths.mjs';
 import { encodeSandboxRequest, createSandboxFrameReader } from './windows-sandbox.mjs';
+import { validPresetPolicy } from './agent-presets.mjs';
 
 let defaultCache;
 const cache = () => defaultCache ||= fs.mkdtempSync(path.join(os.tmpdir(), 'reach-browser-files-'));
@@ -58,7 +59,11 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
     return client;
   };
   const client = check();
-  const fullControl = client?.policy?.browser === true && client.policy.preset === 'full';
+  const writeOps = ['mkdir', 'touch', 'rm', 'cp', 'write'];
+  if (client?.kind !== 'agent' || !validPresetPolicy(client.policy) ||
+      !['files', 'readonly'].includes(client.policy.preset) || !client.scopes?.includes('files:read') ||
+      (writeOps.includes(input?.op) && !(client.policy.preset === 'files' && client.policy.write === true)))
+    throw fail(403, 'This agent has no file access.');
   if (typeof client?.id === 'string' && client.id) clientId = client.id;
   if (activeOperations >= 4 || (clientId && (activeClients.get(clientId) || 0) >= 2))
     throw fail(429, 'Wait for a file operation to finish before starting another.');
@@ -67,7 +72,7 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
   try {
     const absoluteRoot = typeof input.root === 'string' && (process.platform === 'win32' ? path.win32.isAbsolute(input.root) || /^[a-z]:/i.test(input.root) : path.isAbsolute(input.root));
     if (!allowed.has(input?.op) || !relative(input.path ?? '') || (input.op === 'cp' && !relative(input.to)) ||
-        !absoluteRoot || (!fullControl && input.root === '/') ||
+        !absoluteRoot || input.root === '/' ||
         (input.maxBytes !== undefined && (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 25 * 1024 * 1024)))
       throw fail(400, 'Choose a supported operation inside the shared folder.');
     // A trusted injected runner can exercise this JS contract on other hosts.
@@ -80,7 +85,7 @@ export async function browserFileOperation(input, authorize, { config = { dataDi
     if (!root.isDirectory() || root.isSymbolicLink()) throw fail(403, 'The shared folder changed.');
     const request = { op: input.op, root: input.root, rootDev: String(root.dev), rootIno: String(root.ino), path: input.path ?? '',
       ...(input.to !== undefined ? { to: input.to } : {}), maxBytes: input.maxBytes ?? 1024 * 1024, maxEntries: input.maxEntries ?? 2000,
-      fullControl, privatePaths: fullControl ? [] : [...browserPrivatePaths(config), ...(input.privatePaths ?? [])], privateNames: fullControl ? [] : [...browserPrivateNames] };
+      fullControl: false, privatePaths: [...browserPrivatePaths(config), ...(input.privatePaths ?? [])], privateNames: [...browserPrivateNames] };
     if (input.op === 'write') {
       if (typeof input.data !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.data) || input.data.length > Math.ceil(1048576 / 3) * 4)
         throw fail(413, 'Write up to 1 MiB of content.');

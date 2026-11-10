@@ -78,7 +78,7 @@ const open = async ({ connect = "page", keyPeer = peer, onSetup = () => {} } = {
   let made;
   const view = await render(React.createElement(BrowserInvite, { peer, device, keyPeer, onSetup, onCreated: (...args) => { made = args; } }));
   const c = view.container;
-  await dom.waitFor(() => preset(c, "Full control"));
+  await dom.waitFor(() => preset(c, "Apps"));
   await settle(40);
   if (connect === "page") await click(place(c, "Web link"));
   return { c, made: () => made };
@@ -89,23 +89,22 @@ const message = (c) => c.querySelector('textarea[aria-label="AI browser invitati
 const PAGE = "Open this link in your browser, then I approve the code it shows. Keep the link: it brings this browser back.";
 const pageMessage = `${PAGE}\n\nhttps://mac.tail.ts.net/agent-browser#invite=${secret}`;
 
-test("Full control: chosen with a check, made with Create invite, nothing else to fill", async () => {
+test("agents can choose only bounded presets", async () => {
   const calls = mock();
   const { c, made } = await open();
   const name = c.querySelector('[aria-label="AI browser name"]').value;
   assert.match(name, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
   assert.match(c.textContent, /What can it do\?/);
   assert.equal(button(c, "Create invite").disabled, true, "a choice first");
-  assert.deepEqual(presets(c).map((b) => b.getAttribute("aria-label")), ["Full control", "Apps", "Files", "Read only"]);
+  assert.deepEqual(presets(c).map((b) => b.getAttribute("aria-label")), ["Apps", "Files", "Read only"]);
   assert.ok(presets(c).every((b) => b.getAttribute("aria-checked") === "false"), "nothing chosen for you");
-  assert.match(c.textContent, /Every app, file and command\./);
-  await choose(c, "Full control");
-  assert.equal(preset(c, "Full control").getAttribute("aria-checked"), "true");
+  assert.doesNotMatch(c.textContent, /Full control can access passwords|Every app, file and command/);
+  await choose(c, "Read only");
+  assert.equal(preset(c, "Read only").getAttribute("aria-checked"), "true");
   assert.equal(issued(calls), undefined, "choosing sends nothing");
-  assert.match(c.textContent, /Full control can access passwords/);
   await create(c);
   await dom.waitFor(() => issued(calls));
-  assert.deepEqual(issued(calls), { name, transport: "funnel", ttlSeconds: 1800, preset: "full", fullControlVersion: 1 });
+  assert.deepEqual(issued(calls), { name, transport: "funnel", ttlSeconds: 1800, preset: "readonly" });
   await dom.waitFor(() => c.querySelector('[aria-label="AI browser invitation message"]'));
   await dom.waitFor(() => dom.document.activeElement.textContent === `${name} is invited`);
   assert.equal(dom.document.activeElement.textContent, `${name} is invited`, "focus moves to the result after creation");
@@ -174,7 +173,7 @@ test("a day of access is offered only when the server allows it", async () => {
   const { c } = await open();
   assert.match((await openMenu(c, "Expires")).textContent, /A day is long for an agent on your Mac/);
   await pick(c, "Expires", "24 hours");
-  await choose(c, "Full control");
+  await choose(c, "Read only");
   await create(c);
   await dom.waitFor(() => issued(calls));
   assert.equal(issued(calls).ttlSeconds, 86400);
@@ -208,7 +207,7 @@ test("without the Mac's screen helpers, only Files can be created, and the form 
   mock({ desktopAvailable: false });
   const { c } = await open();
   await dom.waitFor(() => preset(c, "Apps").disabled);
-  for (const title of ["Full control", "Apps", "Read only"]) assert.equal(preset(c, title).disabled, true, title);
+  for (const title of ["Apps", "Read only"]) assert.equal(preset(c, title).disabled, true, title);
   assert.equal(preset(c, "Files").disabled, false);
   assert.match(c.textContent, /Screen presets need this Mac's Screen Recording and Accessibility/);
 });
@@ -220,11 +219,11 @@ test("Tools: the same preset, one command through the public link (the private a
   await click(place(c, "Command"));
   assert.match(c.textContent, /It runs one command in its terminal\./);
   assert.equal(await offered(c, "Expires", "Always"), true, "Always over the public link too");
-  await choose(c, "Full control");
+  await choose(c, "Read only");
   await create(c);
   await dom.waitFor(() => made());
   assert.equal(issued(calls).transport, "funnel", "through the public link, even where invite keys exist");
-  assert.equal(issued(calls).preset, "full");
+  assert.equal(issued(calls).preset, "readonly");
   assert.equal(calls.find(([, route]) => route === "/api/guests/key"), undefined, "no Tailscale key");
   const text = message(c);
   // A line and the link, which explains itself (its steps at /agent); the
@@ -290,7 +289,7 @@ test("Tools without invite links: one command through the public link, no key as
 test("Tools on a computer that names no runtime: no link, the invitation taken back", async () => {
   const calls = mock({ runtime: "" });
   const { c, made } = await open({ connect: "default" });
-  await choose(c, "Full control");
+  await choose(c, "Read only");
   await create(c);
   await dom.waitFor(() => c.querySelector(".ag-error"));
   assert.match(c.querySelector(".ag-error").textContent, /Update Reach on that computer to invite agents from it/);
@@ -307,10 +306,12 @@ test("a Windows PC is called a Windows PC in the message", async () => {
   let made;
   const view = await render(React.createElement(BrowserInvite, { peer: windows, device: { ...device, platform: "win32" }, keyPeer: null, onSetup: () => {}, onCreated: (...args) => { made = args; } }));
   const c = view.container;
-  await dom.waitFor(() => preset(c, "Full control"));
+  await dom.waitFor(() => preset(c, "Apps"));
   await settle(40);
-  assert.ok(presets(c).every(p => !p.disabled), "all four presets are offered when the PC supports them");
-  await choose(c, "Full control");
+  assert.equal(presets(c).length, 3, "the PC offers only the bounded presets");
+  assert.ok(presets(c).every(p => !p.disabled), "the presets are available when the PC supports them");
+  await choose(c, "Apps");
+  await click(c.querySelector('[aria-label="Allow Google Chrome"]'));
   assert.doesNotMatch(c.textContent, /within macOS permissions/);
   await create(c);
   await dom.waitFor(() => made);
@@ -327,7 +328,7 @@ test("a Windows PC that cannot prepare its helpers names the reasons on the invi
     keyPeer: null, onSetup: () => {}, onCreated: () => {},
   }));
   const c = view.container;
-  await dom.waitFor(() => presets(c).length === 4 && presets(c).every(p => p.disabled));
+  await dom.waitFor(() => presets(c).length === 3 && presets(c).every(p => p.disabled));
   assert.match(c.textContent, /could not prepare screen access/);
   assert.match(c.textContent, /could not prepare protected file access/);
   assert.doesNotMatch(c.textContent, /requires macOS|require macOS/);
@@ -349,4 +350,7 @@ test("the three messages: a line each, the link after a blank line, short", asyn
   assert.match(agentInviteMessage("tools", "LINK", "computer"), /^Connect to my computer with Reach/);
 });
 
-test("the invite form renders without React warnings", () => assert.deepEqual(dom.errors, []));
+test("the invite form renders without React warnings", () => {
+  const reactWarnings = dom.errors.filter((warning) => !warning.includes("ExperimentalWarning: localStorage is not available"));
+  assert.deepEqual(reactWarnings, [], JSON.stringify(reactWarnings));
+});

@@ -6,8 +6,8 @@ import path from "node:path";
 import { createAgentShell } from "../server/agent-shell.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 
-// The Full control shell, with the command runner replaced: what gets refused,
-// what gets logged, and what the command would run with.
+// Exercise the legacy shell helper in isolation with a synthetic authorizer.
+// Browser-agent admission no longer issues these scopes (agent-presets.test).
 function world({ run, append } = {}) {
   const records = [];
   const commandLog = { append: async (record) => { records.push(structuredClone(record)); await append?.(record); }, history: async ({ clientId }) => records.filter((r) => r.clientId === clientId) };
@@ -16,7 +16,7 @@ function world({ run, append } = {}) {
   const shell = createAgentShell({ commandLog, hosts: () => ["mac.tail1.ts.net"], protectedPaths: () => ["/Users/me/code/reach", "/Users/me/.reach"], protectedPids: () => [4242, 4243],
     home: "/Users/me", run: runner, timeoutMs: 1000, now: () => 123 });
   const policy = { invite: true, browser: true, preset: "full", roots: ["/Users/me"] };
-  const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: 999999, policy, scopes: presetScopes(policy), agentRoots: ["/Users/me"] };
+  const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: 999999, policy, scopes: ["device", "browser:read", "browser:shell"], agentRoots: ["/Users/me"] };
   const resolve = (root, cwd, who) => { if (cwd.includes("..")) throw Object.assign(Error("Stay inside."), { status: 403 }); return `/Users/me/${cwd}`.replace(/\/$/, ""); };
   return { shell, records, calls, client, resolve, authorize: () => client };
 }
@@ -68,7 +68,7 @@ test("a native shell that cannot start fails its log record and releases capacit
     actions: (...args) => actions.push(args) });
   const policy = { preset: "full", roots: [directory] };
   const client = { id: "native-agent", name: "Native agent", policy,
-    expiresAt: Date.now() + 10000, scopes: presetScopes(policy), agentRoots: [directory] };
+    expiresAt: Date.now() + 10000, scopes: ["device", "browser:read", "browser:shell"], agentRoots: [directory] };
   // A folder can disappear after path validation. This uses the real OS
   // spawn error; no command can run in the missing working directory.
   for (let attempt = 0; attempt < 2; attempt++)
@@ -87,7 +87,7 @@ test("native shell revocation stops its process group before a later file write"
     commandLog: { append: async item => records.push(item) } });
   const policy = { preset: "full", roots: [directory] };
   const client = { id: "native-agent", name: "Native agent", policy,
-    expiresAt: Date.now() + 10000, scopes: presetScopes(policy), agentRoots: [directory] };
+    expiresAt: Date.now() + 10000, scopes: ["device", "browser:read", "browser:shell"], agentRoots: [directory] };
   let allowed = true;
   const authorize = () => { if (!allowed) throw Object.assign(Error("Access ended."), { status: 401 }); return client; };
   const result = shell.run(client, { command: "printf ready > started.txt; /bin/sleep 1; printf forbidden > after.txt" },

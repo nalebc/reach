@@ -1,5 +1,5 @@
 import { appLabel } from "./app-identity.mjs";
-import { FULL_CONTROL_ACTIONS, GO_FAST } from "./browser-tools.mjs";
+import { GO_FAST } from "./browser-tools.mjs";
 
 // What an agent is told once it's in (Oct 12: "a very small prompt with a
 // link; the instructions come when they connect"): what it may do, then the
@@ -37,8 +37,7 @@ const appName = (app) =>
     : typeof app?.id === "string" ? appLabel(app.id) : "";
 const names = (apps) => (Array.isArray(apps) ? apps.map(appName).filter(Boolean) : []);
 
-// Restricted invitations ask before consequential actions. Full control
-// already authorizes the actions needed for the owner's requested task.
+// Agent invitations ask before consequential actions.
 const ASK_FIRST = "Ask me before paying, sending or deleting anything.";
 const CREDENTIALS = "Don't share your Reach credentials.";
 // How it signs in (Oct 13: "they can log in to my accounts… I should not
@@ -54,16 +53,14 @@ const STAY_OUT = "Stay out of password apps, Reach and Tailscale.";
 export function agentGuide(client, { word = "computer", folders = [], page = false } = {}) {
   if (client?.kind !== "agent") return "";
   const policy = client.policy && typeof client.policy === "object" ? client.policy : {};
+  if (policy.browser === true && policy.preset === "full") return "";
   const scopes = Array.isArray(client.scopes) ? client.scopes : [];
   const where = folders.length ? some(folders) : "";
   const lines = [];
   let hands = false, acts = false;
   if (policy.browser === true && policy.preset !== undefined) {
     // A preset: what it may do follows from it (agent-presets.mjs).
-    if (policy.preset === "full") {
-      lines.push(`You have full control of my ${word} as my user account: all apps, files, browser pages and shell commands.`);
-      acts = true;
-    } else if (policy.preset === "apps") {
+    if (policy.preset === "apps") {
       const apps = names(policy.apps);
       lines.push(apps.length
         ? `You get only ${some(apps)}, on my screen. Nothing else.`
@@ -105,6 +102,6 @@ export function agentGuide(client, { word = "computer", folders = [], page = fal
   if (hands) lines.push(STAY_OUT);
   // How to go fast on the screen, said as every tool that acts says it.
   if (acts) lines.push(GO_FAST);
-  lines.push(policy.browser === true && policy.preset === "full" ? FULL_CONTROL_ACTIONS : ASK_FIRST, CREDENTIALS);
+  lines.push(ASK_FIRST, CREDENTIALS);
   return lines.join("\n");
 }
