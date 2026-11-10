@@ -41,7 +41,7 @@ Control the same Mac from your phone with a sharp picture and smooth, real-time 
 
 ## Highlights
 
-- **CLI tools and MCP to control your Mac.** Agents can open native apps, switch windows, click, type and use menus. Grant Full control or limit access to selected apps, folders or read-only actions.
+- **CLI tools and MCP to work on your computer.** Agents can use selected apps, chosen folders or read-only screen and file access, with Reach checking each operation against the grant.
 - **Fast, private connections through Tailscale.** Encrypted device-to-device connections when available, for low latency and responsive control. Agents on your private tailnet benefit too.
 - **Smooth control from your phone.** High-quality screen sharing at up to 60 fps, with touch, trackpad, zoom and your phone's keyboard.
 - **Your agent chats, in one place.** Read and reply to Claude Code, Codex and OpenClaw chats from your phone. Move chats between Claude Code and Codex, send files and answer approvals.
@@ -63,13 +63,12 @@ Your agent can work on your actual laptop: native Mac apps, your signed-in brows
 
 Once approved, the agent can list and call tools from the CLI; the join command also prints its MCP setup instructions. Ask it to open an app and fill a form, find a document, or run a project's tests. See the [agent setup guide](docs/AGENTS.md) and [full tool reference](docs/BROWSER_AGENT_TOOLS.md).
 
-Agents with Full control can also [delegate a coding task to your local Codex or Claude Code](docs/CODING_TASKS.md), follow progress, retrieve recorded changes and command results, and cancel it. Approval prompts stay with you in Reach.
+Browser agents cannot receive owner-equivalent Full control or manage Reach. The owner can pause or end an agent from any paired owner device, including while another agent is active.
 
 Each agent gets one **preset**:
 
 | Preset           | The agent can                                            |
 | ---------------- | -------------------------------------------------------- |
-| **Full control** | Use the screen, apps, browser, files and a shell, as you |
 | **Apps**         | See and use only the apps you pick                       |
 | **Files**        | Read, or read and edit, only the folders you pick        |
 | **Read only**    | Watch the screen and read shared files                   |
@@ -155,7 +154,7 @@ From a source checkout, the same commands are `./reach …` (`.\reach.cmd …` o
 - **You control who connects.** Reach supports device approval and temporary pairing codes. The normal connection QR contains only an address; pairing QRs include a one-use code. Optional passkey sign-in is implemented, but Face ID on a real iPhone still needs testing.
 - **Agents start with nothing.** You match a code to let one in. Its preset and end time are checked on every request, and you can pause or stop it from your phone. Pause an agent from your phone at any time, or pause Reach from the Mac's menu bar; while you control the Mac from your phone, agents wait.
 - **Guardrails** keep agents' clicks and typing away from Reach and Tailscale, password managers and password fields, `sudo` and security prompts, and System Settings' security panes.
-- **Full control is your account, not a sandbox.** Its shell runs as you. Give it only to agents you trust, and use **Apps** or **Files** for everything else.
+- **Agent access is bounded.** Choose **Apps**, **Files** or **Read only**. Legacy agent Full-control grants are disabled when Reach updates; already paired owner devices keep management access.
 
 Read the [security model](docs/SECURITY.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
 

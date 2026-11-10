@@ -8,7 +8,7 @@ import { createAgentPauses } from "../server/agent-pauses.mjs";
 import { presetScopes } from "../server/agent-presets.mjs";
 import { desktopConnection } from "../server/desktop-connection.mjs";
 import { createBrowserAppAccess } from "../server/browser-app-access.mjs";
-import { presetFixture, privateIngressTest } from "./helpers/preset-fixture.mjs";
+import { presetFixture, privateIngressTest, apps as fixtureApps } from "./helpers/preset-fixture.mjs";
 
 // "Was it because an agent was using it also? Then it should stop him and
 // stop him the screen share while im using it, once i stop and idle for
@@ -56,7 +56,7 @@ const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1]).toString("base64");
 function desktopWorld() {
   let clock = 5_000_000;
   const hold = new OwnerHold(() => clock);
-  const policy = { invite: true, browser: true, preset: "full", roots: ["/Users/me"] };
+  const policy = { invite: true, browser: true, preset: "apps", roots: [], apps: [{ id: "/Applications/Safari.app", name: "Safari", bundleId: "com.apple.Safari" }] };
   const client = { id: "muse", kind: "agent", name: "Muse", expiresAt: Date.now() + 600000, policy, scopes: presetScopes(policy) };
   const helpers = [];
   let gate = null;
@@ -68,6 +68,7 @@ function desktopWorld() {
         async send(request, beforeSend) {
           beforeSend?.();
           this.requests.push(request.op);
+          if (request.op === "catalog") return { ok: true, apps: [{ id: "/Applications/Safari.app", name: "Safari", bundleId: "com.apple.Safari" }] };
           if (request.op === "shot") { await gate; return { ok: true, jpeg, width: 10, height: 6 }; }
           if (request.op === "elements") return { ok: true, snapshot: "s1", app: "Safari", items: [], texts: [] };
           if (request.op === "read") return { ok: true, app: "Safari", text: "page" };
@@ -204,13 +205,14 @@ test("the screen's input channel says which inputs reached the Mac; looks and le
 test("end to end: refusals carry who and when, the pill's flag, and Let them back is yours", privateIngressTest, async (t) => {
   let clock = Date.now();
   const hold = new OwnerHold(() => clock);
-  const helper = { async send(request, beforeSend) { beforeSend?.(); return request.op === "shot" ? { ok: true, jpeg, width: 10, height: 6 } : { ok: true, app: "Safari", bundle: "com.apple.Safari", title: "", terminalLike: false, secure: false, blocked: "" }; }, stop() {} };
+  const helper = { async send(request, beforeSend) { beforeSend?.(); return request.op === "catalog" ? { ok: true, apps: [fixtureApps.chrome] } : request.op === "shot" ? { ok: true, jpeg, width: 10, height: 6 } : { ok: true, app: "Safari", bundle: "com.apple.Safari", title: "", terminalLike: false, secure: false, blocked: "" }; }, stop() {} };
   let options = null;
   const f = await presetFixture(t, { ownerHold: hold, desktopFactory: (config, given) => createAgentDesktop(config, { ...(options = given), spawnHelper: async () => helper }) });
-  const muse = await f.join({ name: "Muse", preset: "full" });
+  const muse = await f.join({ name: "Muse", preset: "apps", apps: [{ id: fixtureApps.chrome.id }] });
   const shot = () => muse.as("/api/browser/desktop/screen");
   assert.equal((await shot()).status, 200);
-  hold.note(owner);
+  assert.equal((await f.call("/api/screen/control", { method: "POST", body: { enabled: true } })).status, 200);
+  assert.ok(hold.active(), "control acquisition starts owner priority before the first tap");
   for (const refused of [await shot(), await muse.as("/api/browser/desktop/describe"),
     await muse.as("/api/browser/desktop/input", { method: "POST", body: { action: { type: "click", x: 0.5, y: 0.5 } } })]) {
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
@@ -231,6 +233,8 @@ test("end to end: refusals carry who and when, the pill's flag, and Let them bac
   // Agents can't let themselves back; you can, at once.
   assert.equal((await muse.as("/api/screen/agents-back", { method: "POST", body: {} })).status, 403);
   assert.ok(hold.active());
+  assert.equal((await f.call("/api/screen/control", { method: "POST", body: { enabled: false } })).status, 200,
+    "the owner releases active screen control before returning the computer to the agent");
   const back = await f.call("/api/screen/agents-back", { method: "POST", body: {} });
   assert.equal(back.status, 200, JSON.stringify(back.body));
   assert.equal(hold.active(), null);
@@ -255,13 +259,13 @@ test("chats' desktop work never waits on the hold, only on control itself", asyn
   const { createDesktopAutomation } = await import("../server/desktop-automation.mjs");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "reach-owner-hold-"));
   const hold = new OwnerHold();
-  let blocked = null, desktopOptions = null;
+  let blocked = null, desktopOptions = null, yielded = 0;
   const reach = await createReach({
     roots: [root], dataDir: path.join(root, "private"), screen: true, ownerHold: hold,
     agentSessionsFactory: () => ({ list: async () => ({ sessions: [], errors: {}, projects: { codex: [] }, macPrompts: [] }), listRevision: () => 0, onListChange: () => () => {} }),
     agentDesktopFactory: (_config, options) => {
       desktopOptions = options;
-      return { automationBusy: () => false, yieldForOwner: () => null, close() {}, cancelClient() {} };
+      return { automationBusy: () => false, yieldForOwner: () => (yielded++, null), close() {}, cancelClient() {} };
     },
     desktopAutomationFactory: (options) => ((blocked = options.blocked), createDesktopAutomation(options)),
   });
@@ -270,10 +274,12 @@ test("chats' desktop work never waits on the hold, only on control itself", asyn
     const url = `http://127.0.0.1:${reach.server.address().port}`;
     const as = (token) => (route, body) => fetch(url + route, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const you = as(reach.auth.issue("Your phone", ALL_SCOPES).token);
-    hold.note(owner);
-    assert.ok(desktopOptions.ownerUsing(), "Reach's desktop service reads the hold");
+    assert.equal(desktopOptions.ownerUsing(), null, "agents are not held before owner activity");
     assert.equal(blocked(), false, "no control lease: chats go on while agents wait");
     assert.equal((await you("/api/screen/control", { enabled: true })).status, 200);
+    assert.equal(yielded, 1, "screen acquisition yields active agent control immediately");
+    assert.ok(hold.active(), "control acquisition starts owner priority before the first tap");
+    assert.ok(desktopOptions.ownerUsing(), "Reach's desktop service reads the owner hold");
     assert.match(String(blocked()), /controlling the Mac/, "control itself still comes first");
     assert.equal((await you("/api/screen/control", { enabled: false })).status, 200);
     assert.equal(blocked(), false);
@@ -291,7 +297,7 @@ test("chats' desktop work never waits on the hold, only on control itself", asyn
 test("only an agent that joined puts up the pill; an unopened invitation doesn't", privateIngressTest, async (t) => {
   let clock = Date.now();
   const hold = new OwnerHold(() => clock);
-  const helper = { async send(request, beforeSend) { beforeSend?.(); return { ok: true, jpeg, width: 10, height: 6 }; }, stop() {} };
+  const helper = { async send(request, beforeSend) { beforeSend?.(); return request.op === "catalog" ? { ok: true, apps: [fixtureApps.chrome] } : { ok: true, jpeg, width: 10, height: 6 }; }, stop() {} };
   const f = await presetFixture(t, { ownerHold: hold, desktopFactory: (config, given) => createAgentDesktop(config, { ...given, spawnHelper: async () => helper }) });
   // What the owner's phone hears when it connects now.
   const firstSnapshot = async () => {
@@ -305,12 +311,12 @@ test("only an agent that joined puts up the pill; an unopened invitation doesn't
       ws.terminate();
     }
   };
-  const invited = await f.invite({ name: "Unopened", preset: "full" });
+  const invited = await f.invite({ name: "Unopened", preset: "apps", apps: [{ id: fixtureApps.chrome.id }] });
   assert.equal(invited.status, 201, JSON.stringify(invited.body));
   hold.note(owner);
   assert.ok(hold.active());
   assert.ok(!(await firstSnapshot()).changes?.agentsWait, "no pill for an invitation nobody opened");
   // Once one joins, the same hold shows it.
-  await f.join({ name: "Muse", preset: "full" });
+  await f.join({ name: "Muse", preset: "apps", apps: [{ id: fixtureApps.chrome.id }] });
   assert.equal((await firstSnapshot()).changes?.agentsWait, true);
 });

@@ -936,16 +936,15 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       expiresAt: client.expiresAt, joinBy: client.inviteExpiresAt, scopes, mascot: client.mascot,
     };
   }
-  // Keep convenient configured roots for Full control (presetPolicy adds the
-  // filesystem root). Read only defaults to shareable configured folders;
-  // Files needs chosen folders; Apps has none.
+  // Read only defaults to shareable configured folders; Files needs chosen
+  // folders; Apps has none.
   const shareable = (preset) => config.roots.filter((root) => {
     try { validateBrowserRoot(root, { policy: { browser: true, preset } }); return true; }
     catch { return false; }
   });
   const presetRoots = (checked, chosen) =>
     checked.preset === "apps" ? [] : chosen.length || checked.preset === "files" ? chosen : shareable(checked.preset);
-  // One of four presets. Its apps were matched to this Mac's catalog by the
+  // One of three presets. Its apps were matched to this Mac's catalog by the
   // route; its scopes are derived from the preset on every request.
   function invitePresetBrowser(checked, browserAppApprover) {
     const policy = presetPolicy(checked, presetRoots(checked, [...new Set(chooseFolders(checked.folders))]));
@@ -1039,7 +1038,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     changeClients((latest) => {
       const client = latest.find((c) => c.id === clientId);
       if (fullControlNeedsInvitation(client?.policy))
-        throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
+        throw fail(409, "Full control is no longer available for agents. Choose Apps, Files or Read only.");
       if (
         !client ||
         !(
@@ -1447,7 +1446,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   // made for the owner to match. Shared by links and hosted agents.
   function startAdmission(latest, client, now, { funnel, keyThumbprint, identity }) {
     if (fullControlNeedsInvitation(client.policy))
-      throw fail(410, "This older Full control grant has ended. Ask the owner for a new invitation to approve unrestricted access.");
+      throw fail(410, "Full control is no longer available for agents. Ask the owner for an Apps, Files or Read only invitation.");
     const source = funnel ? `browser:${keyThumbprint}` : `tailnet:${identity?.nodeId || "unbound"}`;
     const active = latest.filter((c) => ["pending", "approved"].includes(admissionStatus(c, now)));
     if (active.length >= 20 || active.filter((c) => claimSource(c) === source).length >= 3)
@@ -1598,7 +1597,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       if (!isFunnelBrowser(client) || client.policy?.preset === undefined || !client.linkHash || !(client.expiresAt > now))
         throw fail(404, "This agent's link can't be reopened. Make a new invite.");
       if (fullControlNeedsInvitation(client.policy))
-        throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
+        throw fail(409, "Full control is no longer available for agents. Choose Apps, Files or Read only.");
       if (rebindable(client, now)) {
         for (const key of ["hash", "pendingHash", "retiredHashes", "browserIdleExpiresAt", "redeemedAt"]) delete client[key];
         result = { clientId: client.id, joinBy: client.expiresAt };
@@ -1626,7 +1625,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       if (!client || !["guest", "agent"].includes(client.kind) || !(client.expiresAt > now))
         throw fail(404, "That invitation has ended.");
       if (fullControlNeedsInvitation(client.policy))
-        throw fail(409, "This older Full control grant has ended. Create a new invitation to approve unrestricted access.");
+        throw fail(409, "Full control is no longer available for agents. Choose Apps, Files or Read only.");
       const status = admissionStatus(client, now);
       if (!client.inviteHash || client.redeemedAt || ["pending", "approved", "accepted"].includes(status))
         throw fail(409, `${client.name} already opened the link. Nothing to send again.`);

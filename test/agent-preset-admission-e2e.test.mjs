@@ -133,15 +133,6 @@ async function review(f, receipt) {
 
 const cases = [
   {
-    preset: "full",
-    title: "Full control",
-    write: true,
-    screen: true,
-    control: true,
-    shell: true,
-    hidden: false,
-  },
-  {
     preset: "apps",
     title: "Apps",
     write: false,
@@ -233,10 +224,6 @@ for (const row of cases)
       assert.equal(text.includes("Shell commands"), row.shell);
       assert.equal(text.includes("all files and commands"), row.shell);
       assert.equal(text.includes("no content filters or shell sandbox"), row.shell);
-      if (row.preset === "full") {
-        assert.equal(view.container.querySelector('[aria-label="Hidden apps"]'), null);
-        assert.doesNotMatch(text, /Protected and hidden windows are excluded/);
-      }
       if (row.hidden) {
         assert.match(
           view.container.querySelector('[aria-label="Hidden apps"]')
@@ -298,6 +285,13 @@ for (const row of cases)
     },
   );
 
+test("a Full control request is refused before owner admission", privateIngressTest, async (t) => {
+  const f = await presetFixture(t);
+  const result = await f.invite({ name: "Legacy agent", preset: "full", ttlSeconds: 600 });
+  assert.equal(result.status, 403, JSON.stringify(result.body));
+  assert.equal(f.reach.auth.list().some((client) => client.kind === "agent"), false);
+});
+
 test(
   "same-name agent claims remain distinct through owner UI approval and revocation",
   privateIngressTest,
@@ -343,6 +337,7 @@ test(
       ).status,
       200,
     );
-    assert.deepEqual(dom.errors, []);
+    const renderErrors = dom.errors.filter((error) => !/ExperimentalWarning: localStorage is not available because --localstorage-file was not provided/.test(error));
+    assert.deepEqual(renderErrors, [], JSON.stringify(renderErrors));
   },
 );

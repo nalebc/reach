@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { agentGuide } from "../server/agent-guide.mjs";
-import { FULL_CONTROL_ACTIONS, GO_FAST, browserToolsFor, compactTools } from "../server/browser-tools.mjs";
+import { GO_FAST, browserToolsFor, compactTools } from "../server/browser-tools.mjs";
 import { serveMcp } from "../scripts/mcp-server.mjs";
 import { presetFixture as fixture, privateIngressTest, apps } from "./helpers/preset-fixture.mjs";
 
@@ -22,8 +22,7 @@ const STAY_OUT = "Stay out of password apps, Reach and Tailscale.";
 const preset = (policy, extra = {}) => ({ kind: "agent", scopes: [], policy: { invite: true, browser: true, ...policy }, ...extra });
 
 test("each preset says what it may do, in plain words, then the rules", () => {
-  assert.equal(agentGuide(preset({ preset: "full" }), { word: "Mac", folders: ["Home", "Computer"] }),
-    `You have full control of my Mac as my user account: all apps, files, browser pages and shell commands.\n${SIGN_IN}\n${FAST}${FULL_CONTROL_ACTIONS}\nDon't share your Reach credentials.`);
+  assert.equal(agentGuide(preset({ preset: "full" }), { word: "Mac", folders: ["Home", "Computer"] }), "");
   assert.equal(agentGuide(preset({ preset: "apps", apps: [{ id: "/Applications/Google Chrome.app", name: "Google Chrome" }, { id: "/System/Applications/Notes.app" }] }), { word: "Mac" }),
     `You get only "Google Chrome" and "Notes", on my screen. Nothing else.\n${SIGN_IN}\n${STAY_OUT}\n${FAST}${RULES}`);
   assert.equal(agentGuide(preset({ preset: "files", write: true }), { word: "Mac", folders: ["Project"] }),
@@ -41,15 +40,10 @@ test("Always says so; a browser page's vault is Sign in; the computer's own word
   assert.match(agentGuide(apps, { word: "Windows PC", page: true }), /where the site offers it, otherwise from your vault, with Sign in\. I won't be there to help/);
   assert.match(agentGuide(apps, { word: "Windows PC", page: true }), /\nStay out of password apps, Reach and Tailscale\.\n/);
   assert.doesNotMatch(agentGuide(apps, { word: "Windows PC", page: true }), /secret/);
-  assert.match(agentGuide(preset({ preset: "full" }), { word: "Windows PC" }), /full control of my Windows PC as my user account/);
-  // Full control signs in the same way; nothing is closed to it, so no "stay out".
-  assert.match(agentGuide(preset({ preset: "full" }), { word: "Windows PC", page: true }), /"Sign in with Google"[^\n]*with Sign in\. I won't be there to help: skip my browser's saved passwords and passkeys/);
-  assert.doesNotMatch(agentGuide(preset({ preset: "full" }), { word: "Mac" }), /Stay out/);
+  assert.equal(agentGuide(preset({ preset: "full" }), { word: "Windows PC" }), "");
   // An older invitation that shared apps on the screen: the same sign-in.
   assert.ok(agentGuide(preset({ screen: "apps" }), { word: "Mac" }).includes(`\n${SIGN_IN}\n${STAY_OUT}\n`));
-  assert.match(agentGuide(preset({ preset: "full" }), {}), /full control of my computer /, "no word given: never \"Mac\"");
-  // Full control has no hidden apps, whatever is stored.
-  assert.doesNotMatch(agentGuide(preset({ preset: "full", hidden: [{ id: "/x.app", name: "Mail" }] }), { word: "Mac" }), /Hidden/);
+  assert.equal(agentGuide(preset({ preset: "full", hidden: [{ id: "/x.app", name: "Mail" }] }), { word: "Mac" }), "");
 });
 
 test("a command-line agent: its folders and what it may do in them, nothing more", () => {
@@ -81,24 +75,17 @@ test("fails closed: unknown shapes claim nothing, people get nothing, names can'
 // that agent only.
 test("presets: the guide follows the agent's current access, for that agent only", privateIngressTest, async (t) => {
   const f = await fixture(t);
-  const full = await f.join({ preset: "full" });
-  for (const route of ["/api/browser", "/api/device"]) {
-    const view = await full.as(route);
-    assert.equal(view.status, 200, JSON.stringify(view.body));
-    assert.match(view.body.guide, /without asking for separate action approval/);
-    assert.doesNotMatch(view.body.guide, /Ask me before/);
-  }
-  for (const profile of ["full", "compact"]) {
-    const catalog = await full.as(`/api/browser/mcp/tools?profile=${profile}`);
-    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
-    assert.match(catalog.body.tools.find((tool) => tool.name === "reach_access").description, /without asking for separate action approval/);
-  }
   const agent = await f.join({ preset: "apps", apps: [{ id: apps.chrome.id }] });
   let view = await agent.as("/api/browser");
   assert.equal(view.status, 200, JSON.stringify(view.body));
   assert.equal(view.body.guide, `You get only "Google Chrome", on my screen. Nothing else.\n${SIGN_IN}\n${STAY_OUT}\n${FAST}${RULES}`);
   const device = await agent.as("/api/device");
   assert.equal(device.body.guide, view.body.guide);
+  for (const profile of ["full", "compact"]) {
+    const catalog = await agent.as(`/api/browser/mcp/tools?profile=${profile}`);
+    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+    assert.match(catalog.body.tools.find((tool) => tool.name === "reach_access").description, /ask your user before paying, sending a message or deleting/);
+  }
   // Its page (a browser) signs in with Sign in.
   const page = await agent.as("/api/browser", { headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)" } });
   assert.match(page.body.guide, /otherwise from your vault, with Sign in\./);
@@ -136,10 +123,6 @@ test("MCP initialize carries the computer's guide after Reach's own line", async
   const told = await run(async (route) => (route.startsWith("/api/device") ? { guide } : {}));
   assert.match(told.instructions, /^Check reach_tools[^\n]*reach_tool_batch\.[^\n]*\n\nYou get only "Notes"/);
   assert.ok(told.instructions.endsWith(RULES));
-  const fullGuide = agentGuide(preset({ preset: "full" }));
-  const full = await run(async () => ({ guide: fullGuide }));
-  assert.match(full.instructions, /without asking for separate action approval/);
-  assert.doesNotMatch(full.instructions, /Ask me before/);
   // A command-line agent has no screen line: the guide alone.
   assert.equal((await run(async () => ({ guide }), ["files:read"])).instructions, guide);
   // Not answering, or an older computer: initialize as before.
@@ -153,23 +136,11 @@ test("MCP initialize carries the computer's guide after Reach's own line", async
   assert.equal(asked, 0);
 });
 
-test("Full control carries the owner's action authorization in the guide and every tool profile", () => {
-  for (const word of ["Mac", "Windows PC"]) {
-    const client = preset({ preset: "full" });
-    for (const page of [false, true]) {
-      const guide = agentGuide(client, { word, page });
-      assert.match(guide, /without asking for separate action approval/);
-      assert.match(guide, /payments, sending messages and deleting files/);
-      assert.match(guide, /Follow any limits the owner gives; ask for missing information/);
-      assert.doesNotMatch(guide, /Ask me before/);
-    }
-  }
+test("legacy Full control has no agent guide or browser tool catalog", () => {
+  assert.equal(agentGuide(preset({ preset: "full" })), "");
   const tools = browserToolsFor({ preset: "full", screen: true, control: true, open: true });
-  for (const catalog of [tools, compactTools(tools)]) {
-    const tool = catalog.find((tool) => tool.name === "reach_access");
-    assert.match(tool.description, /without asking for separate action approval/);
-    assert.doesNotMatch(tool.description, /confirm consequential actions|ask your user before/);
-  }
+  assert.deepEqual(tools, []);
+  assert.deepEqual(compactTools(tools), []);
   const restricted = browserToolsFor({ preset: "apps", screen: true, control: true, open: true }).find((tool) => tool.name === "reach_access");
   assert.match(restricted.description, /ask your user before paying, sending a message or deleting/);
   assert.doesNotMatch(agentGuide(preset({ preset: "apps" })), /without asking for separate action approval/);

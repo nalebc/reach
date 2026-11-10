@@ -5,7 +5,7 @@ import { browserRouteAllowed } from "./browser-access.mjs";
 import { hostGuardedPreset } from "./agent-presets.mjs";
 
 export const browserHostGuardMessage =
-  "An agent has app access on this Mac. Manage Reach from the trusted device that created its invitation.";
+  "A browser agent is active. Manage Reach from one of your paired owner devices.";
 // What a person reads while the owner hasn't let them in yet: they came in
 // while an agent had the Mac, so the owner allows them once (Oct 11: "let
 // them in both").
@@ -76,8 +76,9 @@ function apiPath(req) {
  * A different node ID alone does not mean a different physical device: a host
  * browser can run its own Tailscale/WASM node. Only the specifically pinned
  * native Tailscale issuer(s), and their cryptographically enrolled alternate
- * owner paths, can reach owner APIs during the session. People
- * have a separate node-bound grant; embedded/browser nodes need explicit
+ * owner paths can reach owner APIs during the session. Any already paired
+ * owner device remains authoritative too. People have a separate node-bound
+ * grant; embedded/browser nodes need explicit
  * owner approval for coexistence. OS is
  * enrollment metadata, not hardware attestation; this assumes an agent cannot
  * enroll/configure a native Tailscale node or proxy through the approved phone.
@@ -105,13 +106,14 @@ export function createBrowserHostGuard({
       const all = clients();
       if (!Array.isArray(all)) throw Error("Unreadable clients");
       const grants = all.filter((client) => browserAppSessionActive(client, now()));
+      const owners = all.filter((client) => client.kind === "device" && client.scopes?.includes("admin") && expires(client) > now());
       const reservations = [...pending].filter(([key]) => key !== excluding);
       const approvers = [...grants.map((client) => client.browserAppApprover), ...reservations.map(([, value]) => value)]
         .filter((value) => binding(value) && all.some((owner) => owner.id === value.clientId &&
           owner.kind === "device" && owner.scopes?.includes("admin") && expires(owner) > now() &&
           owner.tailscale?.nodeId === value.nodeId && owner.tailscale?.userId === value.userId));
-      return { active: grants.length > 0 || reservations.length > 0, approvers, grants };
-    } catch { return { active: true, approvers: [], grants: [] }; }
+      return { active: grants.length > 0 || reservations.length > 0, approvers, grants, owners };
+    } catch { return { active: true, approvers: [], grants: [], owners: [] }; }
   };
   const isActive = () => state().active;
   const fresh = () => !!self && until > now();
@@ -216,11 +218,26 @@ export function createBrowserHostGuard({
       String(peer.UserID) === identity.userId && peer.Expired !== true &&
       !(Array.isArray(peer.Tags) && peer.Tags.length) && !(keyExpiry > 0 && keyExpiry <= now());
   };
-  const pinnedRemote = (req, current) => nativeRemote(req) && current.approvers.some((approver) =>
-    approver.nodeId === req.reachIdentity.nodeId && approver.userId === req.reachIdentity.userId);
+  const onHost = (req) => {
+    const identity = req?.reachIdentity;
+    if (!identity) return true;
+    return !fresh() || typeof identity.nodeId !== "string" || !identity.nodeId || identity.nodeId === self;
+  };
   const ownerRemote = (req) => trusted(req) === true && !onHost(req) &&
     req.reachIdentity?.tagged === false && typeof req.reachIdentity.userId === "string" &&
     !!req.reachIdentity.userId && Number.isFinite(req.reachIdentity.validUntil) && req.reachIdentity.validUntil > now();
+  const pinnedRemote = (req, current) => nativeRemote(req) && current.approvers.some((approver) =>
+    approver.nodeId === req.reachIdentity.nodeId && approver.userId === req.reachIdentity.userId);
+  // Every paired owner device remains the authority over Reach while an agent
+  // uses the host. Match its admin credential to this exact trusted Tailscale
+  // identity, including an enrolled browser path; names and unpaired nodes
+  // never establish ownership.
+  const ownerDeviceRemote = (req, client, current) => ownerRemote(req) && client?.kind === "device" &&
+    client.scopes?.includes("admin") && expires(client) > now() &&
+    client.tailscale?.nodeId === req.reachIdentity.nodeId &&
+    client.tailscale?.userId === req.reachIdentity.userId &&
+    current.owners.some((owner) => owner.id === client.id && owner.tailscale?.nodeId === req.reachIdentity.nodeId &&
+      owner.tailscale?.userId === req.reachIdentity.userId);
   const linkedApprover = (clientId, current) => {
     try { return current.approvers.some(approver => ownerConnectionIncludes(clientId, approver.clientId) === true); }
     catch { return false; }
@@ -261,11 +278,6 @@ export function createBrowserHostGuard({
   // makes agents wait. Never from this Mac's own node (the agent drives this
   // Mac and could open a person's link here), and never while they wait for
   // the owner's Allow (a link that reached the Mac's screen stops there).
-  const onHost = (req) => {
-    const identity = req?.reachIdentity;
-    if (!identity) return true;
-    return !fresh() || typeof identity.nodeId !== "string" || !identity.nodeId || identity.nodeId === self;
-  };
   const personIdentity = (req, client) => client?.kind === "guest" &&
     trusted(req) === true && !onHost(req) && expires(client) > now() &&
     Number.isFinite(req.reachIdentity?.validUntil) && req.reachIdentity.validUntil > now() &&
@@ -280,7 +292,8 @@ export function createBrowserHostGuard({
     (nativeRemote(req) || coexistenceApproved(req, client));
   const allows = (req, verifiedClient = null) => {
     const current = state();
-    return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current) ||
+    return !current.active || signedAgentRoute(req, verifiedClient, current) ||
+      ownerDeviceRemote(req, verifiedClient, current) || pinnedRemote(req, current) ||
       linkedRemote(req, verifiedClient, current) || personIn(req, verifiedClient);
   };
   // A live connection, before its credential arrives in its first message:
@@ -294,7 +307,7 @@ export function createBrowserHostGuard({
       const all = clients();
       const current = state();
       return Array.isArray(all) && all.some((client) => client?.tailscale?.nodeId === node &&
-        (linkedRemote(req, client, current) || personIn(req, client)));
+        (ownerDeviceRemote(req, client, current) || linkedRemote(req, client, current) || personIn(req, client)));
     } catch { return false; }
   };
   const assertRequest = (req, verifiedClient = null) => {
@@ -309,7 +322,7 @@ export function createBrowserHostGuard({
       await refresh({ force: true });
       const identity = req?.reachIdentity;
       const current = state(reservation);
-      if (!nativeRemote(req) || (current.active && !pinnedRemote(req, current)) || verifiedOwner?.kind !== "device" ||
+      if (!nativeRemote(req) || !ownerDeviceRemote(req, verifiedOwner, current) || verifiedOwner?.kind !== "device" ||
           typeof verifiedOwner.id !== "string" || !verifiedOwner.id ||
           !verifiedOwner.scopes?.includes("admin") || !(expires(verifiedOwner) > now()) ||
           verifiedOwner.tailscale?.nodeId !== identity.nodeId ||

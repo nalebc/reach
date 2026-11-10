@@ -314,7 +314,7 @@ function BrowserAgentList({ peer, toast, focus, ended: pastPage, onOpen, onBack,
     return (
       <>
           {agent.needsInvitation && (
-            <p className="ag-quiet">This older Full control grant has ended. Create a new invitation to approve unrestricted access.</p>
+            <p className="ag-quiet">Full control for agents is no longer available. This grant cannot connect; send a new Apps, Files or Read only invitation if needed.</p>
           )}
           {active && agent.status === "pending" && (
             <div className="ag-ask">

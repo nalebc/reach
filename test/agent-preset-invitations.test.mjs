@@ -12,17 +12,9 @@ const { chrome, notes, onePassword, messages } = apps;
 
 test("each preset issues its fixed scopes and reports itself to the agent", privateIngressTest, async (t) => {
   const f = await fixture(t);
-  const full = await f.join({ preset: "full" });
-  assert.equal(full.created.preset, "full");
-  assert.deepEqual(full.created.scopes, ["device", "browser:read", "files:read", "browser:write", "browser:screen", "browser:control", "browser:open", "browser:shell"]);
-  const view = await full.as("/api/browser");
-  assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(view.body.preset, "full");
-  assert.equal(view.body.presetName, "Full control");
-  assert.deepEqual([view.body.screen, view.body.control, view.body.shell, view.body.write, view.body.open], [true, true, true, true, true]);
-  assert.deepEqual(view.body.roots.map((root) => root.path), [f.home, f.shared, path.parse(f.home).root], "Full control includes the filesystem root");
-  assert.equal(view.body.screenNotice, undefined);
-  assert.equal(view.body.restrictedTerminal, undefined);
+  const refusedFull = await f.invite({ preset: "full", fullControlVersion: 1 });
+  assert.equal(refusedFull.status, 403, "agents cannot receive owner-equivalent Full control");
+  assert.deepEqual(f.reach.auth.list().filter((client) => client.kind === "agent"), []);
 
   const apps = await f.join({ preset: "apps", apps: [{ id: chrome.id }] });
   assert.deepEqual(apps.created.scopes, ["device", "browser:read", "browser:screen", "browser:control", "browser:open"]);
@@ -71,8 +63,8 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   const before = f.reach.auth.list().map(client => client.id);
   for (const fullControlVersion of [undefined, 0, 2, "1"]) {
     const stale = await f.call("/api/agents/browser-invitations", { method: "POST", body: { name: "Old form", preset: "full", ttlSeconds: 600, fullControlVersion } });
-    assert.equal(stale.status, 409, "a stale client must explicitly accept unrestricted Full control");
-    assert.match(stale.body.error, /Reload Reach/);
+    assert.equal(stale.status, 403, "Full control is no longer an agent preset");
+    assert.match(stale.body.error, /Agents cannot receive Full control|limited to Apps, Files or Read only/);
   }
   assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "stale forms create no access records");
   const refused = async (body, status, pattern, options) => {
@@ -85,11 +77,8 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   await refused({ preset: "apps" }, 400, /at least one app/);
   await refused({ preset: "files" }, 400, /at least one folder/);
   assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 1, path: "" }] })).status, 201, "Read only may share an ordinary configured folder");
-  await refused({ preset: "full", screen: "apps" }, 400, /unsupported fields/);
-  await refused({ preset: "full", restrictedTerminal: true }, 400, /unsupported fields/);
   await refused({ preset: "readonly", folders: [{ root: 0, path: "Missing" }] }, 404, /no longer available/);
-  // Taking the Mac needs the phone's own Tailscale connection, as app sessions did.
-  await refused({ preset: "full" }, 403, /native Tailscale/, { node: "nWasm" });
+  // Apps access needs the phone's own Tailscale connection, as app sessions did.
   await refused({ preset: "apps", apps: [{ id: chrome.id }] }, 403, /native Tailscale/, { node: "nWasm" });
   // Reading never needs it.
   assert.equal((await f.invite({ preset: "readonly" }, { node: "nWasm" })).status, 201);
@@ -99,9 +88,8 @@ test("what a preset refuses at creation", privateIngressTest, async (t) => {
   assert.equal((await files.as("/api/agents/browser-invitations", { method: "POST", body: { name: "X", ttlSeconds: 600, preset: "readonly" } })).status, 403);
 });
 
-test("narrow presets refuse filesystem roots; Full control includes them", privateIngressTest, async (t) => {
-  // This owner configuration deliberately includes the filesystem root; no
-  // operation reads it; only Full control may obtain access to it.
+test("agent presets refuse filesystem roots and Read only keeps safe defaults", privateIngressTest, async (t) => {
+  // This owner configuration deliberately includes the filesystem root.
   const f = await fixture(t, { includeSystemRoot: true });
   const before = f.reach.auth.list().map(client => client.id);
   for (const preset of ["readonly", "files"]) {
@@ -110,20 +98,21 @@ test("narrow presets refuse filesystem roots; Full control includes them", priva
     assert.match(explicit.body.error, /system/i);
   }
   assert.deepEqual(f.reach.auth.list().map(client => client.id), before, "refused roots create no credentials");
-  // Full includes all configured roots; Read only excludes the filesystem root.
-  for (const preset of ["full", "readonly"]) {
+  // Read only excludes the filesystem root from its defaults.
+  for (const preset of ["readonly"]) {
     const defaults = await f.invite({ preset });
     assert.equal(defaults.status, 201, `${preset}: ${JSON.stringify(defaults.body)}`);
     const client = f.reach.auth.list().find((c) => c.id === defaults.body.clientId);
-    assert.deepEqual(client.policy.roots, preset === "full" ? [f.home, path.parse(f.home).root] : [f.home], `${preset} roots`);
+    assert.deepEqual(client.policy.roots, [f.home], `${preset} roots`);
   }
+  assert.equal((await f.invite({ preset: "full", fullControlVersion: 1 })).status, 403);
   // An explicit valid project can still be selected from that configuration.
   assert.equal((await f.invite({ preset: "readonly", folders: [{ root: 0, path: "Desktop/Project" }] })).status, 201);
 });
 
 test("screen presets need the Mac's screen helpers; Files does not", privateIngressTest, async (t) => {
   const f = await fixture(t, { desktopAvailable: false });
-  for (const body of [{ preset: "full" }, { preset: "readonly" }, { preset: "apps", apps: [{ id: chrome.id }] }]) {
+  for (const body of [{ preset: "readonly" }, { preset: "apps", apps: [{ id: chrome.id }] }]) {
     const result = await f.invite(body);
     assert.equal(result.status, 503, JSON.stringify(result.body));
     assert.match(result.body.error, /Screen Recording and Accessibility/);
@@ -173,18 +162,18 @@ test("every route outside the preset's allowlist is refused, including the earli
 
 test("changing a preset later keeps the same rules and can only narrow its hold on the Mac", privateIngressTest, async (t) => {
   const f = await fixture(t);
-  const full = await f.join({ preset: "full" });
+  const changing = await f.join({ preset: "apps", apps: [{ id: chrome.id }] });
   const change = (id, body) => f.call(`/api/guests/${id}/access`, { method: "POST", body });
-  // Full control -> Read only: input scopes go, the agent's live helper is cancelled.
-  let result = await change(full.created.clientId, { preset: "readonly", folders: "keep" });
+  // Apps -> Read only: input scopes go, the agent's live helper is cancelled.
+  let result = await change(changing.created.clientId, { preset: "readonly", folders: [] });
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.deepEqual(result.body.scopes, ["device", "browser:read", "files:read", "browser:screen"]);
-  assert.ok(f.cancelled.includes(full.created.clientId));
-  let view = await full.as("/api/browser");
+  assert.ok(f.cancelled.includes(changing.created.clientId));
+  let view = await changing.as("/api/browser");
   assert.equal(view.body.preset, "readonly");
-  assert.equal((await full.as("/api/browser/desktop/input", { method: "POST", body: { action: { type: "click", x: 0.5, y: 0.5 } } })).status, 403);
-  // Read only can't become Full control again without a new invitation from the phone.
-  result = await change(full.created.clientId, { preset: "full", folders: "keep" });
+  assert.equal((await changing.as("/api/browser/desktop/input", { method: "POST", body: { action: { type: "click", x: 0.5, y: 0.5 } } })).status, 403);
+  // A bounded grant can't become Apps or Full control without a new invitation.
+  result = await change(changing.created.clientId, { preset: "full", folders: "keep" });
   assert.equal(result.status, 409, JSON.stringify(result.body));
   assert.match(result.body.error, /new invitation/);
   // Apps: the app list changes, bound to the catalog; a protected app is refused; the earlier form's fields are refused.
@@ -197,8 +186,7 @@ test("changing a preset later keeps the same rules and can only narrow its hold 
   assert.equal((await change(apps.created.clientId, { screen: "apps" })).status, 409);
   assert.equal((await change(apps.created.clientId, { restrictedTerminal: true })).status, 400);
   result = await change(apps.created.clientId, { preset: "full" });
-  assert.equal(result.status, 409, "Apps cannot silently expand into unrestricted Full control");
-  assert.match(result.body.error, /new invitation/);
+  assert.equal(result.status, 409, "Full control is disabled for agents");
   assert.equal((await apps.as("/api/browser")).body.preset, "apps", "refusal leaves the existing grant intact");
   // Files: the edit switch and folders.
   const files = await f.join({ preset: "files", folders: [{ root: 0, path: "Desktop/Project" }] });

@@ -4,9 +4,9 @@ Reach gives agents access to **computers the user owns or is authorized to opera
 
 ## Browser invitations and presets
 
-Browser presets follow the host's available capabilities; they are not restricted to macOS as a group. Narrow Files invitations require a protected file helper on that host. When it is unavailable, new Files invitations are refused and existing protected file operations return HTTP 503. Full control grants, owner file browsing, Reach terminals and scoped command-line credentials use their own permission paths. Discover the actual tools and access on the connected computer before acting.
+Browser presets follow the host's available capabilities; they are not restricted to macOS as a group. Agents may receive Apps, Files or Read only access. Full control is reserved for human guests and cannot be granted to an agent; legacy agent Full-control credentials are disabled on update. Narrow Files invitations require a protected file helper on that host. When it is unavailable, new Files invitations are refused and existing protected file operations return HTTP 503. Owner file browsing, Reach terminals and scoped command-line credentials use their own permission paths. Discover the actual tools and access on the connected computer before acting.
 
-The owner invites an agent from Reach and chooses **Full control**, **Apps**, **Files**, or **Read only**. The agent opens the whole invitation link and waits for the owner to match and approve its connection code. Claiming a link does not itself grant access. Full control invitations created before the unrestricted-access consent change end on upgrade; the owner must issue a new invitation. An Apps grant cannot be upgraded to Full control in place. Browser automation can use the visible controls or the session-bound `window.reach` interface:
+The owner invites an agent from Reach and chooses **Apps**, **Files**, or **Read only**. The agent opens the whole invitation link and waits for the owner to match and approve its connection code. Claiming a link does not itself grant access. Browser automation can use the visible controls or the session-bound `window.reach` interface:
 
 ```js
 const tools = await window.reach.listTools();
@@ -15,16 +15,15 @@ const access = await window.reach.callTool("reach_access", {});
 
 | Preset | Available tools, subject to current access |
 | --- | --- |
-| Full control | Screenshot, front app, screen actions, opening apps, file reads/changes and shell commands |
 | Apps | Screenshot, front app, screen actions and opening only the selected apps |
 | Files | List, search and read chosen folders; `reach_change_file` when editing is enabled |
 | Read only | Screenshot, front app, shared-file reads and explicitly shared terminal output |
 
 The tools are `reach_access`, `reach_screenshot`, `reach_front`, `reach_act`, `reach_desktop_apps`, `reach_open_app`, `reach_list_files`, `reach_search_files`, `reach_read_file`, `reach_change_file`, `reach_read_terminal`, `reach_shell`, `reach_shell_history`, `reach_services`, `reach_service_request` and `reach_request_permission`, with `reach_discover` and `reach_execute` in the compact profile. Only the tools allowed by this session are advertised; use their returned schemas. Preset `reach_open_app` takes `{app: "/path/to/App.app"}`; the separate `apps:drive` tool below takes `{appId}`. A preset screenshot becomes an MCP image, or `{image, mimeType}` through the browser bridge/CLI.
 
-Preset actions run directly within the granted access after admission; there is no per-click approval queue. Full control runs shell commands as the owner's OS account and is appropriate only for trusted agents. It can use every app, page and file, including Reach itself, with no content deny list or shell sandbox. The invitation authorizes actions needed for the owner's requests, including payments, messages and file deletion, without separate action approval. Follow any limits the owner gives and ask for missing information when needed. Operating system permissions still apply. It needs no local Reach repository or folder selection. Older restricted invitations retain their per-command approval workflow: a `pending` result means wait and inspect `reach_list_requests`, never submit repeatedly or attempt owner approval. If another agent changes a shared folder, the old pending write may be cancelled and require a fresh review.
+Preset actions run directly within the granted access after admission; there is no per-click approval queue. Follow any limits the owner gives and ask for missing information when needed. Operating system permissions still apply. Older restricted invitations retain their per-command approval workflow: a `pending` result means wait and inspect `reach_list_requests`, never submit repeatedly or attempt owner approval. If another agent changes a shared folder, the old pending write may be cancelled and require a fresh review.
 
-Full control also includes service tools such as Gmail and Walmart: discover them with `reach_services` and run them directly. Other presets request service access with `reach_service_request` and wait for the owner's approval. An explicit service revocation still stops those tools for every preset.
+Service tools require a separate owner approval. Discover them with `reach_services`, request access with `reach_service_request`, and wait for the owner. An explicit service revocation stops those tools for every preset.
 
 For a simple file task, ask the agent to find a specified file and report its contents:
 

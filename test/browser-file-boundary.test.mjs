@@ -16,6 +16,11 @@ function windowsFileChild() {
  return child;
 }
 const windowsFileReady = {ready: async () => ({ok:true,built:{file:'C:\\private\\broker.exe',sha256:'fixture'}})};
+const fileClient = (root, id = 'fixture-agent') => ({
+ kind: 'agent', ...(id ? {id} : {}),
+ scopes: ['device','browser:read','files:read','browser:write'],
+ policy: {invite:true,browser:true,preset:'files',roots:[root],write:true},
+});
 test('Windows Files keeps a failed broker operation owned until native close', async t => {
  const child=windowsFileChild(); t.after(()=>child.emit('close',1)); let completed=false;
  const promise=runWindowsFileOperation({maxBytes:1024},()=>{},windowsFileReady,{start:()=>child});
@@ -43,15 +48,15 @@ function fixture(t) {
  fs.writeFileSync(path.join(root, 'safe.txt'), 'shared text');
  fs.writeFileSync(path.join(outside, 'secret.txt'), 'never shared');
  t.after(() => fs.rmSync(temp, {recursive:true,force:true}));
- const run = (op, relative = '', extra = {}, authorize = () => true) => browserFileOperation({op,root,path:relative,...extra}, authorize, {config:{dataDir:cache}});
+ const run = (op, relative = '', extra = {}, authorize = () => fileClient(root)) => browserFileOperation({op,root,path:relative,...extra}, authorize, {config:{dataDir:cache}});
  return {temp,root,outside,cache,run};
 }
 test('file helper receives only bounded trusted operations and protected names', async t => {
  const f=fixture(t); let observed;
  const run=async request=>{observed=request;return {items:[],truncated:false};};
- await browserFileOperation({op:'list',root:f.root,path:'',privateNames:[],sandbox:'allow all'},()=>true,{config:{dataDir:f.cache},run});
+ await browserFileOperation({op:'list',root:f.root,path:'',privateNames:[],sandbox:'allow all'},()=>fileClient(f.root),{config:{dataDir:f.cache},run});
  assert.ok(observed.privateNames.includes('.ssh'));assert.match(observed.sandbox,/deny default/);assert.doesNotMatch(observed.sandbox,/allow all/);
- for(const request of [{op:'spawn',root:f.root,path:''},{op:'read',root:f.root,path:'../outside/secret.txt'},{op:'read',root:f.root,path:'/etc/passwd'},{op:'cp',root:f.root,path:'safe.txt',to:'../outside/copy'}])await assert.rejects(browserFileOperation(request,()=>true,{run}),{status:400});
+ for(const request of [{op:'spawn',root:f.root,path:''},{op:'read',root:f.root,path:'../outside/secret.txt'},{op:'read',root:f.root,path:'/etc/passwd'},{op:'cp',root:f.root,path:'safe.txt',to:'../outside/copy'}])await assert.rejects(browserFileOperation(request,()=>fileClient(f.root),{run}),{status:400});
  const readonly=fileBoundaryProfile(f.root,[]);assert.doesNotMatch(readonly,/allow file-write/);assert.match(readonly,/deny process-fork process-exec file-link/);
 });
 test('sandbox profile generation terminates at the host filesystem root', async()=>{
@@ -62,19 +67,18 @@ test('sandbox profile generation terminates at the host filesystem root', async(
  const {stdout}=await promisify(execFile)(process.execPath,['--input-type=module','-e',source],{timeout:5000,maxBuffer:65536});
  assert.match(stdout,/deny default/);assert.match(stdout,/allow file-read-metadata/);
 });
-test('Full control file access comes only from the live policy, never request flags', async t => {
+test('bounded file access comes only from the live Files policy, never request flags', async t => {
  const f=fixture(t); let observed;
  const options={config:{dataDir:f.cache},run:async request=>{observed=request;return{items:[],truncated:false};}};
- await browserFileOperation({op:'list',root:f.root,fullControl:true,privateNames:[],privatePaths:[]},()=>({id:'apps',policy:{browser:true,preset:'apps'}}),options);
+ await browserFileOperation({op:'list',root:f.root,fullControl:true,privateNames:[],privatePaths:[]},()=>fileClient(f.root,'files'),options);
  assert.equal(observed.fullControl,false);assert.ok(observed.privateNames.includes('.ssh'));
- await browserFileOperation({op:'list',root:path.parse(f.root).root},()=>({id:'full',policy:{browser:true,preset:'full'}}),options);
- assert.equal(observed.fullControl,true);assert.deepEqual(observed.privateNames,[]);assert.deepEqual(observed.privatePaths,[]);
+ const legacy={...fileClient(f.root,'legacy'),policy:{invite:true,browser:true,preset:'full',fullControlVersion:1,roots:[f.root]}};
+ await assert.rejects(browserFileOperation({op:'list',root:f.root},()=>legacy,options),{status:403});
 });
-test('native Full control reads private fixture names through the filesystem root',{skip:!native},async t=>{
+test('legacy Full control cannot read private fixture names through the filesystem root',async t=>{
  const f=fixture(t),privateDir=path.join(f.root,'.ssh');fs.mkdirSync(privateDir);fs.writeFileSync(path.join(privateDir,'id_rsa'),'fixture-key');
- const full={id:'full',policy:{browser:true,preset:'full'}};
- const result=await browserFileOperation({op:'read',root:'/',path:path.relative('/',path.join(privateDir,'id_rsa'))},()=>full,{config:{dataDir:f.cache}});
- assert.equal(result.data.toString(),'fixture-key');
+ const legacy={...fileClient(f.root,'legacy'),policy:{invite:true,browser:true,preset:'full',fullControlVersion:1,roots:[f.root]}};
+ await assert.rejects(browserFileOperation({op:'read',root:'/',path:path.relative('/',path.join(privateDir,'id_rsa'))},()=>legacy,{config:{dataDir:f.cache}}),{status:403});
  await assert.rejects(f.run('read','.ssh/id_rsa'));
 });
 test('native descriptor operations reject parent symlinks, hard links, private names and private trees',{skip:!native},async t=>{
@@ -107,7 +111,7 @@ test('racing parent swaps never disclose or change files outside the shared fold
 });
 test('authorization must still be valid after the helper completes',async t=>{
  const f=fixture(t);let allowed=true;
- await assert.rejects(browserFileOperation({op:'read',root:f.root,path:'safe.txt'},()=>{if(!allowed)throw Object.assign(Error('revoked'),{status:403});return true;},{config:{dataDir:f.cache},run:async()=>{allowed=false;return{data:Buffer.from('hidden').toString('base64'),stat:{}};}}),/revoked/);
+ await assert.rejects(browserFileOperation({op:'read',root:f.root,path:'safe.txt'},()=>{if(!allowed)throw Object.assign(Error('revoked'),{status:403});return fileClient(f.root);},{config:{dataDir:f.cache},run:async()=>{allowed=false;return{data:Buffer.from('hidden').toString('base64'),stat:{}};}}),/revoked/);
 });
 
 test('kernel sandbox denies writes through a previously opened directory moved outside the share',{skip:!native},async t=>{
@@ -143,7 +147,7 @@ test('agent roots exclude homes, executable installations and their ancestors',a
 test('file operations have global and per-session concurrency bounds without a queue',async t=>{
  const f=fixture(t), releases=[];let started=0;
  const run=async()=>{started++;await new Promise(resolve=>releases.push(resolve));return{items:[],truncated:false};};
- const operation=id=>browserFileOperation({op:'list',root:f.root,path:''},()=>id?{id}:undefined,{config:{dataDir:f.cache},run});
+ const operation=id=>browserFileOperation({op:'list',root:f.root,path:''},()=>fileClient(f.root,id || ''),{config:{dataDir:f.cache},run});
  const first=operation('one'),second=operation('one');
  await assert.rejects(operation('one'),{status:429});assert.equal(started,2);
  const third=operation('two'),fourth=operation('two');
@@ -155,12 +159,12 @@ test('file operations have global and per-session concurrency bounds without a q
 });
 test('failed or revoked operations release their slots and cannot change client identity',async t=>{
  const f=fixture(t), request={op:'list',root:f.root,path:''},options={config:{dataDir:f.cache}};
- for(let n=0;n<5;n++)await assert.rejects(browserFileOperation(request,()=>({id:'failure'}),{...options,run:async()=>{throw Error('helper failure');}}),/helper failure/);
+ for(let n=0;n<5;n++)await assert.rejects(browserFileOperation(request,()=>fileClient(f.root,'failure'),{...options,run:async()=>{throw Error('helper failure');}}),/helper failure/);
  for(let n=0;n<5;n++){
   let current='revoked';
-  await assert.rejects(browserFileOperation(request,()=>({id:current}),{...options,run:async(_request,check)=>{current='another';check();}}),{status:403});
+  await assert.rejects(browserFileOperation(request,()=>fileClient(f.root,current),{...options,run:async(_request,check)=>{current='another';check();}}),{status:403});
  }
- assert.deepEqual(await browserFileOperation(request,()=>({id:'failure'}),{...options,run:async()=>({items:[],truncated:false})}),{items:[],truncated:false});
+ assert.deepEqual(await browserFileOperation(request,()=>fileClient(f.root,'failure'),{...options,run:async()=>({items:[],truncated:false})}),{items:[],truncated:false});
 });
 
 // This intentionally uses the real path (no injected runner) on unsupported hosts.

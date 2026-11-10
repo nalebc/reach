@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createAuth, hash, hostedConnector } from "../server/core.mjs";
 import { applyAgentPolicy } from "../server/agent-policy.mjs";
-import { FULL_CONTROL_VERSION, presetPolicy, presetScopes, validatePresetInvitation } from "../server/agent-presets.mjs";
+import { FULL_CONTROL_VERSION, presetScopes, validatePresetInvitation } from "../server/agent-presets.mjs";
 import { browserAppSessionActive } from "../server/browser-host-guard.mjs";
 
 test("a stored guarded Full grant cannot silently become unrestricted after restart or access editing", t => {
@@ -34,22 +34,18 @@ test("a stored guarded Full grant cannot silently become unrestricted after rest
   assert.deepEqual(auth.hostedConnectors().get(connectorHash), { waiting: false }, "invalidated hosted grant can report ended access but admits no registrations");
   assert.equal(browserAppSessionActive(auth.list().find(c => c.id === legacy.id)), false, "invalidated access cannot lock out the owner");
   for (const changes of [{ preset: "full", folders: "keep" }, { expiresAt: Date.now() + 7200_000 }, { preset: "readonly" }])
-    assert.throws(() => auth.changeAccess(legacy.id, changes), e => e.status === 409 && /new invitation/.test(e.message));
-  assert.throws(() => auth.redeemGuest(invitation), e => e.status === 410 && /new invitation/.test(e.message));
-  assert.throws(() => auth.renewInvitation(waiting.id), e => e.status === 409 && /new invitation/.test(e.message));
+    assert.throws(() => auth.changeAccess(legacy.id, changes), e => e.status === 409 && /Full control is no longer available/.test(e.message));
+  assert.throws(() => auth.redeemGuest(invitation), e => e.status === 410 && /Full control is no longer available/.test(e.message));
+  assert.throws(() => auth.renewInvitation(waiting.id), e => e.status === 409 && /Full control is no longer available/.test(e.message));
   assert.equal(fs.readFileSync(file, "utf8"), bytes, "refusals do not rewrite consent or issue credentials");
   assert.equal(createAuth(config, { rotatePairing: false }).verify(token), null, "denial survives another restart");
 });
 
-test("a new Full invitation requires current explicit owner consent", () => {
+test("agent Full control invitations are rejected regardless of consent version", () => {
   const input = { name: "Trusted agent", preset: "full", fullControlVersion: FULL_CONTROL_VERSION, ttlSeconds: 900 };
-  const policy = presetPolicy(validatePresetInvitation(input), []);
-  assert.equal(policy.fullControlVersion, FULL_CONTROL_VERSION);
-  assert.ok(applyAgentPolicy({ kind: "agent", scopes: presetScopes(policy), policy }, { roots: [] }));
-  const unversioned = { ...policy }; delete unversioned.fullControlVersion;
-  for (const bad of [unversioned, { ...policy, fullControlVersion: 0 }, { ...policy, fullControlVersion: 2 }, { ...policy, fullControlVersion: "1" }])
-    assert.equal(applyAgentPolicy({ kind: "agent", scopes: presetScopes(bad), policy: bad }, { roots: [] }), null);
+  const policy = { invite: true, browser: true, preset: "full", fullControlVersion: FULL_CONTROL_VERSION, roots: [] };
+  assert.equal(applyAgentPolicy({ kind: "agent", scopes: presetScopes(policy), policy }, { roots: [] }), null);
   for (const version of [undefined, 0, 2, "1"])
-    assert.throws(() => validatePresetInvitation({ ...input, fullControlVersion: version }), e => e.status === 409 && /Reload Reach/.test(e.message));
-  assert.throws(() => validatePresetInvitation({ ...input, preset: "readonly" }), /only to Full control/);
+    assert.throws(() => validatePresetInvitation({ ...input, fullControlVersion: version }), e => e.status === 403);
+  assert.throws(() => validatePresetInvitation({ ...input, preset: "readonly" }), e => e.status === 403);
 });

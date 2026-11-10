@@ -2,7 +2,7 @@
 
 An external agent such as Grok or Muse can ask the Codex or Claude Code installation on your computer to work on a project, follow progress, retrieve the result and cancel the task. The coding engine uses your existing local sign-in and account. It must already be installed and ready to use.
 
-These tools are available to agents with current **Full control** access. Apps, Files and Read only do not grant delegation. Older non-browser credentials with the `codex` scope can delegate to Codex only.
+Browser agents no longer have Full control, so these delegation tools are unavailable to new agent sessions. This page documents the lifecycle and evidence contract for coding-task records created under an earlier grant. Apps, Files and Read only do not grant delegation; older non-browser credentials with the `codex` scope remain separately scoped to Codex.
 
 | Tool | Purpose |
 | --- | --- |
@@ -37,7 +37,7 @@ Task states are `starting`, `running`, `waiting`, `completed`, `failed`, `cancel
 
 ## Permissions, results and lifecycle
 
-Full control uses the normal defaults for a new local chat: Codex's guardian reviewer when available (otherwise its usual user reviewer), and Claude Auto. It adds no new per-action approval flow to Full control. Legacy Codex-only credentials retain workspace-write with the user reviewer. When the engine needs owner input, its cards appear in Reach's existing Chat interface. The project folder selects where work starts; it is not an additional filesystem sandbox for Claude. Full control already grants trusted access as the owner's OS account.
+Earlier Full-control tasks used the normal defaults for a new local chat: Codex's guardian reviewer when available (otherwise its usual user reviewer), and Claude Auto. Legacy Codex-only credentials retain workspace-write with the user reviewer. When the engine needs owner input, its cards appear in Reach's existing Chat interface. The project folder selects where work starts; it is not an additional filesystem sandbox for Claude. Browser agents can no longer create tasks with owner-account access.
 
 Results include the agent's summary, command records with their reported status and output, and file-change records with their diffs. An assistant saying tests passed is a claim; only recorded command output supplies execution evidence. Diffs come from that task's transcript, rather than a whole-project diff that could include earlier edits. Some provider tools do not record a diff or command, so the corresponding evidence may be absent.
 

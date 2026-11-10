@@ -524,6 +524,18 @@ export async function createReach(overrides = {}) {
   // included, until 2 minutes after your last input (server/screen.mjs).
   // Never part of blocked() below: chats' Claude app messages don't wait on it.
   const ownerHold = overrides.ownerHold || new OwnerHold();
+  // Hold agent screen work as soon as an owner starts controlling the screen,
+  // even before the first tap. The short control lease also covers an owner
+  // who is watching without typing.
+  const ownerUsing = () => {
+    const held = ownerHold.active();
+    if (held) return held;
+    const lease = screenControl.lease;
+    if (!lease || lease.expiresAt <= Date.now()) return null;
+    const client = auth.list().find((entry) => entry.id === lease.clientId);
+    if (!actsAsOwner(client)) return null;
+    return { name: "", retryInMs: Math.max(1000, lease.expiresAt - Date.now()) };
+  };
   let agentDesktop = null, agentTabs = null, inputInFlight = false;
   const desktopAutomation = (overrides.desktopAutomationFactory || createDesktopAutomation)({
     // Why chats' Claude app work waits, named on the waiting message.
@@ -1120,7 +1132,7 @@ export async function createReach(overrides = {}) {
     screenAvailable: () => browserScreenAvailable() && !paused && transportAvailable,
     persistRestriction: (id, appId, mode) => auth.restrictBrowserApp(id, appId, mode),
     notify, record,
-    ownerUsing: () => ownerHold.active(), platform: overrides.platform || process.platform,
+    ownerUsing, platform: overrides.platform || process.platform,
   });
   // The owner's pause of one agent ("it can look, not touch"), on every
   // computer: it used to live in the Mac-only desktop service below, so off a
@@ -1142,7 +1154,7 @@ export async function createReach(overrides = {}) {
       const held = screenControl.holder();
       return held?.person ? held.name || "Someone" : !!held || screenControl.inputStopping();
     },
-    ownerUsing: () => ownerHold.active(),
+    ownerUsing,
     // A chat waiting on an agent gets the next turn (the agent's input waits a
     // moment), and the agent looks again after a chat drove the Mac.
     automationControls: () => desktopAutomation.active() || desktopAutomation.wanted?.() === true,
@@ -1151,16 +1163,16 @@ export async function createReach(overrides = {}) {
     // The tabs agents open close once they're done (agent-tabs.mjs, below).
     tabs: () => agentTabs, onActivity: (id, entry) => agentTabs?.activity(id, entry),
   }) : null);
-  // Agents that can see or use this Mac (Full control, Apps, Read-only).
+  // Agents that can see or use this Mac (Apps or Read only).
   const screenAgentIds = () => auth.list()
-    .filter((client) => client.kind === "agent" && client.policy?.browser === true && client.policy?.preset !== undefined && client.expiresAt > Date.now())
+    .filter((client) => client.kind === "agent" && applyAgentPolicy(client, config) && client.policy?.preset !== undefined && client.expiresAt > Date.now())
     .map((client) => client.id);
   // Agents that look at the screen at all: these presets, and those shown
   // only chosen app windows.
   // Only an agent that joined counts: an invitation nobody opened (or one
   // that lapsed, or waits for your approval) can't touch the screen, so it
   // doesn't put up "Agents wait" (an unused Always invite did, Oct 13).
-  const screenAgentsPresent = () => auth.list().some((client) => client.kind === "agent" &&
+  const screenAgentsPresent = () => auth.list().some((client) => client.kind === "agent" && applyAgentPolicy(client, config) &&
     client.policy?.browser === true && (client.policy.preset !== undefined || client.policy.screen === "apps") && client.expiresAt > Date.now() &&
     (client.status === undefined || client.status === "accepted"));
   // Your input went through Reach's screen (a tap, a key, a scroll): agents
@@ -5231,6 +5243,7 @@ export async function createReach(overrides = {}) {
         .status(409)
         .json({ error: e.message, holder: e.holder, canTakeOver: e.canTakeOver });
     }
+    if (req.body?.enabled && actsAsOwner(req.client)) ownerUsed(req.client);
     // Control off keeps the phone's connection parked a minute: Control
     // again resumes on it (server/desktop-connection.mjs).
     if (!req.body?.enabled)

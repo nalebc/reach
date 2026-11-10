@@ -2,10 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { createAgentServices } from "../server/agent-services.mjs";
-import {
-  FULL_CONTROL_VERSION,
-  presetScopes,
-} from "../server/agent-presets.mjs";
+import { presetScopes } from "../server/agent-presets.mjs";
 import { SAMPLE_STORE } from "./helpers/service-connector-fixture.mjs";
 import {
   browserToolsFor,
@@ -26,7 +23,7 @@ function fixture(t, extra = {}) {
     status: "accepted",
     scopes: ["device", "browser:read", "files:read"],
     expiresAt: time + 600000,
-    policy: { browser: true, preset: "readonly", roots: [] },
+    policy: { invite: true, browser: true, preset: "files", roots: ["/tmp"] },
   };
   const owner = { id: "phone", kind: "device", scopes: ["admin"] };
   const notices = [],
@@ -107,85 +104,28 @@ test("one phone approval grants only service reads; duplicate requests and runs 
   );
 });
 
-test("a Full control invitation includes service reads without requests or notifications; revocation still stands", async (t) => {
+test("a legacy Full control policy cannot read services or bypass owner approval", async (t) => {
   const f = fixture(t);
   f.client.policy = {
     invite: true,
     browser: true,
     preset: "full",
-    fullControlVersion: FULL_CONTROL_VERSION,
+    fullControlVersion: 1,
     roots: [],
   };
-  f.client.scopes = presetScopes(f.client.policy);
-  const original = structuredClone(f.client),
-    input = f.payload();
-  assert.equal(
-    (await f.service.run(f.authorize, input)).data.status,
-    "shipped",
-    "direct calls need no earlier catalog or request",
-  );
-  const access = f.service.catalog(f.authorize).connectors[0].access;
-  assert.equal(access.status, "approved");
-  assert.equal(access.approval, "invitation");
-  assert.equal(access.expiresAt, f.client.expiresAt);
-  assert.equal(
-    f.request().id,
-    access.id,
-    "older clients that request access get the existing invitation grant",
-  );
-  assert.equal(f.notices.length, 0);
-  assert.deepEqual(f.client, original);
-  f.service.decide(() => f.owner, access.id, { decision: "revoke" });
-  assert.equal(
-    f.service.catalog(f.authorize).connectors[0].access.status,
-    "revoked",
-  );
-  await assert.rejects(f.service.run(f.authorize, input), /not approved/);
-  assert.throws(f.request, /owner ended/);
-  assert.equal(
-    f.service.inspect().length,
-    1,
-    "refreshing cannot undo explicit revocation",
-  );
+  f.client.scopes = ["device", "browser:read", "browser:shell"];
+  assert.throws(() => f.service.catalog(f.authorize), { status: 403 });
+  await assert.rejects(f.service.run(f.authorize, f.payload()), { status: 403 });
+  assert.throws(f.request, { status: 403 });
+  assert.deepEqual(f.service.inspect(), []);
   assert.equal(f.notices.length, 0);
 });
 
-test("unconsented Full control or missing shell access never auto-grants services", async (t) => {
-  for (const missing of ["fullControlVersion", "invite", "browser:shell"]) {
-    const f = fixture(t);
-    f.client.policy = {
-      invite: true,
-      browser: true,
-      preset: "full",
-      fullControlVersion: FULL_CONTROL_VERSION,
-      roots: [],
-    };
-    f.client.scopes = presetScopes(f.client.policy);
-    if (missing === "browser:shell")
-      f.client.scopes = f.client.scopes.filter((scope) => scope !== missing);
-    else delete f.client.policy[missing];
-    assert.equal(f.service.catalog(f.authorize).connectors[0].access, null);
-    await assert.rejects(
-      f.service.run(f.authorize, f.payload()),
-      /not approved/,
-    );
-    assert.equal(f.request().status, "pending");
-    assert.equal(f.notices.length, 1);
-  }
-});
-
-test("Full control service results stop on pause, narrower access and session expiry", async (t) => {
+test("a Files agent's approved service results stop on pause, narrower access and expiry", async (t) => {
   let paused = false;
   const f = fixture(t, { paused: () => paused });
-  f.client.policy = {
-    invite: true,
-    browser: true,
-    preset: "full",
-    fullControlVersion: FULL_CONTROL_VERSION,
-    roots: [],
-  };
-  f.client.scopes = presetScopes(f.client.policy);
   const input = f.payload();
+  f.approve();
   await f.service.run(f.authorize, input);
   paused = true;
   await assert.rejects(f.service.run(f.authorize, input), /paused/);
