@@ -465,7 +465,19 @@ self.addEventListener("fetch", event => {
       if (navigation && url.searchParams.has("reach-reconnect")) {
         const live = await network().catch(() => null);
         if (live?.ok) {
-          try { await (await caches.open(shellRecords)).delete(shellKey("active")); } catch {}
+          try {
+            const records = await caches.open(shellRecords);
+            const active = await shellJson(records, "active");
+            if (active) {
+              const cohorts = await shellCohorts(records);
+              const current = cohorts.find(record => record.id === active.id);
+              const html = await live.clone().text();
+              const liveBuild = /<meta\s+name="reach-shell-build"\s+content="([a-f0-9]{64})"/i.exec(html)?.[1];
+              if (!current || (liveBuild && current.build !== liveBuild)) {
+                await records.delete(shellKey("active"));
+              }
+            }
+          } catch {}
           return live;
         }
       }

@@ -20,11 +20,22 @@ export function WorkspaceAtmosphere({ children }: { children: ReactNode }) {
     const media = matchMedia("(prefers-reduced-motion: reduce)");
     const preference = () => setReduced(media.matches);
     const visibility = () => setHidden(document.hidden);
+    const pause = () => setHidden(true);
     media.addEventListener("change", preference);
     document.addEventListener("visibilitychange", visibility);
+    document.addEventListener("freeze", pause);
+    document.addEventListener("resume", visibility);
+    window.addEventListener("pagehide", pause);
+    window.addEventListener("pageshow", visibility);
+    window.addEventListener("focus", visibility);
     return () => {
       media.removeEventListener("change", preference);
       document.removeEventListener("visibilitychange", visibility);
+      document.removeEventListener("freeze", pause);
+      document.removeEventListener("resume", visibility);
+      window.removeEventListener("pagehide", pause);
+      window.removeEventListener("pageshow", visibility);
+      window.removeEventListener("focus", visibility);
     };
   }, []);
   const toggle = () =>

@@ -1,5 +1,6 @@
 import { bindPrivatePeer, privatePeerWay, privateWay, tailnetFetch, nativeTailnetFetch, tailnetNode, type PrivateWay, type TailnetNode } from "./tailnet-transport";
-import { ownerBrowserNode, browserApprovalIdentity, browserNodeIdentityCurrent, browserPeerEligible } from "./browser-node";
+import { ownerBrowserNode, browserApprovalIdentity, browserNodeIdentityCurrent, browserPeerEligible, savedBrowserProfile } from "./browser-node";
+import { isIos, standalone } from "./home-screen";
 import { compactPeers, peerFetch, readPrivatePeers, upsertPeer, type Peer } from "./api";
 import { parseStartConfig, type StartConfig } from "./start-flow";
 import { offlineBootstrap, prepareOfflineShell } from "./offline-shell";
@@ -244,6 +245,16 @@ export function watchOwnerEnrollment(peer: Peer, report: (state: OwnerSetup) => 
       if (lifetime.signal.aborted || privateWay() !== source) return;
       let fetcher = nativeTailnetFetch;
       if (target === "browser") {
+        // On iOS Home Screen standalone web apps connected via native Tailscale,
+        // eagerly instantiating the 35 MB Go WASM runtime (~250 MB heap) when no
+        // browser profile exists causes iOS Jetsam to terminate WebContent in the
+        // background, leaving a blank white WKWebView on resume. Offline shell
+        // caching above and P-256 Funnel device keys still protect reopening.
+        if (!resumeOnly && !previous && standalone() && isIos() && !savedBrowserProfile() && !tailnetNode()) {
+          completed = true;
+          report({ state: "ready" });
+          return;
+        }
         report({ state: "preparing" });
         const browser = await ownerBrowserNode(config);
         if (lifetime.signal.aborted) return;
