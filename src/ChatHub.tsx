@@ -1,5 +1,5 @@
 import { useMemo, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, KeyRound, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
+import { ArrowUpRight, FolderOpen, KeyRound, LoaderCircle, Plus, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -297,10 +297,6 @@ export default function ChatHub({
     ],
     [peer, all, lists],
   );
-  const hasDirectChats = useMemo(
-    () => chatLists.some(({ sessions }) => sessions.some((s) => s.agent === "api")),
-    [chatLists],
-  );
   // Projects across agents, the one with the newest chat first. The same
   // folder on two computers is two projects.
   const projects = useMemo(() => {
@@ -310,7 +306,12 @@ export default function ChatHub({
         if (filter === "subscriptions" && s.agent === "api") continue;
         if (filter === "api" && !(s.agent === "api" && s.providerKind !== "local")) continue;
         if (filter === "local" && !(s.agent === "api" && s.providerKind === "local")) continue;
-        const root = s.agent === "api" ? "__direct__" : projectOfChat(s);
+        const root =
+          s.agent === "api"
+            ? "__direct__"
+            : s.agent === "antigravity"
+              ? "__antigravity__"
+              : projectOfChat(s);
         const key = `${computer.id}\n${root}`;
         const group = map.get(key) || { computer, root, list: [] };
         group.list.push(s);
@@ -373,42 +374,61 @@ export default function ChatHub({
       <div hidden={!searchOpen}>
         <SearchAll scope={scope} computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
       </div>
-      {(hasDirectChats || providerCount > 0 || onProviders) && (
-        <div className="hub-filters" role="toolbar" aria-label="Chat filters">
-          {(hasDirectChats || providerCount > 0) && (
-            <>
-              {(
-                [
-                  ["all", "All"],
-                  ["subscriptions", "Subscriptions"],
-                  ["api", "API"],
-                  ["local", "Local"],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  className={`hub-filter ${filter === id ? "active" : ""}`}
-                  aria-pressed={filter === id}
-                  onClick={() => setFilter(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </>
-          )}
-          {onProviders && (
-            <button
-              type="button"
-              className="hub-filter providers"
-              onClick={onProviders}
-            >
-              <KeyRound size={12} />
-              <span>{providerCount > 0 ? `Providers · ${providerCount}` : "API & Local"}</span>
-            </button>
-          )}
+      <section className="ac-hero" aria-label="Anything Chat">
+        <div className="ac-hero-top">
+          <div className="ac-hero-title">
+            <span className="ac-hero-mark" aria-hidden="true">
+              <Sparkles size={16} />
+            </span>
+            <div>
+              <strong>Anything Chat</strong>
+              <small>Subscriptions, API keys &amp; local models in one place</small>
+            </div>
+          </div>
+          <div className="ac-hero-actions">
+            {onProviders && (
+              <button
+                type="button"
+                className="ac-hero-btn"
+                onClick={onProviders}
+              >
+                <KeyRound size={14} />
+                <span>{providerCount > 0 ? `Providers · ${providerCount}` : "Providers"}</span>
+              </button>
+            )}
+            {onNew && (
+              <button
+                type="button"
+                className="ac-hero-btn primary"
+                onClick={() => onNew()}
+              >
+                <Plus size={14} />
+                <span>New chat</span>
+              </button>
+            )}
+          </div>
         </div>
-      )}
+        <div className="hub-filters" role="toolbar" aria-label="Chat filters">
+          {(
+            [
+              ["all", "All"],
+              ["subscriptions", "Subscriptions"],
+              ["api", "API"],
+              ["local", "Local"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`hub-filter ${filter === id ? "active" : ""}`}
+              aria-pressed={filter === id}
+              onClick={() => setFilter(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
       {!!pending && onReview && (
         <button className="chat-needs-row" onClick={onReview}>
           <ShieldCheck size={16} />
@@ -496,7 +516,13 @@ export default function ChatHub({
                 <div className="chat-group-heading">
                   <h2 title={root || undefined}>
                     <FolderOpen size={14} />
-                    <span className="chat-project-name">{root === "__direct__" ? "Direct & Local" : projectName(root) || "Workspace"}</span>
+                    <span className="chat-project-name">
+                      {root === "__direct__"
+                        ? "Direct & Local"
+                        : root === "__antigravity__"
+                          ? "Antigravity"
+                          : projectName(root) || "Workspace"}
+                    </span>
                     <span className="hub-project-agents" aria-label={agents.map(agentLabel).join(", ")}>
                       {agents.map((a) => (
                         <AgentLogo key={a} agent={a} logos={logos} size={13} />
@@ -533,7 +559,12 @@ export default function ChatHub({
                           <AgentLogo agent={s.agent} logos={logos} size={18} />
                         </span>
                         <span className="chat-entry-copy">
-                          <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
+                          <span className="ac-row-head">
+                            <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
+                            <span className={`ac-badge ${s.agent === "api" ? (s.providerKind === "local" ? "local" : "api") : "sub"}`}>
+                              {s.providerName || agentLabel(s.agent)}
+                            </span>
+                          </span>
                           <span className={`chat-card-preview ${files.length ? "hub-changed" : ""}`}>
                             {files.length
                               ? `Changed ${files

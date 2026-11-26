@@ -3,8 +3,8 @@ import { post, request, type Peer } from "./api";
 import { onAppResume } from "./page-visible";
 import type { Workflow } from "./Workflows";
 
-// Every Codex, Claude Code, Gemini, and API/Local session on the computer.
-export type AgentName = "codex" | "claude" | "gemini" | "api";
+// Every Codex, Claude Code, Gemini, Antigravity, and API/Local session on the computer.
+export type AgentName = "codex" | "claude" | "gemini" | "antigravity" | "api";
 // A sub-agent a chat started (server/agent-sessions/subagents.mjs).
 export type Subagent = {
   id: string;
@@ -302,7 +302,7 @@ export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
   modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
-  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw", api: "API & Local", all: "All" })[agent] || agent;
+  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", antigravity: "Antigravity", openclaw: "OpenClaw", api: "API & Local", all: "All" })[agent] || agent;
 
 // Out of usage: the page each agent sends you to for more, opened on the
 // phone, where you buy it. Codex's own message names its page ("Visit … to
@@ -416,6 +416,7 @@ const MODES: Record<AgentName, Record<string, string>> = {
     yolo: "YOLO",
     plan: "Plan",
   },
+  antigravity: {},
   api: {},
 };
 export const modeLabel = (agent: AgentName, mode?: string | null) =>

@@ -137,12 +137,115 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ac-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgb(185 239 212 / 0.16);
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgb(185 239 212 / 0.09), transparent 55%),
+    rgb(255 255 255 / 0.03);
+}
+.ac-hero-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ac-hero-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ac-hero-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgb(185 239 212 / 0.14);
+  color: var(--lime, #b9efd4);
+  flex-shrink: 0;
+}
+.ac-hero-title strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.ac-hero-title small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted, #94a3a0);
+}
+.ac-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ac-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  background: rgb(255 255 255 / 0.05);
+  color: var(--text, #edf2ef);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ac-hero-btn.primary {
+  background: var(--lime, #b9efd4);
+  color: var(--lime-ink, #0f1b15);
+  border-color: transparent;
+}
+.ac-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ac-row-head strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(255 255 255 / 0.05);
+  color: var(--muted, #94a3a0);
+}
+.ac-badge.api {
+  border-color: rgb(185 239 212 / 0.3);
+  background: rgb(185 239 212 / 0.09);
+  color: var(--lime, #b9efd4);
+}
+.ac-badge.local {
+  border-color: rgb(138 196 255 / 0.3);
+  background: rgb(138 196 255 / 0.1);
+  color: #a9d4ff;
+}
 .hub-filters {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin: 0 0 12px;
+  margin: 0;
 }
 .hub-filter {
   padding: 5px 11px;

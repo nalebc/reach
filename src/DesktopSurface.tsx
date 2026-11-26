@@ -770,7 +770,7 @@ export default function DesktopSurface({
   };
   const down = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") lastTouch.current = performance.now();
-    if (!ready || event.button !== 0) return;
+    if (!ready || (event.pointerType !== "touch" && event.button !== 0)) return;
     // Clear an orphaned pointer left behind by a swallowed OS gesture or blur
     // so a fresh primary touch/click never wedges into a phantom multi-touch.
     if (
@@ -1025,7 +1025,8 @@ export default function DesktopSurface({
     if (g.multiple) return;
     const dx = p.x - g.last.x,
       dy = p.y - g.last.y;
-    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > MOVE_SLOP) {
+    const slop = event.pointerType === "touch" ? 12 : MOVE_SLOP;
+    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > slop) {
       tapClicks.current.reset();
       g.moved = true;
       clearHold();
@@ -1102,7 +1103,8 @@ export default function DesktopSurface({
       setGestureFeedback(null);
     }
     pointers.current.delete(event.pointerId);
-    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > MOVE_SLOP)
+    const upSlop = event.pointerType === "touch" ? 12 : MOVE_SLOP;
+    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > upSlop)
       g.moved = true;
     // Flush the finger's final travel. Two-finger momentum waits until both
     // fingers lift; the remaining finger never produces a click.
@@ -1112,7 +1114,12 @@ export default function DesktopSurface({
     }
     // Not held, not moved: a tap however long the finger rested (a busy
     // page can run this after HOLD_MS before the hold's own timer).
-    const tapped = !g.held && !g.multiple && !g.moved && event.button === 0;
+    // Touch pointerup can report button === -1 on some mobile browsers.
+    const tapped =
+      !g.held &&
+      !g.multiple &&
+      !g.moved &&
+      (event.pointerType === "touch" || event.button === 0);
     const point = tapped && !g.stopper && mode !== "pan"
       ? mode === "trackpad" ? cursorRef.current
         : event.pointerType === "touch" ? g.point : normalized(event.clientX, event.clientY)

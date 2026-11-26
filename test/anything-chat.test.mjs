@@ -6,6 +6,7 @@ import path from "node:path";
 import { createChatProviders, maskSecret } from "../server/chat-providers/registry.mjs";
 import { createThinkSplitter, streamChatCompletion } from "../server/chat-providers/stream.mjs";
 import { createApiChats } from "../server/chat-providers/sessions.mjs";
+import { createAntigravitySessions, parseAntigravityTranscript } from "../server/agent-sessions/antigravity.mjs";
 
 function sseResponse(chunks) {
   const encoder = new TextEncoder();
@@ -182,5 +183,49 @@ test("createApiChats persists sessions, streams replies, and supports mid-chat s
     assert.equal(chats.list().length, 0);
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("createAntigravitySessions reads Antigravity brain transcripts into unified Reach sessions", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ag-brain-"));
+  try {
+    const id = "11111111-2222-3333-4444-555555555555";
+    const logDir = path.join(root, id, ".system_generated", "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        step_index: 0,
+        source: "USER_EXPLICIT",
+        type: "USER_INPUT",
+        created_at: "2026-11-26T10:00:00Z",
+        content: "<USER_REQUEST>\nHelp me redesign Anything Chat\n</USER_REQUEST>",
+      }),
+      JSON.stringify({
+        step_index: 1,
+        source: "MODEL",
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-26T10:00:05Z",
+        model: "gemini-4-neon-medium",
+        thinking: "Checking chat providers",
+        content: "Here is the unified Anything Chat redesign.",
+      }),
+    ].join("\n");
+    fs.writeFileSync(path.join(logDir, "transcript.jsonl"), lines, "utf8");
+
+    const parsed = parseAntigravityTranscript(lines);
+    assert.equal(parsed.items.length, 3);
+    assert.equal(parsed.items[0].text, "Help me redesign Anything Chat");
+
+    const ag = createAntigravitySessions({ roots: [root] });
+    const listed = ag.list();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].agent, "antigravity");
+    assert.equal(listed[0].title, "Help me redesign Anything Chat");
+    assert.equal(listed[0].model, "gemini-4-neon-medium");
+
+    const page = ag.read(id);
+    assert.equal(page.items.at(-1).text, "Here is the unified Anything Chat redesign.");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

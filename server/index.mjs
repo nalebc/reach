@@ -140,6 +140,7 @@ import { Jobs } from "./jobs.mjs";
 import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { createAntigravitySessions } from "./agent-sessions/antigravity.mjs";
 import { createChatProviders } from "./chat-providers/registry.mjs";
 import { createApiChats } from "./chat-providers/sessions.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
@@ -595,6 +596,8 @@ export async function createReach(overrides = {}) {
       dataDir: config.dataDir,
       ...(overrides.chatProviderFetch ? { fetchImpl: overrides.chatProviderFetch } : {}),
     });
+  const antigravitySessions =
+    overrides.antigravitySessions || createAntigravitySessions();
   const apiChats =
     overrides.apiChats ||
     createApiChats({
@@ -4207,8 +4210,10 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions", async (req, res) => {
     const base = await agentSessions.list({ fresh: req.query.fresh === "1" });
     const direct = apiChats.list();
-    const sessions = direct.length
-      ? [...(base.sessions || []), ...direct].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    const ag = antigravitySessions.list();
+    const extra = [...direct, ...ag];
+    const sessions = extra.length
+      ? [...(base.sessions || []), ...extra].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
       : base.sessions;
     return versioned(req, res, {
       ...base,
@@ -4526,6 +4531,14 @@ export async function createReach(overrides = {}) {
       typeof req.query.before === "string" ? req.query.before : null;
     if (req.params.agent === "api") {
       const page = apiChats.read(req.params.id, {
+        limit: Number(req.query.limit) || 200,
+        before,
+      });
+      if (before) return res.json(page);
+      return versioned(req, res, page);
+    }
+    if (req.params.agent === "antigravity") {
+      const page = antigravitySessions.read(req.params.id, {
         limit: Number(req.query.limit) || 200,
         before,
       });
@@ -5138,6 +5151,19 @@ export async function createReach(overrides = {}) {
         view = snapshot();
       }
       if (!res.writableEnded && !gone.signal.aborted) res.json(view);
+      return;
+    }
+    if (req.params.agent === "antigravity") {
+      const page = antigravitySessions.read(req.params.id, { limit: 200 });
+      if (!res.writableEnded && !gone.signal.aborted)
+        res.json({
+          version: page.session.updatedAt || 1,
+          running: page.session.status === "running",
+          streaming: "",
+          status: page.session.status,
+          prompts: [],
+          waiting: [],
+        });
       return;
     }
     if (Number.isFinite(since)) {

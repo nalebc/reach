@@ -199,6 +199,14 @@ const SKIN = {
     where: null,
     disclaimer: "",
   },
+  antigravity: {
+    placeholder: "Antigravity conversation (read-only)",
+    app: "Antigravity",
+    menu: TextAlignStart,
+    compose: SquarePen,
+    where: null,
+    disclaimer: "",
+  },
 } as const;
 
 // Under the newest reply, as both apps put them: copy it, share it.
