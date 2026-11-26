@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 // Unified provider registry for Anything Chat: cloud API keys (Venice, OpenAI,
@@ -298,6 +299,41 @@ function readJsonSafe(file) {
   }
 }
 
+// Safely scan common shell profile files for exported provider env vars without
+// executing any shell code. Values stay strictly in host memory / masked hints.
+function readShellEnvMap(home = os.homedir()) {
+  const found = {};
+  if (!home) return found;
+  const wanted = new Set(
+    PROVIDER_PRESETS.flatMap((p) => [p.envKey, p.envUrl].filter(Boolean)),
+  );
+  const files = [".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".env"];
+  for (const name of files) {
+    const file = path.join(home, name);
+    let text = "";
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size > 256 * 1024) continue;
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const m = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.+?)\s*$/.exec(line);
+      if (!m || !wanted.has(m[1]) || found[m[1]]) continue;
+      let val = m[2].replace(/\s+#.*$/, "").trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (val && !val.includes("$")) found[m[1]] = val;
+    }
+  }
+  return found;
+}
+
 function writePrivateJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
@@ -411,6 +447,7 @@ export async function fetchProviderModels(provider, { fetchImpl = fetch, timeout
 export function createChatProviders({
   dataDir,
   env = process.env,
+  home = env === process.env ? os.homedir() : "",
   fetchImpl = fetch,
   now = Date.now,
 } = {}) {
@@ -419,6 +456,8 @@ export function createChatProviders({
   if (!stored || typeof stored !== "object" || !Array.isArray(stored.providers)) {
     stored = { version: 1, providers: [] };
   }
+  const shellEnv = home ? readShellEnvMap(home) : {};
+  const lookupEnv = (name) => (name ? env[name] || shellEnv[name] || "" : "");
 
   // Cached model lists & local auto-discovery probes (avoid hammering localhost).
   const modelCache = new Map(); // id -> { at, models, error, reachable }
@@ -427,7 +466,8 @@ export function createChatProviders({
   const save = () => writePrivateJson(file, stored);
 
   const envProvider = (preset) => {
-    if (preset.envKey && env[preset.envKey]?.trim()) {
+    const keyVal = lookupEnv(preset.envKey).trim();
+    if (preset.envKey && keyVal) {
       return {
         id: preset.id,
         preset: preset.id,
@@ -435,16 +475,17 @@ export function createChatProviders({
         kind: preset.kind,
         protocol: preset.protocol,
         baseUrl: preset.baseUrl,
-        apiKey: env[preset.envKey].trim(),
+        apiKey: keyVal,
         fromEnv: true,
         enabled: true,
       };
     }
-    if (preset.envUrl && env[preset.envUrl]?.trim()) {
+    const urlVal = lookupEnv(preset.envUrl).trim();
+    if (preset.envUrl && urlVal) {
       const baseUrl =
         preset.id === "ollama"
-          ? normalizeOllamaBase(env[preset.envUrl])
-          : normalizeBaseUrl(env[preset.envUrl]);
+          ? normalizeOllamaBase(urlVal)
+          : normalizeBaseUrl(urlVal);
       return {
         id: preset.id,
         preset: preset.id,

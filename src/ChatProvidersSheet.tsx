@@ -43,6 +43,21 @@ const emptyCustom = (): Draft => ({
   keyHint: "",
 });
 
+function detectPresetFromKey(raw: string): string | null {
+  const k = raw.trim();
+  if (!k) return null;
+  if (k.startsWith("sk-ant-")) return "anthropic";
+  if (k.startsWith("sk-or-")) return "openrouter";
+  if (k.startsWith("gsk_")) return "groq";
+  if (k.startsWith("xai-")) return "xai";
+  if (k.startsWith("AIza")) return "gemini-api";
+  if (k.startsWith("pplx-")) return "perplexity";
+  if (k.startsWith("fw_")) return "fireworks";
+  if (/^(VENICE-|vn_)/i.test(k)) return "venice";
+  if (k.startsWith("sk-")) return "openai";
+  return null;
+}
+
 export default function ChatProvidersSheet({
   peer,
   providers,
@@ -59,9 +74,44 @@ export default function ChatProvidersSheet({
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [quickKey, setQuickKey] = useState("");
+  const [quickPreset, setQuickPreset] = useState("venice");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [problem, setProblem] = useState("");
+
+  const handleQuickConnect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const key = quickKey.trim();
+    if (!key || busy) return;
+    const detected = detectPresetFromKey(key) || quickPreset;
+    const preset = presets.find((p) => p.id === detected) || presets[0];
+    if (!preset) return;
+    setBusy(true);
+    setProblem("");
+    setStatus(`Connecting ${preset.name}…`);
+    try {
+      const saved = await saveChatProvider(peer, {
+        id: preset.id,
+        preset: preset.id,
+        name: preset.name,
+        kind: preset.kind,
+        protocol: preset.protocol,
+        baseUrl: preset.baseUrl,
+        apiKey: key,
+      });
+      const tested = await testChatProvider(peer, { id: saved.provider.id });
+      setQuickKey("");
+      setStatus(`${preset.name} connected · ${tested.modelCount} models ready`);
+      await onReload(true);
+    } catch (err) {
+      setProblem((err as Error).message || "Could not connect that key.");
+      setStatus("");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const openPreset = (preset: ChatProviderPreset) => {
     const existing = providers.find((p) => p.id === preset.id);
@@ -169,54 +219,67 @@ export default function ChatProvidersSheet({
             <button
               type="button"
               className="cp-link"
-              onClick={() => (setDraft(null), setProblem(""), setStatus(""))}
+              onClick={() => (setDraft(null), setShowAdvanced(false), setProblem(""), setStatus(""))}
             >
               Back
             </button>
           </div>
-          <label className="cp-field">
-            <span>Name</span>
-            <input
-              type="text"
-              value={draft.name}
-              placeholder="Venice, My vLLM, Groq…"
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              required
-            />
-          </label>
-          <label className="cp-field">
-            <span>Base URL</span>
-            <input
-              type="url"
-              value={draft.baseUrl}
-              placeholder="https://api.venice.ai/api/v1"
-              onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
-              required
-            />
-          </label>
-          <label className="cp-field">
-            <span>
-              API Key{" "}
-              {draft.kind === "local" ? (
-                <small>(optional for local servers)</small>
-              ) : draft.hasExistingKey ? (
-                <small>(saved: {draft.keyHint} — leave blank to keep)</small>
-              ) : null}
-            </span>
-            <input
-              type="password"
-              autoComplete="off"
-              value={draft.apiKey}
-              placeholder={
-                draft.hasExistingKey
-                  ? "Enter a new key to replace"
-                  : draft.kind === "local"
-                    ? "Optional"
-                    : "Paste your API key"
-              }
-              onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
-            />
-          </label>
+          {draft.kind === "api" && (
+            <label className="cp-field">
+              <span>
+                API Key{" "}
+                {draft.hasExistingKey ? (
+                  <small>(saved: {draft.keyHint})</small>
+                ) : null}
+              </span>
+              <input
+                type="password"
+                autoComplete="off"
+                autoFocus
+                value={draft.apiKey}
+                placeholder={
+                  draft.hasExistingKey
+                    ? "Enter a new key to replace"
+                    : `Paste your ${draft.name || "API"} key`
+                }
+                onChange={(e) => setDraft({ ...draft, apiKey: e.target.value })}
+              />
+            </label>
+          )}
+          {(draft.kind === "local" || draft.preset === "custom" || showAdvanced) && (
+            <label className="cp-field">
+              <span>Server URL</span>
+              <input
+                type="url"
+                value={draft.baseUrl}
+                placeholder="http://127.0.0.1:11434/v1"
+                onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+                required
+              />
+            </label>
+          )}
+          {(draft.preset === "custom" || showAdvanced) && (
+            <label className="cp-field">
+              <span>Display Name</span>
+              <input
+                type="text"
+                value={draft.name}
+                placeholder="Venice, My vLLM, Groq…"
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                required
+              />
+            </label>
+          )}
+          {draft.preset !== "custom" && (
+            <button
+              type="button"
+              className="cp-link"
+              style={{ alignSelf: "flex-start" }}
+              onClick={() => setShowAdvanced((v) => !v)}
+            >
+              {showAdvanced ? "Hide advanced" : "Advanced URL / name"}
+            </button>
+          )}
           {draft.preset === "custom" && (
             <div className="cp-row">
               <label className="cp-field">
@@ -270,7 +333,7 @@ export default function ChatProvidersSheet({
                 </>
               ) : (
                 <>
-                  <Check size={15} /> Save &amp; Connect
+                  <Check size={15} /> Connect
                 </>
               )}
             </button>
@@ -278,6 +341,37 @@ export default function ChatProvidersSheet({
         </form>
       ) : (
         <>
+          <form className="cp-quick" onSubmit={(e) => void handleQuickConnect(e)}>
+            <input
+              type="password"
+              autoComplete="off"
+              aria-label="Paste any API key"
+              placeholder="Paste any API key (Venice, OpenAI, Claude, Groq…)"
+              value={quickKey}
+              onChange={(e) => {
+                const v = e.target.value;
+                setQuickKey(v);
+                const detected = detectPresetFromKey(v);
+                if (detected) setQuickPreset(detected);
+              }}
+            />
+            <select
+              aria-label="Provider"
+              value={quickPreset}
+              onChange={(e) => setQuickPreset(e.target.value)}
+            >
+              {presets
+                .filter((p) => p.kind === "api")
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+            <button type="submit" className="cp-primary" disabled={busy || !quickKey.trim()}>
+              {busy ? <LoaderCircle size={14} className="spin" /> : "Connect"}
+            </button>
+          </form>
           <div className="cp-section-head">
             <span>Connected &amp; Detected</span>
             <button
