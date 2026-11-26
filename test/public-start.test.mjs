@@ -7,6 +7,7 @@ import net from "node:net";
 import { once } from "node:events";
 import {
   createPublicStart,
+  ownerBootstrapRequest,
   readTailnetManifest,
   PUBLIC_CSP,
 } from "../server/public-start.mjs";
@@ -25,6 +26,7 @@ function fixture() {
   fs.writeFileSync(path.join(dist, "agent.html"), "<!doctype html>browser agent");
   fs.writeFileSync(path.join(dist, "favicon.svg"), "<svg/>");
   fs.writeFileSync(path.join(dist, "sw.js"), "// notifications only");
+  fs.writeFileSync(path.join(dist, "offline-shell.json"), '{"version":1,"entries":[]}');
   fs.writeFileSync(path.join(dist, "agent.mjs"), "// reach for agents");
   fs.writeFileSync(path.join(dist, "assets", "start-abc.js"), "console.log(1)");
   fs.writeFileSync(path.join(dist, "assets", "start-abc.js.br"), "BR");
@@ -165,6 +167,11 @@ test("serves the start page, its config and the browser client, nothing else", a
   assert.equal(worker.status, 200);
   assert.equal(worker.headers["content-type"], "text/javascript; charset=utf-8");
   assert.equal(worker.headers["cache-control"], "no-cache");
+  const offlineManifest = await get("/offline-shell.json");
+  assert.equal(offlineManifest.status, 200);
+  assert.equal(offlineManifest.headers["content-type"], "application/json");
+  assert.equal(offlineManifest.headers["cache-control"], "no-cache");
+  assert.equal(ownerBootstrapRequest({ method: "GET", url: "/offline-shell.json" }), true);
   // What an invited agent downloads and runs: always the current one.
   const agent = await get("/agent.mjs");
   assert.equal(agent.status, 200);

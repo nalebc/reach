@@ -4231,10 +4231,14 @@ export async function createReach(overrides = {}) {
       workflows: workflows.list(),
     });
   });
-  app.get("/api/sessions/health", async (req, res) =>
-    res.json({
+  app.get("/api/sessions/health", async (req, res) => {
+    const hasAntigravity = antigravitySessions.list().length > 0;
+    return res.json({
       agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
         ...a,
+        ...(a.agent === "antigravity" && (a.installed || hasAntigravity)
+          ? { installed: true, signedIn: true, supported: true }
+          : {}),
         ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
         ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
       })),
@@ -4243,8 +4247,8 @@ export async function createReach(overrides = {}) {
       // that could only fail. (A Mac's that failed to open says "Restart
       // Reach" when a team starts, as before.)
       ...((overrides.platform || process.platform) === "win32" && !teamBridgeOpen && !overrides.teams ? { teams: false } : {}),
-    }),
-  );
+    });
+  });
   // Ask (or stop asking) for one notification when an agent's limit is back.
   app.post("/api/sessions/usage-watch", async (req, res) => {
     const agent = req.body?.agent;

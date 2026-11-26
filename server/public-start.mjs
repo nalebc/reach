@@ -44,7 +44,7 @@ export function ownerBootstrapRequest(req) {
   if (!["GET", "HEAD"].includes(req.method)) return false;
   const route = (req.url || "/").split("?", 1)[0];
   return ownerPagePath(route) || route === "/reach-start.json" ||
-    ["/favicon.svg", "/fonts.css", "/manifest.webmanifest", "/sw.js"].includes(route) ||
+    ["/favicon.svg", "/fonts.css", "/manifest.webmanifest", "/sw.js", "/offline-shell.json"].includes(route) ||
     (route.startsWith("/assets/") && NAME.test(route.slice(7))) ||
     (route.startsWith("/tailnet/") && NAME.test(route.slice(8)));
 }
@@ -224,6 +224,7 @@ export function publicStartHandler({
         "/fonts.css",
         "/manifest.webmanifest",
         "/sw.js",
+        "/offline-shell.json",
         "/agent.mjs",
       ].includes(url)
     )

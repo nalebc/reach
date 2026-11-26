@@ -1218,8 +1218,11 @@ export default function EverythingChat({
   };
   const newApp =
     startApps.find((app) => app.agent === newPick) ||
-    (picked.agent === "all"
-      ? apps.find((app) => AGENTS.includes(app.agent as AgentName) && canAnswer(app.agent)) || apps.find((app) => app.agent !== "all") || picked
+    (picked.agent === "all" || (picked.agent === "antigravity" && picked.supported)
+      ? startApps.find((app) => AGENTS.includes(app.agent as AgentName) && canAnswer(app.agent)) ||
+        (readyProviderCount > 0 ? startApps.find((app) => app.agent === "api") : undefined) ||
+        startApps[0] ||
+        picked
       : picked);
   useEffect(() => {
     // The app last picked isn't here (anymore): All when there is one.
@@ -1459,6 +1462,7 @@ export default function EverythingChat({
             onOpen={openRef}
             onNew={() => {
               if (app.agent === "api") pickNew("api");
+              else if (app.agent === "antigravity" && readyProviderCount > 0 && !AGENTS.some((a) => canAnswer(a))) pickNew("api");
               setNewFolder("");
               setSheet("new");
             }}

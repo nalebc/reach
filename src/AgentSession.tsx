@@ -2336,9 +2336,9 @@ export default function AgentSessionView({
           // In the Claude app, working or asking: nothing to say (Oct 9: "it
           // is unnecessary"); what you send goes next in the same session.
           : ""
-      : codexHealth?.tooOld
+      : agent === "codex" && codexHealth?.tooOld
         ? tooOldLine("Codex", codexHealth.tooOld.to)
-      : codexHealth && codexHealth.installed && !codexHealth.signedIn
+      : agent === "codex" && codexHealth && codexHealth.installed && !codexHealth.signedIn
         ? `Codex is signed out on your ${word}.`
         : "";
   const outOfUsage = agent === "codex" && codexHealth?.usable === false;
