@@ -4,7 +4,7 @@ import type { Device, Peer } from "./api";
 import { ensureFunnelKeyBound } from "./device-transport";
 import { watchOwnerEnrollment, type OwnerSetup } from "./owner-connection";
 import type { StartConfig } from "./start-flow";
-import { funnelBrowser, tailnetBrowser, tailnetNode, type TailnetNode } from "./tailnet-transport";
+import { funnelBrowser, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
 import ConnectionStatus, { useConnectionWait } from "./ConnectionStatus";
 import "./owner-connection.css";
 
@@ -32,7 +32,7 @@ export function useOwnerConnection(peer: Peer | undefined, device: Device | null
   }, [key, connected, attempt]);
   let eligible = false;
   try {
-    eligible = !!tailnetNode() && !!peer && (reconnect || device?.ownerConnection === 1) && (!device || !!admin) &&
+    eligible = !!peer && (reconnect || device?.ownerConnection === 1) && (!device || !!admin) &&
       peer.transport !== "funnel" && location.hostname.endsWith(".ts.net") &&
       new URL(peer.url).hostname === location.hostname;
   } catch { /* A malformed saved address cannot start owner enrollment. */ }

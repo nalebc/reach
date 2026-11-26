@@ -1972,8 +1972,9 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     }
     return applyAgentPolicy(client, config);
   }
-  function verifyDeviceFunnel(token, keyThumbprint) {
+  function verifyDeviceFunnel(token, keyThumbprint, expectedToken) {
     if (!token || typeof token !== "string" || token.length > 256) return null;
+    if (expectedToken !== undefined && (typeof expectedToken !== "string" || !sameHash(hash(token), hash(expectedToken)))) return null;
     return verifyDeviceFunnelDigest(hash(token), keyThumbprint);
   }
   function pairingAdmission(pairingToken = "") {
@@ -2112,9 +2113,10 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     connectorsMemo = { revision, ended: endedVersion, at: now, map };
     return map;
   }
-  function verifyFunnel(token, keyThumbprint) {
+  function verifyFunnel(token, keyThumbprint, expectedToken) {
     if (typeof token !== "string" || !token || token.length > 256 ||
         !validBrowserBinding(keyThumbprint)) return null;
+    if (expectedToken !== undefined && (typeof expectedToken !== "string" || !sameHash(hash(token), hash(expectedToken)))) return null;
     const digest = hash(token);
     clients = loadJson(file, []);
     const now = Date.now();

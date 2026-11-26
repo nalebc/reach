@@ -433,13 +433,13 @@ export async function createReach(overrides = {}) {
   const verify = (req, token) => {
     const context = funnelRequests.get(req);
     const client = context
-      ? context.deviceFunnel
-        ? !paused && transportAvailable &&
-          (context.downloadLink
+      ? !paused && transportAvailable
+        ? context.deviceFunnel
+          ? context.downloadLink
             ? auth.verifyDeviceFunnelDigest(token, context.keyThumbprint)
-            : context.token === token && auth.verifyDeviceFunnel(token, context.keyThumbprint))
-        : context.token === token && !paused && transportAvailable &&
-          auth.verifyFunnel(token, context.keyThumbprint)
+            : auth.verifyDeviceFunnel(token, context.keyThumbprint, context.token)
+          : auth.verifyFunnel(token, context.keyThumbprint, context.token)
+        : null
       : auth.verify(token, req.reachIdentity);
     if (client?.kind === "guest" && client.macEntry?.status === "waiting") return null;
     if (!browserHostGuard.allows(req, client)) return null;
@@ -1723,7 +1723,7 @@ export async function createReach(overrides = {}) {
     notify({ category: "access", title: `${name} wants to come in`, body: `An agent is using this Mac, so you allow each new person once${device ? ` (${person.macEntry.nodeName})` : ""}.`, icon: "agent", tag: `person-waiting-${person.id}` });
     for (const nudge of presenceNudges) nudge();
   };
-  const ownerDeviceRoutes = new Set(["sessions", "push", "notifications", "reach"]);
+  const ownerDeviceRoutes = new Set(["sessions", "chat", "push", "notifications", "reach"]);
   const redeemRoutes = ["/api/guest/redeem", "/api/invitations/redeem"];
   app.use("/api", async (req, res, next) => {
     const route = (req.originalUrl || req.url || "").split("?", 1)[0];
@@ -1732,8 +1732,8 @@ export async function createReach(overrides = {}) {
     const verified = () =>
       context
         ? context.deviceFunnel
-          ? context.token === token && auth.verifyDeviceFunnel(token, context.keyThumbprint)
-          : context.token === token && auth.verifyFunnel(token, context.keyThumbprint)
+          ? auth.verifyDeviceFunnel(token, context.keyThumbprint, context.token)
+          : auth.verifyFunnel(token, context.keyThumbprint, context.token)
         : auth.verify(token, req.reachIdentity);
     const initialClient = token ? verified() : null;
     // These credentials can never use owner APIs. Refuse them before a

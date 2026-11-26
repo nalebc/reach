@@ -1,26 +1,17 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { atomicJson, loadJson } from "../core.mjs";
 import { streamChatCompletion } from "./stream.mjs";
 
 // Persistent direct-model chat sessions (Venice, OpenAI, Anthropic, Ollama,
-// vLLM, LM Studio, custom OpenAI-compatible). Stored as JSON under
-// <dataDir>/anything-chats/ and shaped identically to AgentSession/SessionItem
-// so they live naturally alongside Codex and Claude chats in one unified UI.
+// vLLM, LM Studio, custom OpenAI-compatible). Stored in <dataDir>/anything-chats.json
+// and shaped identically to AgentSession/SessionItem so they live naturally
+// alongside Codex and Claude chats in one unified UI.
 
-function writeJsonAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-  fs.renameSync(temp, file);
-}
-
-function readJsonSafe(file) {
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
+function cleanJsonValue(value) {
+  const bytes = Uint8Array.from(Buffer.from(JSON.stringify(value), "utf8"), (b) => b & 0xff);
+  return JSON.parse(new TextDecoder("utf-8").decode(bytes));
 }
 
 function titleFromText(text) {
@@ -36,13 +27,26 @@ function loadImages(imageIds, readImage) {
   const out = [];
   for (const id of imageIds.slice(0, 6)) {
     const file = readImage(id);
-    if (!file || !file.path || !fs.existsSync(file.path)) continue;
+    if (!file || !file.path) continue;
+    let fd;
     try {
-      const buf = fs.readFileSync(file.path);
-      const mediaType = file.mime || "image/png";
-      const base64 = buf.toString("base64");
-      out.push({ id, mediaType, base64, dataUrl: `data:${mediaType};base64,${base64}` });
-    } catch {}
+      fd = fs.openSync(file.path, "r");
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > 25 * 1024 * 1024) continue;
+      const raw = fs.readFileSync(fd);
+      const cleanBytes = Buffer.from(Uint8Array.from(raw, (b) => b & 0xff));
+      const mediaType = String(file.mime || "image/png").replace(/[^a-z0-9/+.-]/gi, "");
+      const base64 = cleanBytes.toString("base64");
+      out.push({ id: String(id), mediaType, base64, dataUrl: `data:${mediaType};base64,${base64}` });
+    } catch {
+      continue;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          fs.closeSync(fd);
+        } catch {}
+      }
+    }
   }
   return out;
 }
@@ -54,15 +58,31 @@ export function createApiChats({
   fetchImpl = fetch,
   now = Date.now,
 } = {}) {
-  const dir = path.join(dataDir, "anything-chats");
+  const storeFile = path.join(dataDir, "anything-chats.json");
+  const records = new Map();
+  const initial = loadJson(storeFile, null);
+  if (Array.isArray(initial?.chats)) {
+    for (const c of initial.chats) {
+      if (c && typeof c.id === "string" && /^[a-zA-Z0-9_-]{4,80}$/.test(c.id)) {
+        records.set(c.id, cleanJsonValue(c));
+      }
+    }
+  }
+
   const active = new Map(); // id -> { controller }
   const subscribers = new Map(); // id -> Set<() => void>
   const listListeners = new Set();
 
-  const fileOf = (id) => {
-    if (!/^[a-zA-Z0-9_-]{4,80}$/.test(String(id || "")))
+  const validateId = (id) => {
+    const key = String(id || "");
+    if (!/^[a-zA-Z0-9_-]{4,80}$/.test(key))
       throw Object.assign(new Error("Invalid chat ID."), { status: 400 });
-    return path.join(dir, `${id}.json`);
+    return key;
+  };
+
+  const persistStore = () => {
+    const snapshot = cleanJsonValue({ version: 1, chats: [...records.values()] });
+    atomicJson(storeFile, snapshot);
   };
 
   const notifyList = () => {
@@ -84,14 +104,16 @@ export function createApiChats({
   };
 
   const readRecord = (id) => {
-    const rec = readJsonSafe(fileOf(id));
+    const key = validateId(id);
+    const rec = records.get(key);
     if (!rec) throw Object.assign(new Error("Chat not found."), { status: 404 });
     return rec;
   };
 
   const saveRecord = (rec) => {
     rec.rev = (Number(rec.rev) || 0) + 1;
-    writeJsonAtomic(fileOf(rec.id), rec);
+    records.set(rec.id, rec);
+    persistStore();
     notifySession(rec.id);
     notifyList();
   };
@@ -148,7 +170,6 @@ export function createApiChats({
     rec.items.push(replyItem);
     saveRecord(rec);
 
-    // Build conversation history from completed user & assistant text messages.
     const history = [];
     for (const item of rec.items) {
       if (item.id === replyId || item.id === thinkingId) continue;
@@ -168,7 +189,8 @@ export function createApiChats({
       lastFlush = t;
       rec.updatedAt = t;
       rec.rev = (Number(rec.rev) || 0) + 1;
-      writeJsonAtomic(fileOf(rec.id), rec);
+      records.set(rec.id, rec);
+      persistStore();
       notifySession(rec.id);
     };
 
@@ -237,18 +259,15 @@ export function createApiChats({
       } finally {
         active.delete(rec.id);
         rec.updatedAt = now();
-        saveRecord(rec);
+        if (records.has(rec.id)) saveRecord(rec);
       }
     })();
   };
 
   return {
     list() {
-      if (!fs.existsSync(dir)) return [];
       const out = [];
-      for (const name of fs.readdirSync(dir)) {
-        if (!name.endsWith(".json")) continue;
-        const rec = readJsonSafe(path.join(dir, name));
+      for (const rec of records.values()) {
         if (rec?.id) out.push(toSession(rec));
       }
       return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -326,7 +345,7 @@ export function createApiChats({
       { text, images = [], providerId, model, systemPrompt, temperature, veniceWebSearch } = {},
     ) {
       const rec = readRecord(id);
-      if (active.has(id))
+      if (active.has(rec.id))
         throw Object.assign(new Error("Wait for the current reply to finish or stop it first."), {
           status: 409,
         });
@@ -365,7 +384,8 @@ export function createApiChats({
     },
 
     stop(id) {
-      const running = active.get(id);
+      const key = validateId(id);
+      const running = active.get(key);
       if (running) running.controller.abort();
       return { stopped: Boolean(running) };
     },
@@ -469,22 +489,25 @@ export function createApiChats({
     },
 
     remove(id) {
-      const running = active.get(id);
+      const key = validateId(id);
+      const running = active.get(key);
       if (running) running.controller.abort();
-      const file = fileOf(id);
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-      notifyList();
+      if (records.delete(key)) {
+        persistStore();
+        notifyList();
+      }
       return { deleted: true };
     },
 
     subscribe(id, listener) {
-      if (!subscribers.has(id)) subscribers.set(id, new Set());
-      subscribers.get(id).add(listener);
+      const key = validateId(id);
+      if (!subscribers.has(key)) subscribers.set(key, new Set());
+      subscribers.get(key).add(listener);
       return () => {
-        const set = subscribers.get(id);
+        const set = subscribers.get(key);
         if (!set) return;
         set.delete(listener);
-        if (!set.size) subscribers.delete(id);
+        if (!set.size) subscribers.delete(key);
       };
     },
 

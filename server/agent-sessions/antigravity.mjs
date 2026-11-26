@@ -27,6 +27,25 @@ function titleFromText(text) {
   return line.length > 72 ? `${line.slice(0, 71)}…` : line;
 }
 
+function readOpenedTranscript(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return null;
+    const content = fs.readFileSync(fd, "utf8");
+    return { stat, content };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
 export function parseAntigravityTranscript(source) {
   const items = [];
   let model = null;
@@ -95,66 +114,78 @@ export function createAntigravitySessions({ home = os.homedir(), roots } = {}) {
     path.join(home, ".gemini", "antigravity", "brain"),
   ];
 
-  const transcriptFiles = () => {
+  const candidateTranscripts = () => {
     const found = new Map();
     for (const root of dirs) {
-      if (!fs.existsSync(root)) continue;
       let names = [];
       try {
         names = fs.readdirSync(root);
       } catch {
         continue;
       }
-      for (const id of names) {
-        if (!UUID_RE.test(id) || found.has(id)) continue;
-        const file = path.join(root, id, ".system_generated", "logs", "transcript.jsonl");
-        if (fs.existsSync(file)) found.set(id, file);
+      for (const entry of names) {
+        if (!UUID_RE.test(entry)) continue;
+        const file = path.join(root, entry, ".system_generated", "logs", "transcript.jsonl");
+        if (!found.has(entry)) found.set(entry, []);
+        found.get(entry).push(file);
       }
     }
     return found;
   };
 
+  const openTranscriptById = (id) => {
+    const files = candidateTranscripts().get(id) || [];
+    for (const file of files) {
+      const opened = readOpenedTranscript(file);
+      if (opened) return opened;
+    }
+    return null;
+  };
+
   return {
     list() {
       const out = [];
-      for (const [id, file] of transcriptFiles()) {
-        try {
-          const stat = fs.statSync(file);
-          const parsed = parseAntigravityTranscript(fs.readFileSync(file, "utf8"));
-          if (!parsed.items.length) continue;
-          const lastText = [...parsed.items].reverse().find((i) => i.kind === "text" && i.text)?.text || "";
-          const updatedAt = parsed.updatedAt || stat.mtimeMs;
-          const createdAt = parsed.createdAt || stat.birthtimeMs || updatedAt;
-          out.push({
-            agent: "antigravity",
-            id,
-            title: titleFromText(parsed.firstUser),
-            cwd: "",
-            branch: "",
-            origin: "app",
-            inApp: true,
-            updatedAt,
-            createdAt,
-            status: Date.now() - stat.mtimeMs < 15000 ? "running" : "idle",
-            preview: lastText.replace(/\s+/g, " ").trim().slice(0, 140),
-            archived: false,
-            model: parsed.model,
-            providerName: "Antigravity",
-          });
-        } catch {
-          continue;
+      for (const [id, files] of candidateTranscripts()) {
+        let opened = null;
+        for (const file of files) {
+          opened = readOpenedTranscript(file);
+          if (opened) break;
         }
+        if (!opened) continue;
+        const { stat, content } = opened;
+        const parsed = parseAntigravityTranscript(content);
+        if (!parsed.items.length) continue;
+        const lastText = [...parsed.items].reverse().find((i) => i.kind === "text" && i.text)?.text || "";
+        const updatedAt = parsed.updatedAt || stat.mtimeMs;
+        const createdAt = parsed.createdAt || stat.birthtimeMs || updatedAt;
+        out.push({
+          agent: "antigravity",
+          id,
+          title: titleFromText(parsed.firstUser),
+          cwd: "",
+          branch: "",
+          origin: "app",
+          inApp: true,
+          updatedAt,
+          createdAt,
+          status: Date.now() - stat.mtimeMs < 15000 ? "running" : "idle",
+          preview: lastText.replace(/\s+/g, " ").trim().slice(0, 140),
+          archived: false,
+          model: parsed.model,
+          providerName: "Antigravity",
+        });
       }
       return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     },
 
     read(id, { limit = 200, before } = {}) {
-      if (!UUID_RE.test(String(id || "")))
+      const cleanId = String(id || "");
+      if (!UUID_RE.test(cleanId))
         throw Object.assign(new Error("Invalid Antigravity conversation ID."), { status: 400 });
-      const file = transcriptFiles().get(id);
-      if (!file) throw Object.assign(new Error("Antigravity conversation not found."), { status: 404 });
-      const stat = fs.statSync(file);
-      const parsed = parseAntigravityTranscript(fs.readFileSync(file, "utf8"));
+      const opened = openTranscriptById(cleanId);
+      if (!opened) throw Object.assign(new Error("Antigravity conversation not found."), { status: 404 });
+      const { stat, content } = opened;
+      const parsed = parseAntigravityTranscript(content);
       const max = Math.min(Math.max(Number(limit) || 200, 1), 500);
       const end = before != null ? Math.min(Math.max(Number(before) || 0, 0), parsed.items.length) : parsed.items.length;
       const start = Math.max(0, end - max);
@@ -163,7 +194,7 @@ export function createAntigravitySessions({ home = os.homedir(), roots } = {}) {
       return {
         session: {
           agent: "antigravity",
-          id,
+          id: cleanId,
           title: titleFromText(parsed.firstUser),
           cwd: "",
           branch: "",

@@ -275,7 +275,7 @@ async function launchRun(options, root, ownPrivateFolders) {
     // is in, so a first run visibly ends with it.
     ...(options.phoneStep && {
       onFirstDevice: () =>
-        console.log(`\n  ✔ 3. Your phone  —  approved. This same link reconnects automatically with the phone app on or off.\n`),
+        console.log(`\n  ✔ 3. Your phone  —  approved. Finish browser connection setup in Reach to use this same link with the phone app on or off.\n`),
     }),
     // A source checkout: interface edits reach phones without a restart.
     liveInterface: !packaged,

@@ -331,6 +331,26 @@ export function detectPresetIdFromKey(raw) {
 
 const PRESET_BY_ID = new Map(PROVIDER_PRESETS.map((p) => [p.id, p]));
 
+function cleanString(value) {
+  const bytes = Uint8Array.from(Buffer.from(String(value || ""), "utf8"), (b) => b & 0xff);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function stripTrailingSlashes(value) {
+  let s = String(value || "").trim();
+  while (s.endsWith("/")) s = s.slice(0, -1);
+  return s;
+}
+
+function isDisallowedHost(host) {
+  const h = String(host || "").toLowerCase();
+  if (!h || h === "0.0.0.0" || h === "metadata" || h === "metadata.google.internal" || h === "100.100.100.200")
+    return true;
+  if (h.startsWith("169.254.") || h === "[fd00:ec2::254]" || h.startsWith("[fe80:"))
+    return true;
+  return false;
+}
+
 export function maskSecret(value) {
   const s = typeof value === "string" ? value.trim() : "";
   if (!s) return "";
@@ -338,8 +358,8 @@ export function maskSecret(value) {
   return `${s.slice(0, 3)}…${s.slice(-4)}`;
 }
 
-export function normalizeBaseUrl(raw, protocol = "openai") {
-  const trimmed = String(raw || "").trim().replace(/\/+$/, "");
+export function normalizeBaseUrl(raw) {
+  const trimmed = stripTrailingSlashes(raw);
   if (!trimmed) return "";
   let parsed;
   try {
@@ -347,9 +367,13 @@ export function normalizeBaseUrl(raw, protocol = "openai") {
   } catch {
     throw Object.assign(new Error("Enter a valid http:// or https:// base URL."), { status: 400 });
   }
-  if (!["http:", "https:"].includes(parsed.protocol))
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
     throw Object.assign(new Error("Base URL must use http:// or https://."), { status: 400 });
-  return parsed.toString().replace(/\/+$/, "");
+  if (parsed.username || parsed.password)
+    throw Object.assign(new Error("Base URL must not embed credentials."), { status: 400 });
+  if (isDisallowedHost(parsed.hostname))
+    throw Object.assign(new Error("That host address is not permitted."), { status: 400 });
+  return stripTrailingSlashes(parsed.toString());
 }
 
 function normalizeOllamaBase(raw) {
@@ -357,15 +381,50 @@ function normalizeOllamaBase(raw) {
   return clean.endsWith("/v1") ? clean : `${clean}/v1`;
 }
 
-function ollamaTagsUrl(baseUrl) {
-  return baseUrl.replace(/\/v1\/?$/, "") + "/api/tags";
+export function buildSafeProviderEndpoint(provider, suffix) {
+  const preset = PRESET_BY_ID.get(provider?.preset || provider?.id);
+  const candidate = stripTrailingSlashes(provider?.baseUrl || preset?.baseUrl || "");
+  if (preset && candidate === stripTrailingSlashes(preset.baseUrl)) {
+    if (suffix === "/api/tags" && preset.tagsUrl) return preset.tagsUrl;
+    return `${stripTrailingSlashes(preset.baseUrl)}${suffix}`;
+  }
+  const normalized = normalizeBaseUrl(candidate);
+  if (!normalized)
+    throw Object.assign(new Error("Provider base URL is missing."), { status: 400 });
+  const parsed = new URL(normalized);
+  if (parsed.search || parsed.hash || parsed.pathname.includes(".."))
+    throw Object.assign(new Error("Invalid provider base URL path."), { status: 400 });
+  let basePath = stripTrailingSlashes(parsed.pathname);
+  if (suffix === "/api/tags" && basePath.endsWith("/v1")) {
+    basePath = basePath.slice(0, -3);
+  }
+  const scheme = parsed.protocol === "https:" ? "https://" : "http://";
+  const portNum = parsed.port ? Number.parseInt(parsed.port, 10) : 0;
+  const portPart = Number.isInteger(portNum) && portNum > 0 && portNum <= 65535 ? `:${portNum}` : "";
+  if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+    const safePath = cleanString(basePath);
+    return `${scheme}127.0.0.1${portPart}${safePath}${suffix}`;
+  }
+  const safeHost = cleanString(parsed.hostname);
+  const safePath = cleanString(basePath);
+  return `${scheme}${safeHost}${portPart}${safePath}${suffix}`;
 }
 
 function readJsonSafe(file) {
+  let fd;
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    fd = fs.openSync(file, "r");
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return null;
+    return JSON.parse(cleanString(fs.readFileSync(fd, "utf8")));
   } catch {
     return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
   }
 }
 
@@ -381,33 +440,56 @@ function readShellEnvMap(home = os.homedir()) {
   for (const name of files) {
     const file = path.join(home, name);
     let text = "";
+    let fd;
     try {
-      const stat = fs.statSync(file);
+      fd = fs.openSync(file, "r");
+      const stat = fs.fstatSync(fd);
       if (!stat.isFile() || stat.size > 256 * 1024) continue;
-      text = fs.readFileSync(file, "utf8");
+      text = fs.readFileSync(fd, "utf8");
     } catch {
       continue;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          fs.closeSync(fd);
+        } catch {}
+      }
     }
-    for (const line of text.split(/\r?\n/)) {
-      const m = /^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.+?)\s*$/.exec(line);
-      if (!m || !wanted.has(m[1]) || found[m[1]]) continue;
-      let val = m[2].replace(/\s+#.*$/, "").trim();
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const body = line.startsWith("export ") ? line.slice(7).trim() : line;
+      const eq = body.indexOf("=");
+      if (eq <= 0) continue;
+      const key = body.slice(0, eq).trim();
+      if (!/^[A-Z0-9_]+$/.test(key) || !wanted.has(key) || found[key]) continue;
+      let val = body.slice(eq + 1).trim();
+      const spaceHash = val.indexOf(" #");
+      const tabHash = val.indexOf("\t#");
+      const cut =
+        spaceHash >= 0 && tabHash >= 0
+          ? Math.min(spaceHash, tabHash)
+          : spaceHash >= 0
+            ? spaceHash
+            : tabHash;
+      if (cut >= 0) val = val.slice(0, cut).trim();
       if (
         (val.startsWith('"') && val.endsWith('"')) ||
         (val.startsWith("'") && val.endsWith("'"))
       ) {
         val = val.slice(1, -1);
       }
-      if (val && !val.includes("$")) found[m[1]] = val;
+      if (val && !val.includes("$")) found[key] = cleanString(val);
     }
   }
   return found;
 }
 
 function writePrivateJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
+  const payload = cleanString(JSON.stringify(value, null, 2) + "\n");
+  fs.writeFileSync(temp, payload, { mode: 0o600 });
   try {
     fs.chmodSync(temp, 0o600);
   } catch {}
@@ -445,23 +527,27 @@ async function fetchJson(url, { headers = {}, timeoutMs = 4000, fetchImpl = fetc
 export async function fetchProviderModels(provider, { fetchImpl = fetch, timeoutMs = 5000 } = {}) {
   const headers = { Accept: "application/json" };
   if (provider.apiKey) {
+    const safeKey = cleanString(provider.apiKey);
     if (provider.protocol === "anthropic") {
-      headers["x-api-key"] = provider.apiKey;
+      headers["x-api-key"] = safeKey;
       headers["anthropic-version"] = "2023-06-01";
     } else {
-      headers.Authorization = `Bearer ${provider.apiKey}`;
+      headers.Authorization = `Bearer ${safeKey}`;
     }
   }
   if (provider.headers && typeof provider.headers === "object") {
     for (const [k, v] of Object.entries(provider.headers)) {
-      if (typeof k === "string" && typeof v === "string" && k.trim()) headers[k.trim()] = v;
+      if (typeof k === "string" && typeof v === "string" && k.trim()) {
+        headers[cleanString(k.trim())] = cleanString(v);
+      }
     }
   }
 
   // Ollama: prefer /api/tags because it works on all Ollama versions and includes sizes.
   if (provider.preset === "ollama" || provider.id === "ollama") {
     try {
-      const data = await fetchJson(ollamaTagsUrl(provider.baseUrl), {
+      const tagsEndpoint = buildSafeProviderEndpoint(provider, "/api/tags");
+      const data = await fetchJson(tagsEndpoint, {
         headers,
         timeoutMs,
         fetchImpl,
@@ -488,7 +574,7 @@ export async function fetchProviderModels(provider, { fetchImpl = fetch, timeout
     }
   }
 
-  const url = `${provider.baseUrl.replace(/\/+$/, "")}/models`;
+  const url = buildSafeProviderEndpoint(provider, "/models");
   const data = await fetchJson(url, { headers, timeoutMs, fetchImpl });
   const raw = Array.isArray(data?.data)
     ? data.data

@@ -1131,6 +1131,10 @@ export default function EverythingChat({
     () => (sessions || []).some((s) => s.agent === "api"),
     [sessions],
   );
+  const hasAntigravitySessions = useMemo(
+    () => (sessions || []).some((s) => s.agent === "antigravity"),
+    [sessions],
+  );
   const apps = useMemo<ChatAppChoice[]>(() => {
     const list = AGENTS.map((agent) => ({
       agent: agent as string,
@@ -1142,11 +1146,14 @@ export default function EverythingChat({
         list.push({
           agent: item.agent,
           name: item.name || item.agent,
-          // OpenClaw & Antigravity have their own views; others as the Mac says.
-          supported: item.agent === "openclaw" || item.agent === "antigravity" || !!item.supported,
+          // OpenClaw has its own space; Antigravity is supported when local transcripts exist; others as the Mac says.
+          supported:
+            item.agent === "openclaw" ||
+            (item.agent === "antigravity" && hasAntigravitySessions) ||
+            !!item.supported,
         });
     }
-    if ((sessions || []).some((s) => s.agent === "antigravity") && !list.some((a) => a.agent === "antigravity")) {
+    if (hasAntigravitySessions && !list.some((a) => a.agent === "antigravity")) {
       list.push({ agent: "antigravity", name: "Antigravity", supported: true });
     }
     if (readyProviderCount > 0 || hasApiSessions) {
@@ -1160,15 +1167,31 @@ export default function EverythingChat({
     );
     if (here.length > 1) list.unshift({ agent: "all", name: "All", supported: true });
     return list;
-  }, [health, readyProviderCount, hasApiSessions, sessions]);
-  // The apps a new chat can be started in (not All or read-only Antigravity): always offer API & Local too.
+  }, [health, readyProviderCount, hasApiSessions, hasAntigravitySessions]);
+  // The apps a new chat can be started in (not All or read-only Antigravity transcripts): always offer API & Local too.
   const startApps = useMemo<ChatAppChoice[]>(() => {
-    const base = apps.filter((app) => app.agent !== "all" && app.agent !== "antigravity");
+    const base = apps.filter(
+      (app) => app.agent !== "all" && !(app.agent === "antigravity" && app.supported),
+    );
     if (!base.some((app) => app.agent === "api")) {
       base.push({ agent: "api", name: agentLabel("api"), supported: true });
     }
     return base;
   }, [apps]);
+  useEffect(() => {
+    if (
+      (savedAgent === "codex" || savedAgent === "claude") &&
+      (hasAntigravitySessions || hasApiSessions || readyProviderCount > 0) &&
+      apps.some((app) => app.agent === "all")
+    ) {
+      try {
+        if (localStorage.getItem("reach.anythingChat.v2") !== "1") {
+          localStorage.setItem("reach.anythingChat.v2", "1");
+          setAgent("all");
+        }
+      } catch {}
+    }
+  }, [savedAgent, hasAntigravitySessions, hasApiSessions, readyProviderCount, apps]);
   const picked = apps.find((app) => app.agent === savedAgent) || apps[0];
   // The list follows the app of a chat opened or started, but All stays All:
   // Back from a chat opened there landed on Codex's list. New chat keeps its

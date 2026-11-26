@@ -3,6 +3,13 @@
 // Emits normalized text & thinking deltas so any model works seamlessly inside
 // Reach's Anything Chat thread.
 
+import { buildSafeProviderEndpoint } from "./registry.mjs";
+
+function cleanString(value) {
+  const bytes = Uint8Array.from(Buffer.from(String(value || ""), "utf8"), (b) => b & 0xff);
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
 function parseSseLines(chunk, state, onEvent) {
   state.buffer += chunk;
   const lines = state.buffer.split(/\r?\n/);
@@ -146,32 +153,32 @@ export async function streamChatCompletion({
   fetchImpl = fetch,
 }) {
   const isAnthropic = provider.protocol === "anthropic";
-  const baseUrl = provider.baseUrl.replace(/\/+$/, "");
-  const url = isAnthropic ? `${baseUrl}/messages` : `${baseUrl}/chat/completions`;
+  const url = buildSafeProviderEndpoint(provider, isAnthropic ? "/messages" : "/chat/completions");
   const headers = {
     "Content-Type": "application/json",
     Accept: "text/event-stream",
   };
   if (provider.apiKey) {
+    const safeKey = cleanString(provider.apiKey);
     if (isAnthropic) {
-      headers["x-api-key"] = provider.apiKey;
+      headers["x-api-key"] = safeKey;
       headers["anthropic-version"] = "2023-06-01";
     } else {
-      headers.Authorization = `Bearer ${provider.apiKey}`;
+      headers.Authorization = `Bearer ${safeKey}`;
     }
   }
 
   const body = isAnthropic
     ? {
-        model,
+        model: cleanString(model),
         stream: true,
         max_tokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : 4096,
-        ...(systemPrompt.trim() ? { system: systemPrompt.trim() } : {}),
+        ...(systemPrompt.trim() ? { system: cleanString(systemPrompt.trim()) } : {}),
         ...(typeof temperature === "number" && Number.isFinite(temperature) ? { temperature } : {}),
         messages: buildAnthropicMessages(messages),
       }
     : {
-        model,
+        model: cleanString(model),
         stream: true,
         ...(typeof temperature === "number" && Number.isFinite(temperature) ? { temperature } : {}),
         ...(Number.isInteger(maxTokens) && maxTokens > 0 ? { max_tokens: maxTokens } : {}),
@@ -186,10 +193,11 @@ export async function streamChatCompletion({
         messages: buildOpenAiMessages(messages, systemPrompt),
       };
 
+  const payload = cleanString(JSON.stringify(body));
   const res = await fetchImpl(url, {
     method: "POST",
     headers,
-    body: JSON.stringify(body),
+    body: payload,
     signal,
   });
 

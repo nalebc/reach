@@ -72,9 +72,12 @@ function redeem(origin: string, secret: string): Promise<Redemption> {
   const existing = redemptions.get(key);
   if (existing) return existing;
   const promise = (async (): Promise<Redemption> => {
+    const funnel =
+      typeof document !== "undefined" &&
+      document.documentElement.dataset.connection === "funnel";
     const [invitationId, devKey] = await Promise.all([
       invitationIdentity(),
-      ensureDeviceKey().catch(() => null),
+      funnel ? ensureDeviceKey().catch(() => null) : Promise.resolve(null),
     ]);
     const response = await fetch(`${origin}/api/guest/redeem`, {
       method: "POST",

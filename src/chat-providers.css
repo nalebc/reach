@@ -24,7 +24,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   border: 1px solid rgb(255 255 255 / 0.08);
   background: rgb(255 255 255 / 0.03);
   padding: 2px 6px 2px 2px;
@@ -75,7 +75,7 @@
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 0;
   background: transparent;
   color: var(--muted, #94a3a0);
@@ -91,7 +91,7 @@
 .cp-empty {
   margin: 0;
   padding: 12px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   border: 1px dashed rgb(255 255 255 / 0.12);
   font-size: 13px;
   color: var(--muted, #94a3a0);
@@ -106,7 +106,7 @@
   flex-direction: column;
   gap: 5px;
   padding: 11px 12px;
-  border-radius: 12px;
+  border-radius: var(--r-md);
   border: 1px solid rgb(255 255 255 / 0.09);
   background: rgb(255 255 255 / 0.03);
   color: inherit;
@@ -167,7 +167,7 @@
 .cp-field select {
   width: 100%;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid rgb(255 255 255 / 0.14);
   background: rgb(0 0 0 / 0.25);
   color: inherit;
@@ -188,7 +188,7 @@
   align-items: center;
   gap: 7px;
   padding: 10px 16px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border: 0;
   background: var(--lime, #b9efd4);
   color: var(--lime-ink, #0f1b15);
@@ -216,7 +216,7 @@
   gap: 8px;
   margin: 0 0 12px;
   padding: 10px;
-  border-radius: 14px;
+  border-radius: var(--r-md);
   border: 1px solid rgb(185 239 212 / 0.2);
   background: rgb(185 239 212 / 0.05);
 }
@@ -224,7 +224,7 @@
   flex: 1 1 180px;
   min-width: 0;
   padding: 9px 11px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid rgb(255 255 255 / 0.14);
   background: rgb(0 0 0 / 0.25);
   color: inherit;
@@ -232,7 +232,7 @@
 }
 .cp-quick select {
   padding: 9px 10px;
-  border-radius: 10px;
+  border-radius: var(--r-sm);
   border: 1px solid rgb(255 255 255 / 0.14);
   background: rgb(0 0 0 / 0.25);
   color: inherit;

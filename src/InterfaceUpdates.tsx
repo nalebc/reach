@@ -5,6 +5,7 @@ import {
   checkForUpdates,
   getUpdateState,
   holdReload,
+  installUpdateNow,
   subscribeUpdates,
 } from "./build-reload";
 import "./interface-updates.css";
@@ -100,7 +101,7 @@ export default function InterfaceUpdates({ peer, owner = false }: { peer?: Peer;
               : "Couldn't update";
   const disabled = pending
     ? working
-    : state === "checking" || state === "reloading" || state === "waiting";
+    : state === "checking" || state === "reloading";
   const Icon = working ? LoaderCircle : pending ? CircleArrowUp : RefreshCw;
   const version = mac?.version || running;
   return (
@@ -111,7 +112,8 @@ export default function InterfaceUpdates({ peer, owner = false }: { peer?: Peer;
         aria-expanded={pending ? open : undefined}
         onClick={() => {
           if (pending) return setOpen((was) => !was);
-          checkForUpdates();
+          if (state === "waiting") installUpdateNow();
+          else checkForUpdates();
           void load(true);
         }}
       >

@@ -153,8 +153,8 @@ export default function ConnectForm({
     redeemed.current = true;
     const t = takeTicket();
     if (!t) return setJoining(false);
-    ensureDeviceKey()
-      .then((k) => k.jwk, () => undefined)
+    const funnel = document.documentElement.dataset.connection === "funnel";
+    (funnel ? ensureDeviceKey().then((k) => k.jwk, () => undefined) : Promise.resolve(undefined))
       .then((deviceKey) =>
         call(t.origin, "/api/auth/face-join", {
           ticket: t.ticket,
@@ -174,9 +174,16 @@ export default function ConnectForm({
         },
       );
   }, []);
-  // Auto-redeem a QR/URL #pair=<code> when arriving from `reach pair`.
+  // Auto-redeem a QR/URL #pair=<code> when arriving over Public Funnel from `reach pair`.
   useEffect(() => {
-    if (pairCodeUsed.current || isNative || joining || readPeers().length > 0) return;
+    if (
+      pairCodeUsed.current ||
+      isNative ||
+      joining ||
+      document.documentElement.dataset.connection !== "funnel" ||
+      readPeers().length > 0
+    )
+      return;
     const captured = readCapturedPairingCode();
     if (!captured) return;
     let origin: string;

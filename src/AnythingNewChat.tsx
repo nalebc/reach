@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import type { Peer } from "./api";
-import { previewUrl, uploadImage, type AgentSession } from "./agent-sessions";
+import { uploadImage, type AgentSession } from "./agent-sessions";
 import {
   quickConnectProvider,
   startApiChat,
@@ -24,7 +24,7 @@ import "./anything-chat.css";
 const LAST_PROVIDER_KEY = "reach.anythingChat.lastProvider";
 const LAST_MODEL_KEY = "reach.anythingChat.lastModel";
 
-type Attachment = { key: number; url: string; id?: string; error?: string };
+type Attachment = { key: number; label: string; id?: string; error?: string };
 
 export default function AnythingNewChat({
   peer,
@@ -92,12 +92,6 @@ export default function AnythingNewChat({
     if (autoFocus) inputRef.current?.focus();
   }, [autoFocus]);
 
-  useEffect(() => {
-    return () => {
-      for (const img of images) URL.revokeObjectURL(img.url);
-    };
-  }, []);
-
   // Keep a valid provider & model selected automatically.
   useEffect(() => {
     if (!readyProviders.length) return;
@@ -120,7 +114,8 @@ export default function AnythingNewChat({
     for (const file of files) {
       if (!file.type.startsWith("image/") && !/\.(heic|heif)$/i.test(file.name)) continue;
       const key = ++imgSeq.current;
-      setImages((list) => [...list, { key, url: URL.createObjectURL(file) }]);
+      const label = `Image ${key}`;
+      setImages((list) => [...list, { key, label }]);
       uploadImage(peer, file, file.name || "image").then(
         (id) => setImages((list) => list.map((i) => (i.key === key ? { ...i, id } : i))),
         (e) => setImages((list) => list.map((i) => (i.key === key ? { ...i, error: (e as Error).message } : i))),
@@ -367,14 +362,13 @@ export default function AnythingNewChat({
           {images.length > 0 && (
             <div className="as-attachments">
               {images.map((i) => (
-                <span key={i.key} className={`as-thumb ${i.error ? "bad" : ""}`} title={i.error}>
-                  <img src={previewUrl(i.url)} alt="" />
-                  {!i.id && !i.error && <LoaderCircle size={16} className="spin" />}
+                <span key={i.key} className={`ac-file-chip ${i.error ? "bad" : ""}`} title={i.error}>
+                  <span>{i.label}</span>
+                  {!i.id && !i.error && <LoaderCircle size={14} className="spin" />}
                   <button
                     type="button"
                     aria-label="Remove image"
                     onClick={() => {
-                      URL.revokeObjectURL(i.url);
                       setImages((list) => list.filter((x) => x.key !== i.key));
                     }}
                   >

@@ -7,7 +7,7 @@ import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, 
 import { quickConnectProvider, type ChatProvider } from "./chat-providers";
 import { mergeHealth } from "./usage";
 import { BrandCourier } from "./ReachIdentity";
-import { ChatLibraryHeader, ago, flowFinder, inFlowTitle, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
+import { ChatLibraryHeader, FlowRuns, ago, chatRank, firstFew, flowFinder, foldedAway, inFlowTitle, inFlows, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
 import { continuedHere, quietRelay, relayLine } from "./Relays";
 import type { FleetConnections } from "./useFleetConnections";
 import {
@@ -43,6 +43,20 @@ type Hit = { agent: string; id: string; role: string; at: number; snippet: strin
 export { projectOf } from "./agent-sessions";
 const base = (file: string) => file.split(/[\\/]/).pop() || file;
 const priority = (s: AgentSession) => (needsYou(s) ? 2 : s.status === "running" ? 1 : 0);
+const COUNTS = ["", "one", "two", "three", "four"];
+const whoChanged = (chats: { agent: string; title: string }[]) => {
+  const named = new Map<string, { agent: string; title: string; n: number }>();
+  for (const c of chats) {
+    const title = plainLine(c.title) || "a chat";
+    const one = named.get(`${c.agent}\n${title}`) || { agent: c.agent, title, n: 0 };
+    one.n++;
+    named.set(`${c.agent}\n${title}`, one);
+  }
+  const said = [...named.values()].map(({ agent, title, n }) =>
+    n > 1 ? `${COUNTS[n] || n} ${agentLabel(agent)} chats named “${title}”` : `${agentLabel(agent)} (“${title}”)`,
+  );
+  return said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0] || "";
+};
 // Which computer a row is on, when the page covers more than one.
 const Where = ({ computer }: { computer: Peer }) => <span className="hub-computer">{computer.name}</span>;
 
@@ -273,6 +287,7 @@ export default function ChatHub({
   const covered = fleet.filter((computer) => !missing(computer, "owner"));
   const asked = covered.filter((computer) => !missing(computer, "access"));
   const labelled = covered.length > 1;
+  const names = computerNames(covered.map((computer) => computer.name));
   const openOn = (computer: Peer, chat: Ref) => (computer.id === peer.id ? onOpen(chat) : onOpenOn?.(computer, chat));
   const [opened, setOpened] = useViewState<string[]>(scope, "folders", []);
   const [filter, setFilter] = useViewState<"all" | "subscriptions" | "antigravity" | "api" | "local">(scope, "filter", "all");
@@ -298,40 +313,28 @@ export default function ChatHub({
     ],
     [peer, all, lists],
   );
-  const timeGroups = useMemo(() => {
-    const flat: { computer: Peer; s: AgentSession }[] = [];
+  const projects = useMemo(() => {
+    const map = new Map<string, { computer: Peer; root: string; list: AgentSession[] }>();
     for (const { computer, sessions } of chatLists) {
       for (const s of sessions) {
         if (filter === "subscriptions" && (s.agent === "api" || s.agent === "antigravity")) continue;
         if (filter === "antigravity" && s.agent !== "antigravity") continue;
         if (filter === "api" && !(s.agent === "api" && s.providerKind !== "local")) continue;
         if (filter === "local" && !(s.agent === "api" && s.providerKind === "local")) continue;
-        flat.push({ computer, s });
+        const root = projectOfChat(s);
+        const key = `${computer.id}\n${root}`;
+        const group = map.get(key) || { computer, root, list: [] };
+        group.list.push(s);
+        map.set(key, group);
       }
     }
-    flat.sort(
-      (a, b) =>
-        priority(b.s) - priority(a.s) ||
-        (b.s.updatedAt || 0) - (a.s.updatedAt || 0),
-    );
-    const now = Date.now();
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const todayMs = startOfToday.getTime();
-    const yesterdayMs = todayMs - 86400_000;
-    const buckets: { id: string; label: string; rows: { computer: Peer; s: AgentSession }[] }[] = [
-      { id: "active", label: "Active now", rows: [] },
-      { id: "today", label: "Today", rows: [] },
-      { id: "yesterday", label: "Yesterday", rows: [] },
-      { id: "earlier", label: "Earlier", rows: [] },
-    ];
-    for (const item of flat) {
-      if (needsYou(item.s) || item.s.status === "running") buckets[0].rows.push(item);
-      else if ((item.s.updatedAt || 0) >= todayMs || now - (item.s.updatedAt || 0) < 3600_000) buckets[1].rows.push(item);
-      else if ((item.s.updatedAt || 0) >= yesterdayMs) buckets[2].rows.push(item);
-      else buckets[3].rows.push(item);
-    }
-    return buckets.filter((b) => b.rows.length > 0);
+    return [...map.entries()]
+      .map(([key, group]) => ({
+        ...group,
+        key,
+        list: group.list.sort((a, b) => priority(b) - priority(a) || (b.updatedAt || 0) - (a.updatedAt || 0)),
+      }))
+      .sort((a, b) => Math.max(...b.list.map((s) => s.updatedAt || 0)) - Math.max(...a.list.map((s) => s.updatedAt || 0)));
   }, [chatLists, filter]);
   // This computer's workflows: each one's chats together (FlowRuns).
   const flowsOf = useMemo(() => flowFinder(workflows?.list), [workflows?.list]);
@@ -620,102 +623,123 @@ export default function ChatHub({
           <LoaderCircle size={15} className="spin" /> Finding your conversations…
         </p>
       ) : (
-        <section className="ac-feed" aria-label="Conversations">
-          {timeGroups.map((bucket) => {
-            const open = opened.includes(bucket.id);
-            const shown = open ? bucket.rows : bucket.rows.slice(0, bucket.id === "earlier" ? 12 : 20);
+        <section className="chat-projects" aria-label="Projects">
+          {projects.map(({ key, computer, root, list }) => {
+            const open = opened.includes(key);
+            const overlaps = activityOf(computer)?.overlaps;
+            const warn = (Array.isArray(overlaps) ? overlaps : []).filter(
+              (o) => root && o.file.replace(/\\/g, "/").startsWith(root.replace(/\\/g, "/").replace(/\/$/, "") + "/"),
+            );
+            const agents = [...new Set(list.map((s) => s.agent))];
+            const flowOf = (s: AgentSession) => (computer.id === peer.id ? flowsOf(s) : undefined);
+            const rows = inFlows(list, flowOf);
+            const few = firstFew(rows, flowOf, chatRank);
             return (
-              <section className="ac-bucket" key={bucket.id} aria-label={bucket.label}>
-                <header className="ac-bucket-head">
-                  <h2>{bucket.label}</h2>
-                  <span className="ac-bucket-count">{bucket.rows.length}</span>
-                </header>
-                <div className="ac-cards">
-                  {shown.map(({ computer, s }) => {
-                    const files = changedBy.get(`${computer.id}\n${s.agent}:${s.id}`)?.files || [];
-                    const folder = s.cwd ? projectName(projectOfChat(s)) : "";
-                    const providerTag = s.providerName || agentLabel(s.agent);
-                    const badgeClass =
-                      s.agent === "api"
-                        ? s.providerKind === "local"
-                          ? "local"
-                          : "api"
-                        : s.agent === "antigravity"
-                          ? "ag"
-                          : "sub";
-                    return (
-                      <button
-                        key={`${computer.id}:${s.agent}:${s.id}`}
-                        className={`ac-chat-card ${needsYou(s) ? "waiting" : s.status}`}
-                        aria-label={`${s.title || "New chat"}, ${providerTag}${labelled ? `, on ${computer.name}` : ""}`}
-                        onClick={() => openOn(computer, s)}
-                      >
-                        <span className={`ac-card-avatar ${badgeClass}`} title={providerTag}>
-                          <AgentLogo agent={s.agent} logos={logos} size={18} />
+              <section
+                className="chat-group chat-project-group hub-project"
+                key={key}
+                aria-label={`${projectName(root) || "Workspace"} conversations${labelled ? ` on ${computer.name}` : ""}`}
+              >
+                <div className="chat-group-heading">
+                  <h2 title={root || undefined}>
+                    <FolderOpen size={14} />
+                    <span className="chat-project-name">{projectName(root) || "Workspace"}</span>
+                    <span className="hub-project-agents" aria-label={agents.map(agentLabel).join(", ")}>
+                      {agents.map((a) => (
+                        <AgentLogo key={a} agent={a} logos={logos} size={13} />
+                      ))}
+                    </span>
+                    {labelled && <Where computer={computer} />}
+                  </h2>
+                </div>
+                {warn.length > 0 && (
+                  <details className="hub-file-activity">
+                    <summary>{warn.length} shared {warn.length === 1 ? "file" : "files"} edited recently</summary>
+                    <p className="hub-note">Multiple chats edited these files. This does not necessarily mean their changes conflict.</p>
+                    {warn.map((o) => (
+                      <p key={o.file} className="hub-overlap" role="note">
+                        <span>
+                          <strong>{o.file.slice(root.replace(/[\\/]$/, "").length + 1) || base(o.file)}</strong> changed by{" "}
+                          {whoChanged(o.chats)} in the last half hour.
                         </span>
-                        <span className="ac-card-body">
-                          <span className="ac-row-head">
-                            <strong>
-                              {(flowsOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}
-                            </strong>
-                            <time className="ac-card-time" dateTime={new Date(s.updatedAt).toISOString()}>
+                      </p>
+                    ))}
+                  </details>
+                )}
+                <div className="chat-entries">
+                  <FlowRuns
+                    list={open ? rows : rows.slice(0, few)}
+                    flowOf={flowOf}
+                    rank={chatRank}
+                    onOpenFlow={workflows?.onOpenFlow}
+                    row={(s) => {
+                      const files = changedBy.get(`${computer.id}\n${s.agent}:${s.id}`)?.files || [];
+                      const providerTag = s.providerName || agentLabel(s.agent);
+                      const badgeClass =
+                        s.agent === "api"
+                          ? s.providerKind === "local"
+                            ? "local"
+                            : "api"
+                          : s.agent === "antigravity"
+                            ? "ag"
+                            : "sub";
+                      return (
+                        <button
+                          key={`${s.agent}:${s.id}`}
+                          className={`chat-card ac-chat-card ${needsYou(s) ? "waiting" : s.status}`}
+                          aria-label={`${s.title || "New chat"}, ${agentLabel(s.agent)}${labelled ? `, on ${computer.name}` : ""}`}
+                          onClick={() => openOn(computer, s)}
+                        >
+                          <span className={`chat-entry-logo ac-card-avatar ${badgeClass}`} title={providerTag}>
+                            <AgentLogo agent={s.agent} logos={logos} size={18} />
+                          </span>
+                          <span className="chat-entry-copy">
+                            <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
+                            <span className={`chat-card-preview ${files.length ? "hub-changed" : ""}`}>
+                              {files.length
+                                ? `Changed ${files
+                                    .slice(0, 3)
+                                    .map((f) => base(f.file))
+                                    .join(", ")}${files.length > 3 ? ` +${files.length - 3}` : ""}`
+                                : s.prompts?.[0]?.title || plainLine(s.preview || "") || providerTag}
+                            </span>
+                            {(s.agent === "api" || s.agent === "antigravity" || s.model) && (
+                              <span className="ac-card-meta">
+                                <span className={`ac-badge ${badgeClass}`}>{providerTag}</span>
+                                {s.model && <span className="ac-meta-pill">{s.model}</span>}
+                              </span>
+                            )}
+                          </span>
+                          <span className="chat-entry-tail">
+                            {needsYou(s) ? (
+                              <span className="chat-row-status waiting" aria-label="Needs you" title="Needs you">
+                                <span className="chat-state-dot" />
+                              </span>
+                            ) : s.status === "running" ? (
+                              <LoaderCircle className="chat-row-status spin" size={17} aria-label="Working" />
+                            ) : null}
+                            <time className="chat-card-time" dateTime={new Date(s.updatedAt).toISOString()}>
                               {ago(s.updatedAt)}
                             </time>
                           </span>
-                          <span className="ac-card-preview">
-                            {files.length
-                              ? `Changed ${files
-                                  .slice(0, 3)
-                                  .map((f) => base(f.file))
-                                  .join(", ")}${files.length > 3 ? ` +${files.length - 3}` : ""}`
-                              : s.prompts?.[0]?.title || plainLine(s.preview || "") || `${providerTag}${s.model ? ` · ${s.model}` : ""}`}
-                          </span>
-                          <span className="ac-card-meta">
-                            <span className={`ac-badge ${badgeClass}`}>{providerTag}</span>
-                            {s.model && <span className="ac-meta-pill">{s.model}</span>}
-                            {folder && (
-                              <span className="ac-meta-pill folder">
-                                <FolderOpen size={11} />
-                                {folder}
-                              </span>
-                            )}
-                            {labelled && <Where computer={computer} />}
-                            {needsYou(s) ? (
-                              <span className="ac-live-pill waiting">Needs you</span>
-                            ) : s.status === "running" ? (
-                              <span className="ac-live-pill running">
-                                <LoaderCircle size={11} className="spin" /> Working
-                              </span>
-                            ) : null}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    }}
+                  />
                 </div>
-                {bucket.rows.length > shown.length && (
+                {list.length > few && (
                   <button
-                    className="ac-show-more"
+                    className="chat-list-more"
                     aria-expanded={open}
-                    onClick={() =>
-                      setOpened((o) =>
-                        open ? o.filter((r) => r !== bucket.id) : [...o, bucket.id],
-                      )
-                    }
+                    onClick={() => setOpened((o) => (open ? o.filter((r) => r !== key) : [...o, key]))}
                   >
-                    {open ? "Show fewer" : `Show all ${bucket.rows.length}`}
+                    {open ? "Show fewer" : `Show all ${list.length - foldedAway(rows, flowOf, chatRank)}`}
                   </button>
                 )}
               </section>
             );
           })}
-          {!timeGroups.length && (
-            <div className="ac-empty-feed">
-              <Sparkles size={22} />
-              <strong>No conversations here yet</strong>
-              <p>Start a chat with Codex, Claude, Venice, Ollama, vLLM, or any API key.</p>
-            </div>
-          )}
+          {!projects.length && <p className="chat-list-note">No conversations yet on {names}.</p>}
         </section>
       )}
       {onNew && <button className="chat-quick-new" aria-label="New chat" onClick={() => onNew()}>

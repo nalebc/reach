@@ -462,6 +462,13 @@ self.addEventListener("fetch", event => {
   };
   const serve = async () => {
     try {
+      if (navigation && url.searchParams.has("reach-reconnect")) {
+        const live = await network().catch(() => null);
+        if (live?.ok) {
+          try { await (await caches.open(shellRecords)).delete(shellKey("active")); } catch {}
+          return live;
+        }
+      }
       const cache = await caches.open(shellRecords);
       const active = await shellJson(cache, "active");
       if (!active && (navigation || !shellPins.has(event.clientId))) return network();

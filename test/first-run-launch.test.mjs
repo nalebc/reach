@@ -45,8 +45,8 @@ test("someone at the terminal: the one address, its QR, both ways in, and a pair
   const reach = await start(t, {}, { FAKE_TTY: "1" });
   const text = reach.output();
   assert.ok(text.includes(`Open on your phone: https://${HOST}\n`), text);
-  assert.match(text, /With the Tailscale app on your phone, it opens straight away/);
-  assert.match(text, /No Tailscale app\? Sign in to Tailscale in the phone's browser to finish owner setup/);
+  assert.match(text, /With the Tailscale app on your phone, it connects privately straight away/);
+  assert.match(text, /No Tailscale app\? Open this link in any browser to connect securely and approve the code here/);
   assert.match(text, /▄|█/, "a QR");
   assert.equal(await exists(windowFile(reach.root)), true, "the start page answers for now");
   const state = await reach.fake.read();
