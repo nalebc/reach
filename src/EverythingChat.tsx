@@ -1143,10 +1143,9 @@ export default function EverythingChat({
           supported: item.agent === "openclaw" || !!item.supported,
         });
     }
-    const hasApiChats = (sessions || []).some((s) => s.agent === "api" && !s.archived);
-    if (readyProviderCount > 0 || hasApiChats) {
-      list.push({ agent: "api", name: agentLabel("api"), supported: true });
-    }
+    // Always surface API & Local (Venice, Ollama, vLLM, OpenAI, Anthropic, custom)
+    // alongside subscription agents so users can connect or chat from anywhere.
+    list.push({ agent: "api", name: agentLabel("api"), supported: true });
     // With more than one agent here (including API/Local): every chat together, first.
     const here = list.filter(
       (a) =>
@@ -1155,7 +1154,7 @@ export default function EverythingChat({
     );
     if (here.length > 1) list.unshift({ agent: "all", name: "All", supported: true });
     return list;
-  }, [health, readyProviderCount, sessions]);
+  }, [health]);
   // The apps a new chat can be started in (not All): always offer API & Local too.
   const startApps = useMemo<ChatAppChoice[]>(() => {
     const base = apps.filter((app) => app.agent !== "all");
@@ -1402,6 +1401,37 @@ export default function EverythingChat({
     return (
       <div className="chat-workspace">
         {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
+        {app.agent === "api" ? (
+          <ChatHub
+            active={active}
+            peer={peer}
+            computers={computers}
+            connections={connections}
+            onOpenOn={onOpenOn}
+            sessions={(sessions || []).filter((s) => s.agent === "api")}
+            relays={[]}
+            teams={[]}
+            logos={logos}
+            apps={apps}
+            appPending={appPending}
+            pending={0}
+            onAgentChange={setAgent}
+            onOpen={openRef}
+            onNew={() => {
+              pickNew("api");
+              setNewFolder("");
+              setSheet("new");
+            }}
+            onRefresh={() => {
+              void chatProviders.reload(true);
+              void reload();
+            }}
+            workflows={flowEntry}
+            health={health}
+            onProviders={() => setSheet("providers")}
+            providerCount={readyProviderCount}
+          />
+        ) : (
         <ChatList peer={peer} active={active} sessions={sessions} logos={logos} apps={apps} computers={computers?.length}
           agent={app.agent} onAgentChange={setAgent} appPending={appPending}
           onRefresh={() => { recheck(); void reload(); }} health={health}
@@ -1421,6 +1451,7 @@ export default function EverythingChat({
           failure={failure} onOpen={openChat}
           onNew={(cwd) => { setNewFolder(cwd || ""); setSheet("new"); }}
           pending={pending} onReview={() => setSheet("review")} />
+        )}
       </div>
     );
   };

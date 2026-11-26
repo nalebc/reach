@@ -1438,7 +1438,7 @@ export default function Screen({
                   {canControl && (
                     <label className="gs-row">
                       <Hand />
-                      <span className="gs-label">Touch</span>
+                      <span className="gs-label">Touch mode</span>
                       <select
                         className="gs-select"
                         aria-label="Touch mode"
@@ -1449,25 +1449,25 @@ export default function Screen({
                           setMode(e.target.value);
                         }}
                       >
-                        <option value="trackpad">Trackpad</option>
-                        <option value="direct">Direct</option>
-                        <option value="pan">Pan & zoom</option>
+                        <option value="direct">Direct (tap where you point)</option>
+                        <option value="trackpad">Trackpad (slide to move cursor)</option>
+                        <option value="pan">Pan &amp; zoom (move view only)</option>
                       </select>
                     </label>
                   )}
                   {canControl && (
                     <label className="gs-row">
                       <MousePointerClick />
-                      <span className="gs-label">Tap</span>
+                      <span className="gs-label">Tap action</span>
                       <select
                         className="gs-select"
                         aria-label="Tap action"
                         value={clickMode}
                         onChange={(e) => setClickMode(e.target.value)}
                       >
-                        <option value="left">Click</option>
-                        <option value="right">Right-click</option>
-                        <option value="double">Double-click</option>
+                        <option value="left">Left click</option>
+                        <option value="right">Right click</option>
+                        <option value="double">Double click</option>
                       </select>
                     </label>
                   )}
