@@ -17,14 +17,18 @@ Screen Control.
 
 ### Added
 
-- Unified Anything Chat provider registry and streaming engine supporting
-  Venice, OpenAI, Anthropic, OpenRouter, custom OpenAI/Anthropic-compatible
-  endpoints, and auto-detected local Ollama, vLLM, and LM Studio servers
-  alongside Codex, Claude Code, Gemini CLI, and OpenClaw.
-- Local-only `0600` provider credential storage with masked key display,
-  live model discovery, mid-chat model and provider switching, collapsible
-  reasoning blocks, and unified chat filters (`All`, `Subscriptions`, `API`,
-  `Local`).
+- Unified Anything Chat studio, provider registry, and streaming engine
+  supporting Venice, OpenAI, Anthropic, OpenRouter, Groq, xAI, DeepSeek,
+  Mistral, Gemini API, Hugging Face / Experiential Router, Cerebras, NVIDIA
+  NIM, Kimi, custom OpenAI/Anthropic-compatible endpoints, and auto-detected
+  local Ollama, vLLM, LM Studio, llama.cpp/MLX, Jan, and Exo servers alongside
+  Codex, Claude Code, Antigravity, Gemini CLI, and OpenClaw.
+- One-click API key and server URL onboarding that automatically identifies
+  providers by key signature or parallel model-endpoint probing, stores
+  credentials locally with `0600` permissions, and supports mid-chat model and
+  provider switching plus cross-provider conversation handoff (`@` mentions and
+  fork/continue across Codex, Claude, Antigravity, cloud APIs, and local
+  models).
 - Cryptographically signed Public Funnel device gateway allowing any browser
   to connect rapidly when Tailscale is not installed on the client device,
   with one-tap upgrade to Private Tailscale whenever available.
@@ -38,9 +42,10 @@ Screen Control.
   via unified resume detection, bounded IndexedDB storage timeouts, stale
   socket teardown, and pruned navigation history recovery.
 - Fullscreen Screen Control renders pure black edge-to-edge with no gray
-  safe-area or letterbox boxes, decouples pointer move and scroll pacing at
-  8 ms, coalesces matching-phase server scrolls, caches the 2D canvas
-  context, and recovers cleanly from dropped or orphaned pointer captures.
+  safe-area or letterbox boxes, coalesces stale pre-tap probes so clicks land
+  without Accessibility queue lag, activates the mobile keyboard reliably on
+  first touch with iOS viewport-resize blur protection and multiline Return
+  dispatch, and organizes Screen options into clearly labeled sections.
 
 ## [0.5.2] — 2026-11-03
 

@@ -257,7 +257,77 @@ export const PROVIDER_PRESETS = [
       { id: "command-a-03-2025", name: "Command A" },
     ],
   },
+  {
+    id: "huggingface",
+    name: "Hugging Face / Experiential",
+    kind: "api",
+    protocol: "openai",
+    baseUrl: "https://router.huggingface.co/v1",
+    envKey: "HF_TOKEN",
+    requiresKey: true,
+    description: "Open & experiential models via Hugging Face Inference Router",
+    defaultModels: [
+      { id: "Qwen/Qwen2.5-72B-Instruct", name: "Qwen 2.5 72B Instruct" },
+      { id: "deepseek-ai/DeepSeek-R1", name: "DeepSeek R1" },
+    ],
+  },
+  {
+    id: "cerebras",
+    name: "Cerebras",
+    kind: "api",
+    protocol: "openai",
+    baseUrl: "https://api.cerebras.ai/v1",
+    envKey: "CEREBRAS_API_KEY",
+    requiresKey: true,
+    description: "Wafer-scale instant inference via Cerebras API key",
+    defaultModels: [
+      { id: "llama-3.3-70b", name: "Llama 3.3 70B" },
+    ],
+  },
+  {
+    id: "nvidia",
+    name: "NVIDIA NIM",
+    kind: "api",
+    protocol: "openai",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    envKey: "NVIDIA_API_KEY",
+    requiresKey: true,
+    description: "Nemotron, DeepSeek & Llama models via NVIDIA NIM key",
+    defaultModels: [
+      { id: "nvidia/llama-3.3-nemotron-super-49b-v1", name: "Nemotron Super 49B" },
+    ],
+  },
+  {
+    id: "moonshot",
+    name: "Kimi (Moonshot)",
+    kind: "api",
+    protocol: "openai",
+    baseUrl: "https://api.moonshot.ai/v1",
+    envKey: "MOONSHOT_API_KEY",
+    requiresKey: true,
+    description: "Kimi K2 models via Moonshot API key",
+    defaultModels: [
+      { id: "kimi-k2-0711-preview", name: "Kimi K2" },
+    ],
+  },
 ];
+
+export function detectPresetIdFromKey(raw) {
+  const k = String(raw || "").trim();
+  if (!k) return null;
+  if (k.startsWith("sk-ant-")) return "anthropic";
+  if (k.startsWith("sk-or-")) return "openrouter";
+  if (k.startsWith("gsk_")) return "groq";
+  if (k.startsWith("xai-")) return "xai";
+  if (k.startsWith("AIza")) return "gemini-api";
+  if (k.startsWith("pplx-")) return "perplexity";
+  if (k.startsWith("fw_")) return "fireworks";
+  if (k.startsWith("hf_")) return "huggingface";
+  if (k.startsWith("csk-")) return "cerebras";
+  if (k.startsWith("nvapi-")) return "nvidia";
+  if (/^(VENICE-|vn_)/i.test(k)) return "venice";
+  return null;
+}
 
 const PRESET_BY_ID = new Map(PROVIDER_PRESETS.map((p) => [p.id, p]));
 
@@ -307,7 +377,7 @@ function readShellEnvMap(home = os.homedir()) {
   const wanted = new Set(
     PROVIDER_PRESETS.flatMap((p) => [p.envKey, p.envUrl].filter(Boolean)),
   );
-  const files = [".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".env"];
+  const files = [".zshenv", ".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".profile", ".env"];
   for (const name of files) {
     const file = path.join(home, name);
     let text = "";
@@ -744,6 +814,131 @@ export function createChatProviders({
         throw Object.assign(new Error(entry.error || "Could not load models from provider."), { status: 502 });
       }
       return { models: entry.models, reachable: entry.reachable, error: entry.error };
+    },
+
+    async autoConnectKey(rawInput, { preferredPreset = "" } = {}) {
+      const raw = String(rawInput || "").trim();
+      if (!raw) throw Object.assign(new Error("Paste an API key or server URL first."), { status: 400 });
+
+      // Support pasting a local/remote OpenAI-compatible URL directly in the same box!
+      if (/^https?:\/\//i.test(raw)) {
+        const cleanUrl = normalizeBaseUrl(raw, "openai");
+        const parsed = new URL(cleanUrl);
+        const hostLabel = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost"
+          ? `Local (${parsed.port || "http"})`
+          : parsed.hostname;
+        const matchedLocal = PROVIDER_PRESETS.find(
+          (p) => p.kind === "local" && cleanUrl.startsWith(p.baseUrl.replace(/\/v1$/, "")),
+        );
+        const saved = this.upsert({
+          ...(matchedLocal ? { id: matchedLocal.id, preset: matchedLocal.id, name: matchedLocal.name, kind: "local" } : { preset: "custom", name: hostLabel, kind: "local" }),
+          protocol: "openai",
+          baseUrl: cleanUrl.endsWith("/v1") ? cleanUrl : `${cleanUrl}/v1`,
+        });
+        const tested = await this.test({ id: saved.id }).catch(() => ({ modelCount: saved.modelCount || 0, models: saved.models || [] }));
+        return { provider: resolveInternal(saved.id) ? toPublic(resolveInternal(saved.id)) : saved, modelCount: tested.modelCount, models: tested.models };
+      }
+
+      const exactId = detectPresetIdFromKey(raw);
+      const apiPresets = PROVIDER_PRESETS.filter((p) => p.kind === "api");
+      if (exactId) {
+        const preset = PRESET_BY_ID.get(exactId);
+        const saved = this.upsert({
+          id: preset.id,
+          preset: preset.id,
+          name: preset.name,
+          kind: "api",
+          protocol: preset.protocol,
+          baseUrl: preset.baseUrl,
+          apiKey: raw,
+        });
+        const tested = await this.test({ id: saved.id }).catch(() => ({
+          modelCount: preset.defaultModels?.length || 0,
+          models: preset.defaultModels || [],
+        }));
+        return {
+          provider: toPublic(resolveInternal(saved.id)),
+          modelCount: tested.modelCount,
+          models: tested.models,
+          detectedPreset: preset.id,
+        };
+      }
+
+      // Ambiguous key (e.g. sk-... or raw token used by Venice, OpenAI, DeepSeek, Mistral, Together, etc.):
+      // probe candidate endpoints in parallel so the user never has to guess which provider to pick!
+      const priorityOrder = [
+        ...(preferredPreset ? [preferredPreset] : []),
+        "venice",
+        "openai",
+        "deepseek",
+        "openrouter",
+        "anthropic",
+        "mistral",
+        "together",
+        "groq",
+        "xai",
+        "fireworks",
+        "perplexity",
+        "cohere",
+        "huggingface",
+        "cerebras",
+        "nvidia",
+        "moonshot",
+      ];
+      const seen = new Set();
+      const candidates = priorityOrder
+        .filter((id) => !seen.has(id) && seen.add(id))
+        .map((id) => PRESET_BY_ID.get(id))
+        .filter(Boolean);
+
+      const probeResults = await Promise.all(
+        candidates.map(async (preset) => {
+          try {
+            const models = await fetchProviderModels(
+              {
+                id: preset.id,
+                preset: preset.id,
+                protocol: preset.protocol,
+                baseUrl: preset.baseUrl,
+                apiKey: raw,
+              },
+              { fetchImpl, timeoutMs: 4000 },
+            );
+            return models.length > 0 ? { preset, models } : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      const winner = probeResults.find(Boolean);
+      if (winner) {
+        const saved = this.upsert({
+          id: winner.preset.id,
+          preset: winner.preset.id,
+          name: winner.preset.name,
+          kind: "api",
+          protocol: winner.preset.protocol,
+          baseUrl: winner.preset.baseUrl,
+          apiKey: raw,
+        });
+        modelCache.set(saved.id, { at: now(), models: winner.models, reachable: true, error: "" });
+        return {
+          provider: toPublic(resolveInternal(saved.id)),
+          modelCount: winner.models.length,
+          models: winner.models.slice(0, 80),
+          detectedPreset: winner.preset.id,
+        };
+      }
+
+      // If a preferred preset was given (or fallback to Venice/OpenAI), surface a clear message.
+      const fallback = PRESET_BY_ID.get(preferredPreset) || apiPresets[0];
+      throw Object.assign(
+        new Error(
+          `Could not verify that key automatically against Venice, OpenAI, Claude, DeepSeek, or OpenRouter. Check the key or pick ${fallback?.name || "a provider"} manually.`,
+        ),
+        { status: 400 },
+      );
     },
   };
 }

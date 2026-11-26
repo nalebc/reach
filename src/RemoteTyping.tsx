@@ -203,7 +203,13 @@ export default function RemoteTyping({
         // Explicit keyboard-button fallback for apps without accessibility fields.
         for (let i = 0; i < edit.delete; i++)
           dispatch({ type: "key", key: "backspace" });
-        if (edit.text) dispatch({ type: "text", text: edit.text });
+        if (edit.text) {
+          const lines = edit.text.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i]) dispatch({ type: "text", text: lines[i] });
+            if (i < lines.length - 1) dispatch({ type: "key", key: "enter" });
+          }
+        }
       }
     } catch (error) {
       fail(error as Error);
@@ -236,7 +242,7 @@ export default function RemoteTyping({
       // iOS Safari can fire a transient blur while the software keyboard
       // animates in and resizes the visual viewport; keep focus instead of
       // immediately dismissing the keyboard the user just opened.
-      if (Date.now() - openedAt.current < 250 && valid.current) {
+      if (Date.now() - openedAt.current < 450 && valid.current) {
         event.currentTarget.focus({ preventScroll: true });
         return;
       }

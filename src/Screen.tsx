@@ -180,6 +180,7 @@ export default function Screen({
   );
   const [helperBusy, setHelperBusy] = useState(false);
   const helperPending = useRef(false);
+  const keyboardTouchedAt = useRef(-Infinity);
   const [storedTypingTarget, storeTypingTarget] = useState<
     | (TextTarget & {
         point?: { x: number; y: number };
@@ -1228,7 +1229,20 @@ export default function Screen({
                   }
                   aria-pressed={typing}
                   disabled={!usable}
+                  onTouchStart={() => {
+                    if (!typing) prepareKeyboard(typingEditor.current);
+                  }}
+                  onTouchEnd={(event) => {
+                    if (!usable) return;
+                    event.preventDefault();
+                    keyboardTouchedAt.current = performance.now();
+                    if (typing) {
+                      typingEditor.current?.blur();
+                      clearTyping();
+                    } else openKeyboard();
+                  }}
                   onClick={() => {
+                    if (performance.now() - keyboardTouchedAt.current < 500) return;
                     if (typing) {
                       typingEditor.current?.blur();
                       clearTyping();
@@ -1330,21 +1344,9 @@ export default function Screen({
                   <ChevronRight size={18} /> Back
                 </button>
               )}
-              {/* Secondary controls and commands share one options panel. */}
+              {/* Secondary controls and commands share one clearly organized options panel. */}
               {panel === "more" && (
                 <>
-                  {(control || (hears && !paused)) && <div className="gs-group">
-                    {control && <button className="gs-row" disabled={!usable || clipboardBusy}
-                      onClick={() => { setPanel(null); void pastePhone(); }}>
-                      <ClipboardPaste /><span className="gs-label">Paste from your phone</span>
-                    </button>}
-                    {hears && !paused && <button className="gs-row" aria-pressed={sound.on}
-                      aria-busy={sound.state === "starting" || undefined}
-                      onClick={() => sound.on ? sound.stop() : sound.start()}>
-                      {sound.on ? <Volume2 /> : <VolumeX />}<span className="gs-label">Sound</span>
-                      <span className="gs-value">{sound.state === "starting" ? "Starting…" : sound.on ? "On" : "Off"}</span>
-                    </button>}
-                  </div>}
                   {control && appContext.app && (
                     <AppCommandList
                       app={appContext.app}
@@ -1364,38 +1366,111 @@ export default function Screen({
                       }
                     />
                   )}
-                  {(control || (canControl && device.capabilities.apps)) && (
-                    <div className="gs-group">
-                      {control && (
-                        <button
-                          className="gs-row"
-                          disabled={!usable || clipboardBusy}
-                          onClick={() => {
-                            setPanel(null);
-                            void copySelectedText();
-                          }}
-                        >
-                          <Copy />
-                          <span className="gs-label">Copy selected text</span>
-                        </button>
-                      )}
-                      {control && (
-                        <button className="gs-row" onClick={() => setPanel("clipboard")}>
-                          <Clipboard />
-                          <span className="gs-label">Clipboard</span>
+                  {(canControl || displays.length > 1) && (
+                    <>
+                      <h3 className="gs-title">Pointer &amp; click</h3>
+                      <div className="gs-group">
+                        <button className="gs-row" onClick={() => setPanel("touch")}>
+                          <Hand />
+                          <span className="gs-label">
+                            Touch &amp; mouse
+                            <small>
+                              {mode === "direct"
+                                ? "Tap where you point"
+                                : mode === "trackpad"
+                                  ? "Slide to move cursor"
+                                  : "Pan & zoom only"}
+                              {canControl
+                                ? ` · ${clickMode === "right" ? "Right click" : clickMode === "double" ? "Double click" : "Left click"}`
+                                : ""}
+                            </small>
+                          </span>
+                          <span className="gs-value">
+                            {mode === "direct" ? "Direct" : mode === "trackpad" ? "Trackpad" : "Pan"}
+                          </span>
                           <ChevronRight className="gs-chevron" size={18} />
                         </button>
-                      )}
-                      {canControl && device.capabilities.apps && (
-                        <button className="gs-row" onClick={() => setPanel("apps")}>
-                          <AppWindow />
-                          <span className="gs-label">Open an app</span>
-                          <ChevronRight className="gs-chevron" size={18} />
-                        </button>
-                      )}
-                    </div>
+                      </div>
+                    </>
                   )}
+                  {(control || (canControl && device.capabilities.apps)) && (
+                    <>
+                      <h3 className="gs-title">Clipboard &amp; apps</h3>
+                      <div className="gs-group">
+                        {control && (
+                          <button
+                            className="gs-row"
+                            disabled={!usable || clipboardBusy}
+                            onClick={() => {
+                              setPanel(null);
+                              void pastePhone();
+                            }}
+                          >
+                            <ClipboardPaste />
+                            <span className="gs-label">
+                              Paste from your phone
+                              <small>Type copied phone text at cursor</small>
+                            </span>
+                          </button>
+                        )}
+                        {control && (
+                          <button
+                            className="gs-row"
+                            disabled={!usable || clipboardBusy}
+                            onClick={() => {
+                              setPanel(null);
+                              void copySelectedText();
+                            }}
+                          >
+                            <Copy />
+                            <span className="gs-label">
+                              Copy selected text
+                              <small>Copy highlighted text to your phone</small>
+                            </span>
+                          </button>
+                        )}
+                        {control && (
+                          <button className="gs-row" onClick={() => setPanel("clipboard")}>
+                            <Clipboard />
+                            <span className="gs-label">
+                              Clipboard
+                              <small>Inspect or transfer text manually</small>
+                            </span>
+                            <ChevronRight className="gs-chevron" size={18} />
+                          </button>
+                        )}
+                        {canControl && device.capabilities.apps && (
+                          <button className="gs-row" onClick={() => setPanel("apps")}>
+                            <AppWindow />
+                            <span className="gs-label">
+                              Open an app
+                              <small>Switch or launch apps on {device.name}</small>
+                            </span>
+                            <ChevronRight className="gs-chevron" size={18} />
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  <h3 className="gs-title">Stream &amp; connection</h3>
                   <div className="gs-group">
+                    {hears && !paused && (
+                      <button
+                        className="gs-row"
+                        aria-pressed={sound.on}
+                        aria-busy={sound.state === "starting" || undefined}
+                        onClick={() => (sound.on ? sound.stop() : sound.start())}
+                      >
+                        {sound.on ? <Volume2 /> : <VolumeX />}
+                        <span className="gs-label">
+                          Sound
+                          <small>Stream audio from {device.name}</small>
+                        </span>
+                        <span className="gs-value">
+                          {sound.state === "starting" ? "Starting…" : sound.on ? "On" : "Off"}
+                        </span>
+                      </button>
+                    )}
                     <button
                       className="gs-row"
                       onClick={() => {
@@ -1407,18 +1482,17 @@ export default function Screen({
                       }}
                     >
                       {live ? <Pause /> : <Play />}
-                      <span className="gs-label">{live ? "Pause" : "Resume"}</span>
+                      <span className="gs-label">
+                        {live ? "Pause" : "Resume"}
+                        <small>{live ? "Temporarily freeze screen stream" : "Resume live screen stream"}</small>
+                      </span>
                     </button>
-                    {(canControl || displays.length > 1) && (
-                      <button className="gs-row" onClick={() => setPanel("touch")}>
-                        <Hand />
-                        <span className="gs-label">Touch & mouse</span>
-                        <ChevronRight className="gs-chevron" size={18} />
-                      </button>
-                    )}
                     <button className="gs-row" onClick={() => setPanel("connection")}>
                       <Activity />
-                      <span className="gs-label">Connection</span>
+                      <span className="gs-label">
+                        Connection
+                        <small>Quality, latency &amp; screen access</small>
+                      </span>
                       <span className="gs-value">{frameRate}</span>
                       <ChevronRight className="gs-chevron" size={18} />
                     </button>
@@ -1426,100 +1500,120 @@ export default function Screen({
                 </>
               )}
               {panel === "touch" && (
-                <div className="gs-group">
-                  {canControl && device.platform === "darwin" && (
-                    <button className="gs-row" aria-pressed={touchAssist}
-                      onClick={() => setTouchAssist(!touchAssist)}>
-                      <MousePointerClick />
-                      <span className="gs-label">Touch assistance</span>
-                      <span className="gs-value">{touchAssist ? "On" : "Off"}</span>
-                    </button>
-                  )}
-                  {canControl && (
-                    <label className="gs-row">
-                      <Hand />
-                      <span className="gs-label">Touch mode</span>
-                      <select
-                        className="gs-select"
-                        aria-label="Touch mode"
-                        value={mode}
-                        onChange={(e) => {
+                <>
+                  <div className="gs-group">
+                    {canControl && (
+                      <label className="gs-row">
+                        <Hand />
+                        <span className="gs-label">
+                          Touch mode
+                          <small>How your finger moves the pointer</small>
+                        </span>
+                        <select
+                          className="gs-select"
+                          aria-label="Touch mode"
+                          value={mode}
+                          onChange={(e) => {
+                            void input.send({ type: "release" }).catch(() => {});
+                            setDrag(false);
+                            setMode(e.target.value);
+                          }}
+                        >
+                          <option value="direct">Direct (tap where you point)</option>
+                          <option value="trackpad">Trackpad (slide to move cursor)</option>
+                          <option value="pan">Pan &amp; zoom (move view only)</option>
+                        </select>
+                      </label>
+                    )}
+                    {canControl && (
+                      <label className="gs-row">
+                        <MousePointerClick />
+                        <span className="gs-label">
+                          Tap action
+                          <small>What a single tap sends</small>
+                        </span>
+                        <select
+                          className="gs-select"
+                          aria-label="Tap action"
+                          value={clickMode}
+                          onChange={(e) => setClickMode(e.target.value)}
+                        >
+                          <option value="left">Left click</option>
+                          <option value="right">Right click</option>
+                          <option value="double">Double click</option>
+                        </select>
+                      </label>
+                    )}
+                    {canControl && (
+                      <button
+                        className="gs-row"
+                        disabled={!usable || mode === "pan"}
+                        aria-pressed={drag}
+                        onClick={() => {
                           void input.send({ type: "release" }).catch(() => {});
-                          setDrag(false);
-                          setMode(e.target.value);
+                          setDrag(!drag);
                         }}
                       >
-                        <option value="direct">Direct (tap where you point)</option>
-                        <option value="trackpad">Trackpad (slide to move cursor)</option>
-                        <option value="pan">Pan &amp; zoom (move view only)</option>
-                      </select>
-                    </label>
-                  )}
-                  {canControl && (
-                    <label className="gs-row">
-                      <MousePointerClick />
-                      <span className="gs-label">Tap action</span>
-                      <select
-                        className="gs-select"
-                        aria-label="Tap action"
-                        value={clickMode}
-                        onChange={(e) => setClickMode(e.target.value)}
+                        <Move />
+                        <span className="gs-label">
+                          Drag
+                          <small>Keep mouse button held while moving</small>
+                        </span>
+                        <span className="gs-value">{drag ? "On · touch and move" : "Off"}</span>
+                      </button>
+                    )}
+                    {canControl && device.platform === "darwin" && (
+                      <button
+                        className="gs-row"
+                        aria-pressed={touchAssist}
+                        onClick={() => setTouchAssist(!touchAssist)}
                       >
-                        <option value="left">Left click</option>
-                        <option value="right">Right click</option>
-                        <option value="double">Double click</option>
-                      </select>
-                    </label>
-                  )}
-                  {canControl && (
-                    <button
-                      className="gs-row"
-                      disabled={!usable || mode === "pan"}
-                      aria-pressed={drag}
-                      onClick={() => {
-                        void input.send({ type: "release" }).catch(() => {});
-                        setDrag(!drag);
-                      }}
-                    >
-                      <Move />
-                      <span className="gs-label">Drag</span>
-                      <span className="gs-value">{drag ? "On · touch and move" : "Off"}</span>
-                    </button>
-                  )}
-                  {canControl && (
-                    <button
-                      className="gs-row"
-                      disabled={!usable}
-                      onClick={() => void action({ type: "release" })}
-                    >
-                      <Unplug />
-                      <span className="gs-label">Release mouse</span>
-                    </button>
-                  )}
-                  {displays.length > 1 && (
-                    <label className="gs-row">
-                      <Monitor />
-                      <span className="gs-label">Display</span>
-                      <select
-                        className="gs-select"
-                        aria-label="Display"
-                        value={display}
-                        onChange={(e) => {
-                          release();
-                          setDisplay(e.target.value);
-                          setFeedback("");
-                        }}
+                        <MousePointerClick />
+                        <span className="gs-label">
+                          Touch assistance
+                          <small>Snap near-misses to buttons (turn off for exact pixels)</small>
+                        </span>
+                        <span className="gs-value">{touchAssist ? "On" : "Off"}</span>
+                      </button>
+                    )}
+                    {canControl && (
+                      <button
+                        className="gs-row"
+                        disabled={!usable}
+                        onClick={() => void action({ type: "release" })}
                       >
-                        <option value="primary">Main display</option>
-                        {displays.map((d) => (
-                          <option key={d.id} value={d.id}>
-                            {d.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                </div>
+                        <Unplug />
+                        <span className="gs-label">
+                          Release mouse
+                          <small>Unstick held buttons or modifier keys</small>
+                        </span>
+                      </button>
+                    )}
+                    {displays.length > 1 && (
+                      <label className="gs-row">
+                        <Monitor />
+                        <span className="gs-label">Display</span>
+                        <select
+                          className="gs-select"
+                          aria-label="Display"
+                          value={display}
+                          onChange={(e) => {
+                            release();
+                            setDisplay(e.target.value);
+                            setFeedback("");
+                          }}
+                        >
+                          <option value="primary">Main display</option>
+                          {displays.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                </>
               )}
               {panel === "apps" && (
                 <QuickLauncher

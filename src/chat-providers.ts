@@ -93,6 +93,18 @@ export function testChatProvider(
   );
 }
 
+export function quickConnectProvider(
+  peer: Peer,
+  body: { key: string; preferredPreset?: string },
+) {
+  return post<{
+    provider: ChatProvider;
+    modelCount: number;
+    models: ChatProviderModel[];
+    detectedPreset?: string;
+  }>(peer, "/api/chat/providers/quick", body);
+}
+
 export function startApiChat(
   peer: Peer,
   body: {

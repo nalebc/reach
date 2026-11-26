@@ -1,9 +1,10 @@
 import { useMemo, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, KeyRound, LoaderCircle, Plus, Search, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ArrowUpRight, Check, Cpu, FolderOpen, KeyRound, LoaderCircle, Plus, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
+import { quickConnectProvider, type ChatProvider } from "./chat-providers";
 import { mergeHealth } from "./usage";
 import { BrandCourier } from "./ReachIdentity";
 import { ChatLibraryHeader, ago, flowFinder, inFlowTitle, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
@@ -193,6 +194,10 @@ export default function ChatHub({
   health = [],
   onProviders,
   providerCount = 0,
+  providers = [],
+  onReloadProviders,
+  onQuickStart,
+  currentApp = "all",
 }: {
   peer: Peer;
   active?: boolean;
@@ -222,6 +227,10 @@ export default function ChatHub({
   // Manage API key & local providers (Venice, Ollama, vLLM, OpenAI, Anthropic, custom).
   onProviders?: () => void;
   providerCount?: number;
+  providers?: ChatProvider[];
+  onReloadProviders?: (refresh?: boolean) => Promise<void> | void;
+  onQuickStart?: (agent: string, providerId?: string) => void;
+  currentApp?: string;
 }) {
   const scope = viewScope(peer, "chats:all");
   const [searchOpen, setSearchOpen] = useViewState(scope, "search", false);
@@ -266,9 +275,19 @@ export default function ChatHub({
   const labelled = covered.length > 1;
   const openOn = (computer: Peer, chat: Ref) => (computer.id === peer.id ? onOpen(chat) : onOpenOn?.(computer, chat));
   const [opened, setOpened] = useViewState<string[]>(scope, "folders", []);
-  const [filter, setFilter] = useViewState<"all" | "subscriptions" | "api" | "local">(scope, "filter", "all");
+  const [filter, setFilter] = useViewState<"all" | "subscriptions" | "antigravity" | "api" | "local">(scope, "filter", "all");
   const [cancelling, setCancelling] = useState("");
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [quickKey, setQuickKey] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyStatus, setKeyStatus] = useState("");
+  const [keyError, setKeyError] = useState("");
+  const readyProviders = useMemo(() => providers.filter((p) => p.configured || p.reachable), [providers]);
   const all = useMemo(() => (sessions || []).filter((s) => !s.archived), [sessions]);
+  const hasAntigravity = useMemo(
+    () => all.some((s) => s.agent === "antigravity") || health.some((h) => h.agent === "antigravity" && h.installed),
+    [all, health],
+  );
   const chatLists = useMemo<ComputerChats[]>(
     () => [
       { computer: peer, sessions: all },
@@ -283,7 +302,8 @@ export default function ChatHub({
     const flat: { computer: Peer; s: AgentSession }[] = [];
     for (const { computer, sessions } of chatLists) {
       for (const s of sessions) {
-        if (filter === "subscriptions" && s.agent === "api") continue;
+        if (filter === "subscriptions" && (s.agent === "api" || s.agent === "antigravity")) continue;
+        if (filter === "antigravity" && s.agent !== "antigravity") continue;
         if (filter === "api" && !(s.agent === "api" && s.providerKind !== "local")) continue;
         if (filter === "local" && !(s.agent === "api" && s.providerKind === "local")) continue;
         flat.push({ computer, s });
@@ -347,7 +367,7 @@ export default function ChatHub({
       <ChatLibraryHeader
         peer={peer}
         apps={apps}
-        value="all"
+        value={currentApp}
         logos={logos}
         pending={appPending}
         onChange={onAgentChange}
@@ -373,19 +393,30 @@ export default function ChatHub({
               <Sparkles size={16} />
             </span>
             <div>
-              <strong>Anything Chat</strong>
-              <small>Subscriptions, API keys &amp; local models in one place</small>
+              <strong>{currentApp === "antigravity" ? "Antigravity Conversations" : currentApp === "api" ? "API & Local Models" : "Anything Chat"}</strong>
+              <small>
+                {currentApp === "antigravity"
+                  ? "Read local Antigravity sessions & continue them in any model"
+                  : "One studio for Codex, Claude, Antigravity, Venice, Ollama, vLLM & any API"}
+              </small>
             </div>
           </div>
           <div className="ac-hero-actions">
+            <button
+              type="button"
+              className={`ac-hero-btn ${keyOpen ? "active" : ""}`}
+              onClick={() => (setKeyOpen((v) => !v), setKeyError(""), setKeyStatus(""))}
+            >
+              <KeyRound size={14} />
+              <span>{providerCount > 0 ? `+ Key · ${providerCount}` : "+ Paste API Key"}</span>
+            </button>
             {onProviders && (
               <button
                 type="button"
                 className="ac-hero-btn"
                 onClick={onProviders}
               >
-                <KeyRound size={14} />
-                <span>{providerCount > 0 ? `Providers · ${providerCount}` : "Providers"}</span>
+                <span>Providers</span>
               </button>
             )}
             {onNew && (
@@ -400,26 +431,109 @@ export default function ChatHub({
             )}
           </div>
         </div>
-        <div className="hub-filters" role="toolbar" aria-label="Chat filters">
-          {(
-            [
-              ["all", "All"],
-              ["subscriptions", "Subscriptions"],
-              ["api", "API"],
-              ["local", "Local"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              className={`hub-filter ${filter === id ? "active" : ""}`}
-              aria-pressed={filter === id}
-              onClick={() => setFilter(id)}
-            >
-              {label}
+
+        {(keyOpen || (currentApp === "api" && providerCount === 0)) && (
+          <form
+            className="ac-inline-key"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const raw = quickKey.trim();
+              if (!raw || keyBusy) return;
+              setKeyBusy(true);
+              setKeyError("");
+              setKeyStatus("");
+              try {
+                const res = await quickConnectProvider(peer, { key: raw });
+                setQuickKey("");
+                setKeyOpen(false);
+                setKeyStatus(`${res.provider.name} ready · ${res.modelCount} models detected`);
+                await onReloadProviders?.(true);
+              } catch (err) {
+                setKeyError((err as Error).message || "Could not connect key.");
+              } finally {
+                setKeyBusy(false);
+              }
+            }}
+          >
+            <input
+              type="password"
+              autoComplete="off"
+              aria-label="Paste any API key or local URL"
+              placeholder="Paste any API key (Venice, OpenAI, Claude, Groq…) or Ollama/vLLM URL"
+              value={quickKey}
+              onChange={(e) => setQuickKey(e.target.value)}
+            />
+            <button type="submit" className="cp-primary" disabled={keyBusy || !quickKey.trim()}>
+              {keyBusy ? <LoaderCircle size={14} className="spin" /> : <><Check size={14} /> Connect</>}
             </button>
-          ))}
-        </div>
+          </form>
+        )}
+        {keyStatus && <p className="cp-status" role="status">{keyStatus}</p>}
+        {keyError && <p className="cp-error" role="alert">{keyError}</p>}
+
+        {onQuickStart && currentApp !== "antigravity" && (
+          <div className="ac-launchpad" aria-label="Start chat with any provider">
+            <span className="ac-launchpad-label">Start with:</span>
+            {health
+              .filter((h) => h.installed && ["codex", "claude", "openclaw"].includes(h.agent))
+              .map((h) => (
+                <button
+                  key={h.agent}
+                  type="button"
+                  className="ac-launch-chip"
+                  onClick={() => onQuickStart(h.agent)}
+                >
+                  <AgentLogo agent={h.agent} logos={logos} size={14} />
+                  <span>{h.name || agentLabel(h.agent)}</span>
+                </button>
+              ))}
+            {readyProviders.map((p) => (
+              <button
+                key={`p:${p.id}`}
+                type="button"
+                className={`ac-launch-chip ${p.kind === "local" ? "local" : "api"}`}
+                onClick={() => onQuickStart("api", p.id)}
+              >
+                {p.kind === "local" ? <Cpu size={13} /> : <Sparkles size={13} />}
+                <span>{p.name}</span>
+              </button>
+            ))}
+            {!readyProviders.length && (
+              <button
+                type="button"
+                className="ac-launch-chip add"
+                onClick={() => setKeyOpen(true)}
+              >
+                <KeyRound size={13} />
+                <span>Connect Venice / Ollama / API</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {currentApp === "all" && (
+          <div className="hub-filters" role="toolbar" aria-label="Chat filters">
+            {(
+              [
+                ["all", "All"],
+                ["subscriptions", "Agents"],
+                ...(hasAntigravity ? ([["antigravity", "Antigravity"]] as const) : []),
+                ["api", "Cloud API"],
+                ["local", "Local"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`hub-filter ${filter === id ? "active" : ""}`}
+                aria-pressed={filter === id}
+                onClick={() => setFilter(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         {apps.length > 1 && (
           <div className="ac-app-strip" role="tablist" aria-label="Switch chat view">
             {apps.map((app) => (
@@ -427,8 +541,8 @@ export default function ChatHub({
                 key={app.agent}
                 type="button"
                 role="tab"
-                aria-selected={app.agent === "all"}
-                className={`ac-app-pill ${app.agent === "all" ? "active" : ""}`}
+                aria-selected={app.agent === currentApp}
+                className={`ac-app-pill ${app.agent === currentApp ? "active" : ""}`}
                 onClick={() => onAgentChange(app.agent)}
               >
                 <AgentLogo agent={app.agent} name={app.name} logos={logos} size={14} />

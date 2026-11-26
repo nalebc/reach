@@ -90,6 +90,7 @@ export function createApiChats({
   };
 
   const saveRecord = (rec) => {
+    rec.rev = (Number(rec.rev) || 0) + 1;
     writeJsonAtomic(fileOf(rec.id), rec);
     notifySession(rec.id);
     notifyList();
@@ -109,6 +110,7 @@ export function createApiChats({
       inApp: false,
       updatedAt: rec.updatedAt || rec.createdAt || 0,
       createdAt: rec.createdAt || 0,
+      rev: Number(rec.rev) || 1,
       status: active.has(rec.id) ? "running" : rec.status === "error" ? "error" : "idle",
       preview: String(lastText || "").replace(/\s+/g, " ").trim().slice(0, 140),
       archived: Boolean(rec.archived),
@@ -119,6 +121,7 @@ export function createApiChats({
       systemPrompt: rec.systemPrompt || "",
       temperature: typeof rec.temperature === "number" ? rec.temperature : null,
       veniceWebSearch: Boolean(rec.veniceWebSearch),
+      ...(rec.movedFrom ? { movedFrom: rec.movedFrom } : {}),
     };
   };
 
@@ -164,6 +167,7 @@ export function createApiChats({
       if (!force && t - lastFlush < 60) return;
       lastFlush = t;
       rec.updatedAt = t;
+      rec.rev = (Number(rec.rev) || 0) + 1;
       writeJsonAtomic(fileOf(rec.id), rec);
       notifySession(rec.id);
     };

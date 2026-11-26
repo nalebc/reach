@@ -12,6 +12,7 @@ import {
 import type { Peer } from "./api";
 import ChatSheet from "./ChatSheet";
 import {
+  quickConnectProvider,
   removeChatProvider,
   saveChatProvider,
   testChatProvider,
@@ -75,7 +76,6 @@ export default function ChatProvidersSheet({
 }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [quickKey, setQuickKey] = useState("");
-  const [quickPreset, setQuickPreset] = useState("venice");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -85,25 +85,20 @@ export default function ChatProvidersSheet({
     e.preventDefault();
     const key = quickKey.trim();
     if (!key || busy) return;
-    const detected = detectPresetFromKey(key) || quickPreset;
-    const preset = presets.find((p) => p.id === detected) || presets[0];
-    if (!preset) return;
+    const hint = detectPresetFromKey(key);
+    const hintName = presets.find((p) => p.id === hint)?.name;
     setBusy(true);
     setProblem("");
-    setStatus(`Connecting ${preset.name}…`);
+    setStatus(hintName ? `Connecting ${hintName}…` : "Auto-detecting provider & loading models…");
     try {
-      const saved = await saveChatProvider(peer, {
-        id: preset.id,
-        preset: preset.id,
-        name: preset.name,
-        kind: preset.kind,
-        protocol: preset.protocol,
-        baseUrl: preset.baseUrl,
-        apiKey: key,
+      const res = await quickConnectProvider(peer, {
+        key,
+        ...(hint ? { preferredPreset: hint } : {}),
       });
-      const tested = await testChatProvider(peer, { id: saved.provider.id });
       setQuickKey("");
-      setStatus(`${preset.name} connected · ${tested.modelCount} models ready`);
+      setStatus(
+        `${res.provider.name} connected · ${res.modelCount} ${res.modelCount === 1 ? "model" : "models"} ready`,
+      );
       await onReload(true);
     } catch (err) {
       setProblem((err as Error).message || "Could not connect that key.");
@@ -346,28 +341,10 @@ export default function ChatProvidersSheet({
               type="password"
               autoComplete="off"
               aria-label="Paste any API key"
-              placeholder="Paste any API key (Venice, OpenAI, Claude, Groq…)"
+              placeholder="Paste any API key or local URL — auto-detected in 1 click"
               value={quickKey}
-              onChange={(e) => {
-                const v = e.target.value;
-                setQuickKey(v);
-                const detected = detectPresetFromKey(v);
-                if (detected) setQuickPreset(detected);
-              }}
+              onChange={(e) => setQuickKey(e.target.value)}
             />
-            <select
-              aria-label="Provider"
-              value={quickPreset}
-              onChange={(e) => setQuickPreset(e.target.value)}
-            >
-              {presets
-                .filter((p) => p.kind === "api")
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-            </select>
             <button type="submit" className="cp-primary" disabled={busy || !quickKey.trim()}>
               {busy ? <LoaderCircle size={14} className="spin" /> : "Connect"}
             </button>

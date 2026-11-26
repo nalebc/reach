@@ -1714,7 +1714,7 @@ export default function AgentSessionView({
     () => allSiblings.filter((s) => s.agent === agent && !s.archived),
     [allSiblings, agent],
   );
-  const skin = SKIN[agent];
+  const skin = SKIN[agent] || SKIN.api;
   useClaudeFonts(peer, agent === "claude");
   const word = computerWord(peer.platform);
   const [info, setInfo] = useState<AgentSession>(initial);
@@ -2231,6 +2231,7 @@ export default function AgentSessionView({
       | { type: "agent"; item: SessionItem }
     )[] = [];
     for (const raw of items || []) {
+      if (agent === "api" && raw.role === "assistant" && raw.status === "running" && live.streaming) continue;
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text), mentions: mentionedChats(raw.text) } : raw;
       if (item.role === "user" && !item.text && !item.images && !item.repeats && !item.skills?.length && !item.attachments?.length) continue;
@@ -2403,18 +2404,28 @@ export default function AgentSessionView({
       ? claudeSignedOut && (!elsewhere || elsewhere === "claude-app")
       : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn && !codexHealth.tooOld;
 
-  const modelId = choice.model || info.model || null;
+  const modelId =
+    agent === "api"
+      ? choice.model || (info.providerId && info.model ? `${info.providerId}::${info.model}` : info.model || null)
+      : choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;
   const selectedModel = currentModel(models, modelId);
   // The level always (a change must show); Ultracode only when no level is named.
   const effortShown = effortLabel(effort, agent) || (agent === "claude" && info.ultracode === true ? effortLabel("ultracode", agent) : "");
   const modelLabel =
-    selectedModel?.name ||
-    (agent === "codex"
-      ? modelId
-        ? modelDisplayName(modelId)
-        : ""
-      : claudeModel(modelId));
+    agent === "api"
+      ? [
+          (selectedModel as (AgentModel & { providerName?: string }) | undefined)?.providerName || info.providerName,
+          selectedModel?.name || (modelId?.includes("::") ? modelId.split("::")[1] : modelId),
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : selectedModel?.name ||
+        (agent === "codex"
+          ? modelId
+            ? modelDisplayName(modelId)
+            : ""
+          : claudeModel(modelId));
 
   const addFiles = (files: File[]) => {
     for (const file of files) {
@@ -2887,11 +2898,12 @@ export default function AgentSessionView({
         >
           <strong>{info.title}</strong>
           <small>
-            {[
-              ...new Set(
-                [projectName(info.cwd), whereLabel(info)].filter(Boolean),
-              ),
-            ].join(" · ")}
+            {(agent === "api"
+              ? [info.providerName || "API & Local", info.model].filter(Boolean)
+              : agent === "antigravity"
+                ? ["Antigravity", info.model].filter(Boolean)
+                : [...new Set([projectName(info.cwd), whereLabel(info)].filter(Boolean))]
+            ).join(" · ")}
             {autoOn && !autoOn.holding && (
               <span className="as-auto-on" role="img" aria-label="Auto-continue on" title="Auto-continue on">
                 <RefreshCw size={11} aria-hidden />
@@ -2938,7 +2950,7 @@ export default function AgentSessionView({
           <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
           <div className="as-details" role="menu" aria-label="Chat details">
             {!continuing && !automation && <div className="as-details-head">
-              {renaming !== null && (agent === "claude" || agent === "codex") ? (
+              {renaming !== null && (agent === "claude" || agent === "codex" || agent === "api") ? (
                 <form
                   className="as-rename"
                   onSubmit={async (e) => {
@@ -2946,7 +2958,7 @@ export default function AgentSessionView({
                     if (!renaming.trim()) return;
                     try {
                       const r = await renameSession(peer, initial, renaming);
-                      setInfo((old) => ({ ...old, title: r.title }));
+                      setInfo((old) => ({ ...old, title: r.title || renaming.trim() }));
                       setRenaming(null);
                     } catch (error) {
                       setProblem((error as Error).message);
@@ -2959,7 +2971,7 @@ export default function AgentSessionView({
               ) : (
                 <strong className="as-details-title">
                   {info.title}
-                  {(agent === "claude" || agent === "codex") && (
+                  {(agent === "claude" || agent === "codex" || agent === "api") && (
                     <button className="as-icon" aria-label="Rename chat" onClick={() => setRenaming(info.title || "")}>
                       <SquarePen size={14} />
                     </button>
@@ -2967,7 +2979,7 @@ export default function AgentSessionView({
                 </strong>
               )}
               <small>
-                {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
+                {[info.providerName || agentLabel(agent), info.model, info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
             </div>}
             {!automation && <MoveItems
@@ -2986,7 +2998,7 @@ export default function AgentSessionView({
             />}
             {!continuing && (
               <>
-                {!automation && <button className="relay-menu-item" role="menuitem" aria-label="Automation" onClick={() => setAutomation(true)}>
+                {!automation && (agent === "claude" || agent === "codex") && <button className="relay-menu-item" role="menuitem" aria-label="Automation" onClick={() => setAutomation(true)}>
                   <Workflow size={18} />
                   <span className="move-item-text"><span>Automation</span></span>
                   {autoOn && <small className="relay-menu-value">On</small>}
@@ -3042,12 +3054,12 @@ export default function AgentSessionView({
                     <small className="relay-menu-value">{nearLimit.level === "out" ? "Out" : `${nearLimit.percent}%`}</small>
                   </button>
                 )}
-                {(agent === "claude" || agent === "codex") && (
+                {(agent === "claude" || agent === "codex" || agent === "api") && (
                   <button
                     className="as-details-delete"
                     role="menuitem"
                     onClick={async () => {
-                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : `Delete this chat? It goes to the ${peer.platform === "win32" ? "Recycle Bin" : "Trash"} on your ${word}.`))
+                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : agent === "api" ? "Delete this conversation permanently?" : `Delete this chat? It goes to the ${peer.platform === "win32" ? "Recycle Bin" : "Trash"} on your ${word}.`))
                         return;
                       try {
                         await deleteSession(peer, initial);
@@ -3587,7 +3599,67 @@ export default function AgentSessionView({
           />
         )}
         <SlashMenu menu={slashMenu} />
-        {picking && (
+        {picking && agent === "api" && (
+          <div className="as-api-models" role="menu" aria-label="Choose model">
+            <div className="as-api-models-head">
+              <strong>Switch provider or model</strong>
+              <button type="button" className="as-icon" aria-label="Close models" onClick={() => setPicking(false)}>
+                <X size={15} />
+              </button>
+            </div>
+            {modelsLoading ? (
+              <p className="as-hint"><LoaderCircle size={14} className="spin" /> Loading models…</p>
+            ) : models.length > 0 ? (
+              <div className="as-api-models-list">
+                {models.map((m) => {
+                  const ext = m as AgentModel & { providerId?: string; providerName?: string; modelId?: string };
+                  const active = m.id === modelId;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      className={`as-api-model-row ${active ? "active" : ""}`}
+                      disabled={modelSaving}
+                      onClick={async () => {
+                        setModelSaving(true);
+                        setModelError("");
+                        try {
+                          const res = await setAgentModel(peer, initial, { model: m.id }) as { session?: AgentSession };
+                          if (res.session) setInfo((prev) => ({ ...prev, ...res.session }));
+                          else {
+                            setInfo((prev) => ({
+                              ...prev,
+                              providerId: ext.providerId || prev.providerId,
+                              providerName: ext.providerName || prev.providerName,
+                              model: ext.modelId || m.name,
+                            }));
+                          }
+                          setChoice({});
+                          setPicking(false);
+                        } catch (err) {
+                          setModelError((err as Error).message);
+                        } finally {
+                          setModelSaving(false);
+                        }
+                      }}
+                    >
+                      <span className="as-api-model-copy">
+                        <strong>{m.name}</strong>
+                        <small>{ext.providerName || m.description}</small>
+                      </span>
+                      {active && <Check size={15} />}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="as-hint">{modelError || "No models available."}</p>
+            )}
+          </div>
+        )}
+        {picking && agent !== "api" && (
           <ModelMenu
             agent={agent}
             models={models}
@@ -3758,7 +3830,27 @@ export default function AgentSessionView({
             )}
           </div>
         )}
-        {agent !== "gemini" && (
+        {agent === "antigravity" && (
+          <div className="as-ag-handoff" role="region" aria-label="Continue Antigravity conversation">
+            <div className="as-ag-handoff-copy">
+              <strong>Antigravity transcript</strong>
+              <small>Continue this conversation with full context in Codex, Claude, Venice, Ollama, or any API model.</small>
+            </div>
+            <button
+              type="button"
+              className="as-banner-btn primary"
+              onClick={() => {
+                setForkPoint(undefined);
+                setAutomation(false);
+                setContinuing(true);
+                setDetails(true);
+              }}
+            >
+              <GitFork size={14} /> Continue in another model…
+            </button>
+          </div>
+        )}
+        {agent !== "gemini" && agent !== "antigravity" && (
         <div className="as-box">
           <div className="as-field">
             {attachments.length > 0 && (
@@ -3807,7 +3899,7 @@ export default function AgentSessionView({
                 ))}
               </div>
             )}
-            {(agent === "claude" || agent === "codex") && mentionQuery !== null && (
+            {(agent === "claude" || agent === "codex" || agent === "api") && mentionQuery !== null && (
               <MentionMenu
                 peer={peer}
                 session={initial}
@@ -3911,7 +4003,7 @@ export default function AgentSessionView({
             <span className="as-spacer" />
             {info.context && <ContextMeter used={info.context.used} window={info.context.window} />}
             {/* Always in sight, as both apps keep their model by the box. */}
-            {(agent === "codex" || agent === "claude") && (
+            {(agent === "codex" || agent === "claude" || agent === "api") && (
               <button
                 className="as-model"
                 aria-expanded={picking}

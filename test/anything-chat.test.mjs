@@ -250,3 +250,262 @@ test("createAntigravitySessions reads Antigravity brain transcripts into unified
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("autoConnectKey detects exact prefixes, probes ambiguous keys in parallel, and connects local URLs in 1 click", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "reach-autoconnect-"));
+  try {
+    const fetchImpl = async (url, init) => {
+      const auth = init?.headers?.Authorization || "";
+      if (String(url).includes("api.deepseek.com/v1/models") && auth === "Bearer sk-ambiguous-deepseek-key") {
+        return new Response(
+          JSON.stringify({ data: [{ id: "deepseek-chat", name: "DeepSeek Chat" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (String(url).includes("api.groq.com/openai/v1/models") && auth === "Bearer gsk_1234567890") {
+        return new Response(
+          JSON.stringify({ data: [{ id: "llama-3.3-70b-versatile" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (String(url).includes("127.0.0.1:8000/v1/models")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "qwen2.5-coder-32b" }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+    };
+
+    const registry = createChatProviders({ dataDir, env: {}, fetchImpl });
+
+    // 1. Prefix-based instant detection
+    const groqRes = await registry.autoConnectKey("gsk_1234567890");
+    assert.equal(groqRes.provider.id, "groq");
+    assert.equal(groqRes.modelCount, 1);
+
+    // 2. Ambiguous sk-... key probed in parallel and matched to DeepSeek
+    const dsRes = await registry.autoConnectKey("sk-ambiguous-deepseek-key");
+    assert.equal(dsRes.provider.id, "deepseek");
+    assert.equal(dsRes.models[0].id, "deepseek-chat");
+
+    // 3. Direct local URL pasted into the same box
+    const localRes = await registry.autoConnectKey("http://127.0.0.1:8000");
+    assert.equal(localRes.provider.id, "vllm");
+    assert.equal(localRes.models[0].id, "qwen2.5-coder-32b");
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("EverythingChat renders unified Anything Chat launchpad, opens Antigravity & API chats cleanly without crashes, and switches API models mid-chat", async () => {
+  const { startDom, settle } = await import("./dom/harness.mjs");
+  const peer = { id: "mac", name: "Studio", url: "https://reach.test", token: "t", platform: "darwin" };
+  const agId = "22222222-3333-4444-5555-666666666666";
+  const apiId = "chat-venice123";
+  let setModelBody = null;
+
+  const sessions = [
+    {
+      agent: "antigravity",
+      id: agId,
+      title: "Antigravity architecture review",
+      cwd: "",
+      branch: "",
+      origin: "app",
+      inApp: true,
+      updatedAt: Date.now() - 1000,
+      createdAt: Date.now() - 5000,
+      status: "idle",
+      preview: "Reviewed architecture",
+      archived: false,
+      model: "gemini-2.5-pro",
+      providerName: "Antigravity",
+    },
+    {
+      agent: "api",
+      id: apiId,
+      title: "Venice brainstorm",
+      cwd: "",
+      branch: "",
+      origin: "reach",
+      inApp: false,
+      updatedAt: Date.now(),
+      createdAt: Date.now() - 3000,
+      rev: 2,
+      status: "idle",
+      preview: "Private inference rocks",
+      archived: false,
+      model: "llama-3.3-70b",
+      providerId: "venice",
+      providerName: "Venice",
+      providerKind: "api",
+    },
+  ];
+
+  const dom = await startDom({
+    mobile: true,
+    routes: {
+      "/api/sessions/logos": () => ({ version: "1", logos: {} }),
+      "/api/sessions/commands": () => ({ commands: [] }),
+      "/api/sessions/stranded": () => ({ messages: [] }),
+      "/api/sessions/activity": () => ({ chats: [], overlaps: [] }),
+      "/api/chat/providers": () => ({
+        providers: [
+          {
+            id: "venice",
+            preset: "venice",
+            name: "Venice",
+            kind: "api",
+            protocol: "openai",
+            baseUrl: "https://api.venice.ai/api/v1",
+            hasKey: true,
+            keyHint: "ven…1234",
+            requiresKey: true,
+            fromEnv: false,
+            autoDetected: false,
+            configured: true,
+            reachable: true,
+            error: "",
+            modelCount: 2,
+            models: [
+              { id: "llama-3.3-70b", name: "Llama 3.3 70B" },
+              { id: "deepseek-r1-671b", name: "DeepSeek R1 671B" },
+            ],
+            defaultModel: "llama-3.3-70b",
+            description: "Venice API",
+          },
+        ],
+        presets: [],
+      }),
+      "/api/sessions/models": () => ({
+        models: [
+          {
+            id: "venice::llama-3.3-70b",
+            modelId: "llama-3.3-70b",
+            providerId: "venice",
+            providerName: "Venice",
+            name: "Llama 3.3 70B",
+            efforts: [],
+            defaultEffort: null,
+            images: true,
+            isDefault: false,
+          },
+          {
+            id: "ollama::qwen2.5-coder",
+            modelId: "qwen2.5-coder",
+            providerId: "ollama",
+            providerName: "Ollama",
+            name: "qwen2.5-coder",
+            efforts: [],
+            defaultEffort: null,
+            images: false,
+            isDefault: false,
+          },
+        ],
+        mode: null,
+      }),
+      [`/api/sessions/antigravity/${agId}`]: () => ({
+        version: "v1",
+        session: sessions[0],
+        items: [
+          { id: "u1", role: "user", kind: "text", text: "Review our chat architecture" },
+          { id: "a1", role: "assistant", kind: "text", text: "Everything is unified now." },
+        ],
+        before: null,
+      }),
+      [`/api/sessions/antigravity/${agId}/live`]: async () => {
+        await settle(50);
+        return { version: 1, running: false, streaming: "", status: "idle", items: 2, prompts: [], waiting: [] };
+      },
+      [`/api/sessions/api/${apiId}`]: () => ({
+        version: "v2",
+        session: sessions[1],
+        items: [
+          { id: "u2", role: "user", kind: "text", text: "Hi Venice" },
+          { id: "a2", role: "assistant", kind: "text", text: "Private inference rocks" },
+        ],
+        before: null,
+      }),
+      [`/api/sessions/api/${apiId}/live`]: async () => {
+        await settle(50);
+        return { version: 2, running: false, streaming: "", status: "idle", items: 2, prompts: [], waiting: [] };
+      },
+      [`/api/sessions/api/${apiId}/model`]: (init) => {
+        setModelBody = JSON.parse(init.body);
+        return {
+          applied: true,
+          model: "qwen2.5-coder",
+          providerId: "ollama",
+          providerName: "Ollama",
+          session: { ...sessions[1], providerId: "ollama", providerName: "Ollama", model: "qwen2.5-coder" },
+        };
+      },
+    },
+  });
+
+  dom.window.HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close ??= function () { this.open = false; };
+
+  let view;
+  try {
+    dom.window.localStorage.removeItem("reach.chatAgent");
+    const { default: EverythingChat } = await dom.load("/src/EverythingChat.tsx");
+    const feed = {
+      sessions,
+      errors: {},
+      health: [
+        { agent: "codex", name: "Codex", installed: true, signedIn: true, supported: true },
+        { agent: "claude", name: "Claude Code", installed: true, signedIn: true, supported: true },
+        { agent: "antigravity", name: "Antigravity", installed: true, signedIn: true, supported: false },
+      ],
+      healthChecked: true,
+      failure: "",
+      reload: async () => {},
+      recheck: () => {},
+    };
+    view = await dom.render(dom.React.createElement(EverythingChat, { peer, feed }));
+
+    // 1. Unified Anything Chat home shows both Antigravity & Venice cards + launchpad
+    await dom.waitFor(() => dom.document.querySelector(".ac-hero"));
+    assert.match(dom.document.body.textContent, /Anything Chat/);
+    assert.match(dom.document.body.textContent, /Antigravity architecture review/);
+    assert.match(dom.document.body.textContent, /Venice brainstorm/);
+
+    // 2. Opening Antigravity chat renders transcript + Continue handoff bar without crashing
+    const agCard = [...dom.document.querySelectorAll(".ac-chat-card")].find((b) =>
+      b.textContent.includes("Antigravity architecture review"),
+    );
+    assert.ok(agCard, "Antigravity card visible");
+    agCard.click();
+    await dom.waitFor(() => dom.document.querySelector(".as-ag-handoff"));
+    assert.match(dom.document.body.textContent, /Everything is unified now\./);
+    assert.equal(dom.document.querySelector(".as-box"), null, "Antigravity session is read-only with handoff bar");
+
+    // Go back to Anything Chat list
+    dom.document.querySelector('[aria-label="Back to previous view"]').click();
+    await dom.waitFor(() => dom.document.querySelector(".ac-hero"));
+
+    // 3. Opening API (Venice) chat shows composer + mid-chat model/provider switcher
+    const apiCard = [...dom.document.querySelectorAll(".ac-chat-card")].find((b) =>
+      b.textContent.includes("Venice brainstorm"),
+    );
+    assert.ok(apiCard, "Venice card visible");
+    apiCard.click();
+    await dom.waitFor(() => dom.document.querySelector(".as-model"));
+    assert.match(dom.document.querySelector(".as-model").textContent, /Venice · Llama 3\.3 70B/);
+
+    // Switch mid-chat from Venice to Ollama!
+    dom.document.querySelector(".as-model").click();
+    const ollamaOpt = await dom.waitFor(() =>
+      [...dom.document.querySelectorAll(".as-api-model-row")].find((b) => b.textContent.includes("qwen2.5-coder")),
+    );
+    ollamaOpt.click();
+    await dom.waitFor(() => /Ollama · qwen2\.5-coder/.test(dom.document.querySelector(".as-model")?.textContent || ""));
+    assert.deepEqual(setModelBody, { model: "ollama::qwen2.5-coder" });
+    assert.deepEqual(dom.errors, []);
+  } finally {
+    await view?.unmount();
+    await dom.close();
+  }
+});

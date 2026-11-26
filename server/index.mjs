@@ -4201,6 +4201,14 @@ export async function createReach(overrides = {}) {
     const result = await chatProviders.test(req.body || {});
     res.json(result);
   });
+  app.post("/api/chat/providers/quick", async (req, res) => {
+    macOwner(req);
+    const result = await chatProviders.autoConnectKey(req.body?.key, {
+      preferredPreset: typeof req.body?.preferredPreset === "string" ? req.body.preferredPreset : "",
+    });
+    record("session", `Connected chat provider ${result.provider?.name || "API"}`);
+    res.json(result);
+  });
   app.get("/api/chat/providers/:id/models", async (req, res) => {
     const result = await chatProviders.listModels(req.params.id, {
       refresh: req.query.refresh === "1",
@@ -4316,13 +4324,48 @@ export async function createReach(overrides = {}) {
     const q = typeof req.query.q === "string" ? req.query.q.slice(0, 200) : "";
     const found = await search.search(q);
     const { sessions = [] } = await agentSessions.list();
-    const named = new Map(sessions.map((s) => [`${s.agent}:${s.id}`, s]));
+    const direct = apiChats.list();
+    const ag = antigravitySessions.list();
+    const allSessions = [...sessions, ...direct, ...ag];
+    const named = new Map(allSessions.map((s) => [`${s.agent}:${s.id}`, s]));
+    const extraHits = [];
+    const needle = q.trim().toLowerCase();
+    if (needle.length >= 2) {
+      for (const s of [...direct, ...ag]) {
+        if (s.archived) continue;
+        try {
+          const page = s.agent === "api" ? apiChats.read(s.id, { limit: 120 }) : antigravitySessions.read(s.id, { limit: 120 });
+          for (const item of page.items || []) {
+            if (item.kind !== "text" || !item.text) continue;
+            const idx = item.text.toLowerCase().indexOf(needle);
+            if (idx >= 0) {
+              const start = Math.max(0, idx - 40);
+              const snippet = (start > 0 ? "…" : "") + item.text.slice(start, idx + needle.length + 80).replace(/\s+/g, " ").trim();
+              extraHits.push({
+                agent: s.agent,
+                id: s.id,
+                role: item.role,
+                at: item.at || s.updatedAt || 0,
+                snippet,
+                title: s.title || "",
+                cwd: "",
+                listed: true,
+              });
+              break;
+            }
+          }
+        } catch {}
+      }
+    }
     res.json({
       partial: found.partial,
-      results: found.results.map((r) => {
-        const s = named.get(`${r.agent}:${r.id}`);
-        return { ...r, title: s?.title || "", cwd: s?.cwd || "", listed: !!s && !s.archived };
-      }),
+      results: [
+        ...found.results.map((r) => {
+          const s = named.get(`${r.agent}:${r.id}`);
+          return { ...r, title: s?.title || "", cwd: s?.cwd || "", listed: !!s && !s.archived };
+        }),
+        ...extraHits,
+      ],
     });
   });
   // Relays and second opinions: set up from the owner's own devices, and
@@ -4676,14 +4719,16 @@ export async function createReach(overrides = {}) {
   };
   // Slash commands the agent offers after "/" in its composer.
   // With a chat's id: that chat's (its folder's skills and commands).
-  app.get("/api/sessions/commands", async (req, res) =>
-    res.json({
+  app.get("/api/sessions/commands", async (req, res) => {
+    if (req.query.agent === "api" || req.query.agent === "antigravity")
+      return res.json({ commands: [] });
+    return res.json({
       commands: await agentSessions.commands(
         ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
         typeof req.query.id === "string" && /^[\w-]{1,80}$/.test(req.query.id) ? { id: req.query.id } : {},
       ),
-    }),
-  );
+    });
+  });
   // One of Codex's own commands from "/", run in the chat (status, compact,
   // review, …); only those its menu offers.
   app.post("/api/sessions/:agent/:id/commands", async (req, res) => {
@@ -4712,6 +4757,7 @@ export async function createReach(overrides = {}) {
     );
   });
   app.get("/api/sessions/models", async (req, res) => {
+    if (req.query.agent === "antigravity") return res.json({ models: [], mode: null });
     if (req.query.agent === "api") {
       const providers = await chatProviders.list({
         discover: true,
@@ -4858,10 +4904,15 @@ export async function createReach(overrides = {}) {
     for (const chat of value) {
       const agent = String(chat?.agent || "");
       const id = String(chat?.id || "");
-      if (!["codex", "claude", "gemini"].includes(agent) || !/^[\w-]{1,80}$/.test(id) || (agent === here.agent && id === here.id))
+      if (!["codex", "claude", "gemini", "api", "antigravity"].includes(agent) || !/^[\w-]{1,80}$/.test(id) || (agent === here.agent && id === here.id))
         throw fail(400, "Unknown chat.");
-      const page = await agentSessions.read(agent, id, { limit: 200 });
-      blocks.push(mentionBlock({ from: agentName(agent), title: page.session?.title || "", cwd: page.session?.cwd || "", items: page.items || [] }));
+      const page =
+        agent === "api"
+          ? apiChats.read(id, { limit: 200 })
+          : agent === "antigravity"
+            ? antigravitySessions.read(id, { limit: 200 })
+            : await agentSessions.read(agent, id, { limit: 200 });
+      blocks.push(mentionBlock({ from: page.session?.providerName || agentName(agent), title: page.session?.title || "", cwd: page.session?.cwd || "", items: page.items || [] }));
     }
     return blocks;
   };
@@ -4869,11 +4920,20 @@ export async function createReach(overrides = {}) {
     const { agent, id } = req.params;
     if (agent === "api") {
       const body = req.body || {};
+      let providerId = typeof body.providerId === "string" ? body.providerId : undefined;
+      let model = typeof body.model === "string" ? body.model : undefined;
+      if (model && model.includes("::") && !providerId) {
+        const idx = model.indexOf("::");
+        providerId = model.slice(0, idx);
+        model = model.slice(idx + 2);
+      }
+      const chats = await mentioned(body.chats, req.params);
+      const text = chats.length ? withMentions(typeof body.text === "string" ? body.text : "", chats) : body.text;
       const sent = apiChats.send(id, {
-        text: body.text,
+        text,
         images: Array.isArray(body.images) ? body.images : [],
-        providerId: body.providerId,
-        model: body.model,
+        providerId,
+        model,
         systemPrompt: body.systemPrompt,
         temperature: body.temperature,
         veniceWebSearch: typeof body.veniceWebSearch === "boolean" ? body.veniceWebSearch : undefined,
@@ -5061,15 +5121,20 @@ export async function createReach(overrides = {}) {
         providerId = model.slice(0, idx);
         model = model.slice(idx + 2);
       }
-      return res.json(
-        apiChats.setModel(req.params.id, {
-          providerId,
-          model,
-          ...(typeof b.systemPrompt === "string" ? { systemPrompt: b.systemPrompt } : {}),
-          ...(b.temperature === null || typeof b.temperature === "number" ? { temperature: b.temperature } : {}),
-          ...(typeof b.veniceWebSearch === "boolean" ? { veniceWebSearch: b.veniceWebSearch } : {}),
-        }),
-      );
+      const updated = apiChats.setModel(req.params.id, {
+        providerId,
+        model,
+        ...(typeof b.systemPrompt === "string" ? { systemPrompt: b.systemPrompt } : {}),
+        ...(b.temperature === null || typeof b.temperature === "number" ? { temperature: b.temperature } : {}),
+        ...(typeof b.veniceWebSearch === "boolean" ? { veniceWebSearch: b.veniceWebSearch } : {}),
+      });
+      return res.json({
+        applied: true,
+        model: updated.session.model,
+        providerId: updated.session.providerId,
+        providerName: updated.session.providerName,
+        session: updated.session,
+      });
     }
     const { model, effort, speed } = req.body || {};
     // Claude's Effort page sends the level alone: the chat keeps its model.
@@ -5136,7 +5201,7 @@ export async function createReach(overrides = {}) {
     if (req.params.agent === "api") {
       const result = apiChats.rename(req.params.id, req.body.title);
       record("session", "Renamed an API chat");
-      return res.json(result);
+      return res.json({ title: result.session.title, ...result });
     }
     const result = await agentSessions.rename(req.params.agent, req.params.id, req.body?.title);
     record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
@@ -5189,11 +5254,12 @@ export async function createReach(overrides = {}) {
         const lastReply = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "text");
         const lastThink = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "thinking");
         return {
-          version: page.session.updatedAt || 1,
+          version: page.session.rev || page.session.updatedAt || 1,
           running: page.session.status === "running",
           streaming: lastReply?.status === "running" ? lastReply.text : "",
           thinking: lastThink?.status === "running" ? lastThink.text : "",
           status: page.session.status,
+          items: page.items.filter((i) => i.status !== "running").length,
           prompts: [],
           waiting: [],
         };
@@ -5216,16 +5282,38 @@ export async function createReach(overrides = {}) {
       return;
     }
     if (req.params.agent === "antigravity") {
-      const page = antigravitySessions.read(req.params.id, { limit: 200 });
-      if (!res.writableEnded && !gone.signal.aborted)
-        res.json({
-          version: page.session.updatedAt || 1,
+      const readSnap = () => {
+        const page = antigravitySessions.read(req.params.id, { limit: 200 });
+        return {
+          version: Math.max(1, Math.floor(page.session.updatedAt || 1)),
           running: page.session.status === "running",
           streaming: "",
           status: page.session.status,
+          items: page.items.length,
           prompts: [],
           waiting: [],
-        });
+        };
+      };
+      let view = readSnap();
+      if (Number.isFinite(since) && view.version <= since) {
+        // Long-poll up to 25s (checking every 2s for transcript updates) so the
+        // client never spins in a tight 0ms loop on read-only Antigravity chats.
+        const end = Date.now() + 25000;
+        while (!gone.signal.aborted && Date.now() < end) {
+          await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 2000);
+            const onAbort = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            gone.signal.addEventListener("abort", onAbort, { once: true });
+          });
+          if (gone.signal.aborted) break;
+          view = readSnap();
+          if (view.version > since) break;
+        }
+      }
+      if (!res.writableEnded && !gone.signal.aborted) res.json(view);
       return;
     }
     if (Number.isFinite(since)) {

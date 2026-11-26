@@ -647,10 +647,14 @@ export function desktopConnection(
         void answerLook(message.id, action);
         return;
       }
-      // Coalesce consecutive queued moves or matching-phase scrolls so fast
-      // pointer/scroll bursts never stall behind the native helper.
+      // Coalesce consecutive queued moves, stale probes ahead of a click/probe,
+      // or matching-phase scrolls so fast pointer/scroll/tap bursts never stall
+      // behind the native helper.
       const prev = queue.at(-1);
-      if (action.type === "move" && prev?.action.type === "move") {
+      if (
+        (action.type === "move" && prev?.action.type === "move") ||
+        (prev?.action.type === "probe" && (action.type === "click" || action.type === "probe" || action.type === "down"))
+      ) {
         queue.pop();
         ws.send(
           JSON.stringify({

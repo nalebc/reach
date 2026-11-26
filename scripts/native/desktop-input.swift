@@ -387,23 +387,23 @@ final class Input: @unchecked Sendable {
   // focused or read: only the kind of element under the finger.
   func probe(_ p: [String: Any]) -> [String: Any] {
     probedField = nil
-    // The whole look is bounded: it runs on the same helper as the tap's
-    // click, so a slow app answering never holds that click up. Out of time,
-    // it says "no field" (not "blind": the keyboard button isn't offered).
-    let until = Date().addingTimeInterval(0.3)
+    // The whole look is bounded tightly: it runs on the same helper as the
+    // tap's click, so a slow app answering never holds that click up. Out of
+    // time, it says "no field" (not "blind": the keyboard button isn't offered).
+    let until = Date().addingTimeInterval(0.06)
     guard let x = p["x"] as? Double, let y = p["y"] as? Double else { return ["field": false] }
     let bounds = CGDisplayBounds(display)
     let at = CGPoint(
       x: bounds.minX + x * max(0, bounds.width - 1),
       y: bounds.minY + y * max(0, bounds.height - 1))
     let system = AXUIElementCreateSystemWide()
-    AXUIElementSetMessagingTimeout(system, 0.1)
+    AXUIElementSetMessagingTimeout(system, 0.03)
     var hit: AXUIElement?
     // Web content asked for the first time can answer nothing while it wakes
-    // its accessibility (a page's first tap said "no field"): ask again, briefly.
+    // its accessibility: ask once more, very briefly, without delaying clicks.
     var found = AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit)
-    for _ in 0..<2 where found != .success {
-      usleep(40_000)
+    if found != .success {
+      usleep(15_000)
       found = AXUIElementCopyElementAtPosition(system, Float(at.x), Float(at.y), &hit)
     }
     // Nothing answers there: an app macOS can't see into. The phone offers its
@@ -705,7 +705,7 @@ final class Input: @unchecked Sendable {
     let roles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
     var stack = [root]
     var visited = 0
-    while let element = stack.popLast(), visited < 4000, Date() < until {
+    while let element = stack.popLast(), visited < 500, Date() < until {
       visited += 1
       let role = attribute(element, kAXRoleAttribute) as? String ?? ""
       if roles.contains(role) {
