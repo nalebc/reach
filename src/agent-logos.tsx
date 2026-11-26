@@ -95,6 +95,7 @@ const GLYPHS: Record<string, LucideIcon> = {
   antigravity: Orbit,
   terminal: Terminal,
   macos: Monitor,
+  api: Sparkles,
   // The All page: every agent's chats (ChatHub.tsx).
   all: Layers,
 };

@@ -43,6 +43,9 @@ import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
 import ChatAppPager from "./ChatAppPager";
 import ChatHub from "./ChatHub";
+import AnythingNewChat from "./AnythingNewChat";
+import ChatProvidersSheet from "./ChatProvidersSheet";
+import { useChatProviders } from "./chat-providers";
 import { outcomeNeeds, outcomeForChat, workflowActive } from "./outcome-navigation";
 import type { FleetConnections } from "./useFleetConnections";
 import { relayAgents } from "./Relays";
@@ -1118,6 +1121,11 @@ export default function EverythingChat({
   const macPrompts = (shared || own).macPrompts || [];
   const notificationCounts = useAppNotifications(peer);
   const logos = useAgentLogos(peer);
+  const chatProviders = useChatProviders(peer);
+  const readyProviderCount = useMemo(
+    () => chatProviders.providers.filter((p) => p.configured || p.reachable).length,
+    [chatProviders.providers],
+  );
   const [savedAgent, setAgent] = useChatAgent();
   const apps = useMemo<ChatAppChoice[]>(() => {
     const list = AGENTS.map((agent) => ({
@@ -1135,14 +1143,27 @@ export default function EverythingChat({
           supported: item.agent === "openclaw" || !!item.supported,
         });
     }
-    // With more than one agent here: every agent's chats together, first
-    // (ChatHub.tsx, docs/ACROSS_AGENTS.md).
-    const here = list.filter((a) => a.supported && health.some((h) => h.agent === a.agent && h.installed));
+    const hasApiChats = (sessions || []).some((s) => s.agent === "api" && !s.archived);
+    if (readyProviderCount > 0 || hasApiChats) {
+      list.push({ agent: "api", name: agentLabel("api"), supported: true });
+    }
+    // With more than one agent here (including API/Local): every chat together, first.
+    const here = list.filter(
+      (a) =>
+        a.supported &&
+        (a.agent === "api" || health.some((h) => h.agent === a.agent && h.installed)),
+    );
     if (here.length > 1) list.unshift({ agent: "all", name: "All", supported: true });
     return list;
-  }, [health]);
-  // The apps a new chat can be started in (not All).
-  const startApps = apps.filter((app) => app.agent !== "all");
+  }, [health, readyProviderCount, sessions]);
+  // The apps a new chat can be started in (not All): always offer API & Local too.
+  const startApps = useMemo<ChatAppChoice[]>(() => {
+    const base = apps.filter((app) => app.agent !== "all");
+    if (!base.some((app) => app.agent === "api")) {
+      base.push({ agent: "api", name: agentLabel("api"), supported: true });
+    }
+    return base;
+  }, [apps]);
   const picked = apps.find((app) => app.agent === savedAgent) || apps[0];
   // The list follows the app of a chat opened or started, but All stays All:
   // Back from a chat opened there landed on Codex's list. New chat keeps its
@@ -1168,7 +1189,7 @@ export default function EverythingChat({
   const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
   const newAgent: AgentName = newApp.agent === "claude" || newApp.agent === "gemini" ? newApp.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
-  const [sheet, setSheet] = useState<"" | "new" | "review">("");
+  const [sheet, setSheet] = useState<"" | "new" | "review" | "providers">("");
   // A new chat's folder, when one was asked for (a chat's menu on the list).
   const [newFolder, setNewFolder] = useState("");
   // An OpenClaw chat to open in its own space (one a chat just moved to).
@@ -1356,6 +1377,8 @@ export default function EverythingChat({
             onRelaysChanged={() => void reload()}
             workflows={flowEntry}
             health={health}
+            onProviders={() => setSheet("providers")}
+            providerCount={readyProviderCount}
           />
         </div>
       );
@@ -1479,7 +1502,16 @@ export default function EverythingChat({
           }
           onClose={() => (setSheet(""), setNewKind(""))}
         >
-          {newApp.agent === "openclaw" && clawTooOld ? (
+          {newApp.agent === "api" ? (
+            <AnythingNewChat
+              peer={peer}
+              providers={chatProviders.providers}
+              loading={chatProviders.loading}
+              onOpenProviders={() => setSheet("providers")}
+              onStarted={openChat}
+              autoFocus={!coarsePointer()}
+            />
+          ) : newApp.agent === "openclaw" && clawTooOld ? (
             // Its Gateway is older than Reach works with: no new chat there.
             <ClawTooOld peer={peer} to={clawTooOld.to} onChanged={recheck} />
           ) : newApp.agent === "openclaw" ? (
@@ -1592,6 +1624,16 @@ export default function EverythingChat({
             setFlow(null);
             if (flow.back) setFlowsOpen(true);
           }}
+        />
+      )}
+      {sheet === "providers" && (
+        <ChatProvidersSheet
+          peer={peer}
+          providers={chatProviders.providers}
+          presets={chatProviders.presets}
+          loading={chatProviders.loading}
+          onReload={(refresh) => chatProviders.reload(refresh)}
+          onClose={() => setSheet("")}
         />
       )}
       {sheet === "review" && (

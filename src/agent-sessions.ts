@@ -3,8 +3,8 @@ import { post, request, type Peer } from "./api";
 import { onAppResume } from "./page-visible";
 import type { Workflow } from "./Workflows";
 
-// Every Codex and Claude Code session on the computer (server/agent-sessions).
-export type AgentName = "codex" | "claude" | "gemini";
+// Every Codex, Claude Code, Gemini, and API/Local session on the computer.
+export type AgentName = "codex" | "claude" | "gemini" | "api";
 // A sub-agent a chat started (server/agent-sessions/subagents.mjs).
 export type Subagent = {
   id: string;
@@ -39,6 +39,13 @@ export type AgentSession = {
   live?: { where: "claude-app" | "terminal" | "background"; pid: number; tty: string | null };
   // Filled when one session is read.
   model?: string | null;
+  // Direct API / local provider metadata (Venice, Ollama, vLLM, OpenAI, Anthropic, custom).
+  providerId?: string;
+  providerName?: string;
+  providerKind?: "api" | "local";
+  systemPrompt?: string;
+  temperature?: number | null;
+  veniceWebSearch?: boolean;
   // Its sub-agents, newest first.
   subagents?: Subagent[];
   // Rewound: shown as it stood then, until the next message goes on from there.
@@ -295,7 +302,7 @@ export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
   modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
-  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw", all: "All" })[agent] || agent;
+  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw", api: "API & Local", all: "All" })[agent] || agent;
 
 // Out of usage: the page each agent sends you to for more, opened on the
 // phone, where you buy it. Codex's own message names its page ("Visit … to
@@ -409,6 +416,7 @@ const MODES: Record<AgentName, Record<string, string>> = {
     yolo: "YOLO",
     plan: "Plan",
   },
+  api: {},
 };
 export const modeLabel = (agent: AgentName, mode?: string | null) =>
   mode ? MODES[agent][mode] || mode : "";

@@ -1,5 +1,5 @@
 import { useMemo, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
+import { ArrowUpRight, FolderOpen, KeyRound, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
 import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
@@ -208,6 +208,8 @@ export default function ChatHub({
   onRelaysChanged,
   workflows,
   health = [],
+  onProviders,
+  providerCount = 0,
 }: {
   peer: Peer;
   active?: boolean;
@@ -234,6 +236,9 @@ export default function ChatHub({
   workflows?: WorkflowsEntry;
   // This computer's agents (the live feed); the others' are asked here.
   health?: AgentHealth[];
+  // Manage API key & local providers (Venice, Ollama, vLLM, OpenAI, Anthropic, custom).
+  onProviders?: () => void;
+  providerCount?: number;
 }) {
   const scope = viewScope(peer, "chats:all");
   const [searchOpen, setSearchOpen] = useViewState(scope, "search", false);
@@ -279,6 +284,7 @@ export default function ChatHub({
   const names = computerNames(covered.map((computer) => computer.name));
   const openOn = (computer: Peer, chat: Ref) => (computer.id === peer.id ? onOpen(chat) : onOpenOn?.(computer, chat));
   const [opened, setOpened] = useViewState<string[]>(scope, "folders", []);
+  const [filter, setFilter] = useViewState<"all" | "subscriptions" | "api" | "local">(scope, "filter", "all");
   const [cancelling, setCancelling] = useState("");
   const all = useMemo(() => (sessions || []).filter((s) => !s.archived), [sessions]);
   const chatLists = useMemo<ComputerChats[]>(
@@ -291,13 +297,20 @@ export default function ChatHub({
     ],
     [peer, all, lists],
   );
+  const hasDirectChats = useMemo(
+    () => chatLists.some(({ sessions }) => sessions.some((s) => s.agent === "api")),
+    [chatLists],
+  );
   // Projects across agents, the one with the newest chat first. The same
   // folder on two computers is two projects.
   const projects = useMemo(() => {
     const map = new Map<string, { computer: Peer; root: string; list: AgentSession[] }>();
     for (const { computer, sessions } of chatLists)
       for (const s of sessions) {
-        const root = projectOfChat(s);
+        if (filter === "subscriptions" && s.agent === "api") continue;
+        if (filter === "api" && !(s.agent === "api" && s.providerKind !== "local")) continue;
+        if (filter === "local" && !(s.agent === "api" && s.providerKind === "local")) continue;
+        const root = s.agent === "api" ? "__direct__" : projectOfChat(s);
         const key = `${computer.id}\n${root}`;
         const group = map.get(key) || { computer, root, list: [] };
         group.list.push(s);
@@ -306,7 +319,7 @@ export default function ChatHub({
     return [...map.entries()]
       .map(([key, group]) => ({ ...group, key, list: group.list.sort((a, b) => priority(b) - priority(a) || b.updatedAt - a.updatedAt) }))
       .sort((a, b) => Math.max(...b.list.map((s) => s.updatedAt)) - Math.max(...a.list.map((s) => s.updatedAt)));
-  }, [chatLists]);
+  }, [chatLists, filter]);
   // This computer's workflows: each one's chats together (FlowRuns).
   const flowsOf = useMemo(() => flowFinder(workflows?.list), [workflows?.list]);
   const changedBy = new Map(
@@ -360,6 +373,42 @@ export default function ChatHub({
       <div hidden={!searchOpen}>
         <SearchAll scope={scope} computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
       </div>
+      {(hasDirectChats || providerCount > 0 || onProviders) && (
+        <div className="hub-filters" role="toolbar" aria-label="Chat filters">
+          {(hasDirectChats || providerCount > 0) && (
+            <>
+              {(
+                [
+                  ["all", "All"],
+                  ["subscriptions", "Subscriptions"],
+                  ["api", "API"],
+                  ["local", "Local"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`hub-filter ${filter === id ? "active" : ""}`}
+                  aria-pressed={filter === id}
+                  onClick={() => setFilter(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </>
+          )}
+          {onProviders && (
+            <button
+              type="button"
+              className="hub-filter providers"
+              onClick={onProviders}
+            >
+              <KeyRound size={12} />
+              <span>{providerCount > 0 ? `Providers · ${providerCount}` : "API & Local"}</span>
+            </button>
+          )}
+        </div>
+      )}
       {!!pending && onReview && (
         <button className="chat-needs-row" onClick={onReview}>
           <ShieldCheck size={16} />
@@ -447,7 +496,7 @@ export default function ChatHub({
                 <div className="chat-group-heading">
                   <h2 title={root || undefined}>
                     <FolderOpen size={14} />
-                    <span className="chat-project-name">{projectName(root) || "Workspace"}</span>
+                    <span className="chat-project-name">{root === "__direct__" ? "Direct & Local" : projectName(root) || "Workspace"}</span>
                     <span className="hub-project-agents" aria-label={agents.map(agentLabel).join(", ")}>
                       {agents.map((a) => (
                         <AgentLogo key={a} agent={a} logos={logos} size={13} />
@@ -491,7 +540,7 @@ export default function ChatHub({
                                   .slice(0, 3)
                                   .map((f) => base(f.file))
                                   .join(", ")}${files.length > 3 ? ` +${files.length - 3}` : ""}`
-                              : s.prompts?.[0]?.title || plainLine(s.preview || "") || agentLabel(s.agent)}
+                              : s.prompts?.[0]?.title || plainLine(s.preview || "") || (s.providerName ? `${s.providerName}${s.model ? ` · ${s.model}` : ""}` : agentLabel(s.agent))}
                           </span>
                         </span>
                         <span className="chat-entry-tail">

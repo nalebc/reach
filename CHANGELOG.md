@@ -8,6 +8,40 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-11-26
+
+Unified Anything Chat (subscriptions, API keys, and local inference servers),
+private-first connection with signed Public Funnel fallback, reliable terminal
+scrolling and Home Screen PWA resume, and smoother borderless fullscreen
+Screen Control.
+
+### Added
+
+- Unified Anything Chat provider registry and streaming engine supporting
+  Venice, OpenAI, Anthropic, OpenRouter, custom OpenAI/Anthropic-compatible
+  endpoints, and auto-detected local Ollama, vLLM, and LM Studio servers
+  alongside Codex, Claude Code, Gemini CLI, and OpenClaw.
+- Local-only `0600` provider credential storage with masked key display,
+  live model discovery, mid-chat model and provider switching, collapsible
+  reasoning blocks, and unified chat filters (`All`, `Subscriptions`, `API`,
+  `Local`).
+- Cryptographically signed Public Funnel device gateway allowing any browser
+  to connect rapidly when Tailscale is not installed on the client device,
+  with one-tap upgrade to Private Tailscale whenever available.
+
+### Fixed
+
+- Terminal touch scrolling no longer conflicts with xterm v6's gesture
+  listener, preserves scrollback position across reconnect snapshots, and
+  supports smooth decaying momentum and alternate-screen wheel dispatch.
+- Standalone Home Screen PWA wakeups recover cleanly after OS suspension
+  via unified resume detection, bounded IndexedDB storage timeouts, stale
+  socket teardown, and pruned navigation history recovery.
+- Fullscreen Screen Control renders pure black edge-to-edge with no gray
+  safe-area or letterbox boxes, decouples pointer move and scroll pacing at
+  8 ms, coalesces matching-phase server scrolls, caches the 2D canvas
+  context, and recovers cleanly from dropped or orphaned pointer captures.
+
 ## [0.5.2] — 2026-11-03
 
 Early-access maintenance release for foreground recovery and a quieter,

@@ -191,6 +191,14 @@ const SKIN = {
     where: Terminal,
     disclaimer: "",
   },
+  api: {
+    placeholder: "Message…",
+    app: "API & Local",
+    menu: TextAlignStart,
+    compose: SquarePen,
+    where: null,
+    disclaimer: "",
+  },
 } as const;
 
 // Under the newest reply, as both apps put them: copy it, share it.

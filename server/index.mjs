@@ -140,6 +140,8 @@ import { Jobs } from "./jobs.mjs";
 import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { createChatProviders } from "./chat-providers/registry.mjs";
+import { createApiChats } from "./chat-providers/sessions.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
@@ -586,6 +588,30 @@ export async function createReach(overrides = {}) {
       keepOut: (agent, id) => !!teams?.inTeam(agent, id) || codingTasks.ownsSession(agent, id),
       recoveryAllowed: (agent, id) => !codingTasks.ownsSession(agent, id),
       teamExtras: (agent, id) => teams?.leadExtras(agent, id) || null,
+    });
+  const chatProviders =
+    overrides.chatProviders ||
+    createChatProviders({
+      dataDir: config.dataDir,
+      ...(overrides.chatProviderFetch ? { fetchImpl: overrides.chatProviderFetch } : {}),
+    });
+  const apiChats =
+    overrides.apiChats ||
+    createApiChats({
+      dataDir: config.dataDir,
+      providers: chatProviders,
+      readImage: (id) => {
+        try {
+          const p = agentImages.paths([id])?.[0];
+          if (!p) return null;
+          const ext = path.extname(p).toLowerCase();
+          const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : ext === ".gif" ? "image/gif" : "image/png";
+          return { path: p, mime };
+        } catch {
+          return null;
+        }
+      },
+      ...(overrides.chatProviderFetch ? { fetchImpl: overrides.chatProviderFetch } : {}),
     });
   // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
   // (node --test) never reach for the real agents.
@@ -4145,9 +4171,53 @@ export async function createReach(overrides = {}) {
       throw Object.assign(fail(error.status || 500, error.message), error.working ? { working: error.working } : {});
     }
   });
-  app.get("/api/sessions", async (req, res) =>
-    versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list(), workflows: workflows.list() }),
-  );
+  // Unified Anything Chat providers: API keys (Venice, OpenAI, Anthropic,
+  // OpenRouter, custom OpenAI-compatible) and local/self-hosted inference
+  // servers (Ollama, vLLM, LM Studio). Secrets stay on this computer only.
+  app.get("/api/chat/providers", async (req, res) => {
+    const providers = await chatProviders.list({
+      discover: req.query.discover !== "0",
+      refresh: req.query.refresh === "1",
+    });
+    res.json({ providers, presets: chatProviders.presets() });
+  });
+  app.post("/api/chat/providers", async (req, res) => {
+    macOwner(req);
+    const provider = chatProviders.upsert(req.body || {});
+    record("session", `Saved chat provider ${provider.name}`);
+    res.json({ provider });
+  });
+  app.delete("/api/chat/providers/:id", async (req, res) => {
+    macOwner(req);
+    const result = chatProviders.remove(req.params.id);
+    record("session", `Removed chat provider ${req.params.id}`);
+    res.json(result);
+  });
+  app.post("/api/chat/providers/test", async (req, res) => {
+    macOwner(req);
+    const result = await chatProviders.test(req.body || {});
+    res.json(result);
+  });
+  app.get("/api/chat/providers/:id/models", async (req, res) => {
+    const result = await chatProviders.listModels(req.params.id, {
+      refresh: req.query.refresh === "1",
+    });
+    res.json(result);
+  });
+  app.get("/api/sessions", async (req, res) => {
+    const base = await agentSessions.list({ fresh: req.query.fresh === "1" });
+    const direct = apiChats.list();
+    const sessions = direct.length
+      ? [...(base.sessions || []), ...direct].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      : base.sessions;
+    return versioned(req, res, {
+      ...base,
+      sessions,
+      relays: relays.list(),
+      teams: teams.list(),
+      workflows: workflows.list(),
+    });
+  });
   app.get("/api/sessions/health", async (req, res) =>
     res.json({
       agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
@@ -4454,6 +4524,14 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions/:agent/:id", async (req, res) => {
     const before =
       typeof req.query.before === "string" ? req.query.before : null;
+    if (req.params.agent === "api") {
+      const page = apiChats.read(req.params.id, {
+        limit: Number(req.query.limit) || 200,
+        before,
+      });
+      if (before) return res.json(page);
+      return versioned(req, res, page);
+    }
     const page = await agentSessions.read(req.params.agent, req.params.id, {
       limit: Number(req.query.limit) || 200,
       before,
@@ -4620,13 +4698,36 @@ export async function createReach(overrides = {}) {
         : { version, logos },
     );
   });
-  app.get("/api/sessions/models", async (req, res) =>
-    res.json(
+  app.get("/api/sessions/models", async (req, res) => {
+    if (req.query.agent === "api") {
+      const providers = await chatProviders.list({
+        discover: true,
+        refresh: req.query.refresh === "1",
+      });
+      const models = providers
+        .filter((p) => p.configured || p.reachable)
+        .flatMap((p) =>
+          (p.models || []).map((m) => ({
+            id: `${p.id}::${m.id}`,
+            modelId: m.id,
+            providerId: p.id,
+            providerName: p.name,
+            providerKind: p.kind,
+            name: m.name || m.id,
+            description: m.description ? `${p.name} · ${m.description}` : p.name,
+            isDefault: false,
+            efforts: [],
+            defaultEffort: null,
+          })),
+        );
+      return res.json({ models, mode: null });
+    }
+    return res.json(
       await agentSessions.models(
         ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
       ),
-    ),
-  );
+    );
+  });
   // Signing an agent in on the Mac from the phone: Reach relays the link and
   // the code; the sign-in itself is the agent's own, on the Mac.
   const signInAgent = (value) => {
@@ -4702,6 +4803,19 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions", async (req, res) => {
     const body = req.body || {};
     const agent = String(body.agent || "");
+    if (agent === "api") {
+      const started = apiChats.start({
+        providerId: body.providerId,
+        model: body.model,
+        text: body.text,
+        images: Array.isArray(body.images) ? body.images : [],
+        systemPrompt: body.systemPrompt,
+        temperature: body.temperature,
+        veniceWebSearch: body.veniceWebSearch === true,
+      });
+      record("session", `Started a ${started.session.providerName || "API"} chat from Reach`);
+      return res.json({ threadId: started.session.id, turnId: null, session: started.session });
+    }
     // Each agent's own permission modes: the Codex app's menu (sent exactly
     // as the app sends it) or Claude Code's --permission-mode choices.
     const modeSettings =
@@ -4740,6 +4854,20 @@ export async function createReach(overrides = {}) {
   };
   app.post("/api/sessions/:agent/:id/messages", async (req, res) => {
     const { agent, id } = req.params;
+    if (agent === "api") {
+      const body = req.body || {};
+      const sent = apiChats.send(id, {
+        text: body.text,
+        images: Array.isArray(body.images) ? body.images : [],
+        providerId: body.providerId,
+        model: body.model,
+        systemPrompt: body.systemPrompt,
+        temperature: body.temperature,
+        veniceWebSearch: typeof body.veniceWebSearch === "boolean" ? body.veniceWebSearch : undefined,
+      });
+      record("session", `Sent a message to ${sent.session.providerName || "API"} chat`);
+      return res.json(sent);
+    }
     const { fresh, repeated } = imageRepeats.split(agent, id, req.body?.images);
     const options = turnOptions({ ...(req.body || {}), images: fresh }, agent);
     const repeatFiles = agentImages.paths(repeated);
@@ -4807,13 +4935,19 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/archive", async (req, res) => {
     macOwner(req);
     const archived = req.body?.archived !== false;
+    if (req.params.agent === "api") {
+      const done = apiChats.archive(req.params.id, archived);
+      record("session", `${archived ? "Archived" : "Unarchived"} an API chat`);
+      return res.json({ archived, ...done });
+    }
     const done = await agentSessions.archive(req.params.agent, req.params.id, { archived });
     record("session", `${archived ? "Archived" : "Unarchived"} a ${agentLabel(req.params.agent)} chat`);
     res.json(done);
   });
-  app.post("/api/sessions/:agent/:id/stop", async (req, res) =>
-    res.json(await agentSessions.stop(req.params.agent, req.params.id)),
-  );
+  app.post("/api/sessions/:agent/:id/stop", async (req, res) => {
+    if (req.params.agent === "api") return res.json(apiChats.stop(req.params.id));
+    return res.json(await agentSessions.stop(req.params.agent, req.params.id));
+  });
   // Continue a chat with the other agent, as if forked in the same app
   // (agent-sessions/move.mjs); the new chat's address comes back. resume:
   // the new agent is told to keep going too (one tap when out of usage).
@@ -4843,6 +4977,25 @@ export async function createReach(overrides = {}) {
   // owner's call (it changes what Claude may do without asking). Never Bypass.
   app.post("/api/sessions/:agent/:id/model", async (req, res) => {
     macOwner(req);
+    if (req.params.agent === "api") {
+      const b = req.body || {};
+      let providerId = typeof b.providerId === "string" ? b.providerId : undefined;
+      let model = typeof b.model === "string" ? b.model : undefined;
+      if (model && model.includes("::") && !providerId) {
+        const idx = model.indexOf("::");
+        providerId = model.slice(0, idx);
+        model = model.slice(idx + 2);
+      }
+      return res.json(
+        apiChats.setModel(req.params.id, {
+          providerId,
+          model,
+          ...(typeof b.systemPrompt === "string" ? { systemPrompt: b.systemPrompt } : {}),
+          ...(b.temperature === null || typeof b.temperature === "number" ? { temperature: b.temperature } : {}),
+          ...(typeof b.veniceWebSearch === "boolean" ? { veniceWebSearch: b.veniceWebSearch } : {}),
+        }),
+      );
+    }
     const { model, effort, speed } = req.body || {};
     // Claude's Effort page sends the level alone: the chat keeps its model.
     if ((model == null && (effort == null || req.params.agent !== "claude")) ||
@@ -4893,6 +5046,11 @@ export async function createReach(overrides = {}) {
   // A chat deleted, as in its app (Codex's delete; a Claude chat to the Trash).
   app.delete("/api/sessions/:agent/:id", async (req, res) => {
     macOwner(req);
+    if (req.params.agent === "api") {
+      const result = apiChats.remove(req.params.id);
+      record("session", "Deleted an API chat");
+      return res.json(result);
+    }
     const result = await agentSessions.deleteChat(req.params.agent, req.params.id);
     record("session", `Deleted a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
@@ -4900,6 +5058,11 @@ export async function createReach(overrides = {}) {
   // A chat renamed, as in its app.
   app.post("/api/sessions/:agent/:id/rename", async (req, res) => {
     if (typeof req.body?.title !== "string") throw fail(400, "Name the chat.");
+    if (req.params.agent === "api") {
+      const result = apiChats.rename(req.params.id, req.body.title);
+      record("session", "Renamed an API chat");
+      return res.json(result);
+    }
     const result = await agentSessions.rename(req.params.agent, req.params.id, req.body?.title);
     record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
@@ -4945,6 +5108,38 @@ export async function createReach(overrides = {}) {
     const since = Number(req.query.since);
     const gone = new AbortController();
     res.on("close", () => gone.abort());
+    if (req.params.agent === "api") {
+      const snapshot = () => {
+        const page = apiChats.read(req.params.id, { limit: 200 });
+        const lastReply = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "text");
+        const lastThink = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "thinking");
+        return {
+          version: page.session.updatedAt || 1,
+          running: page.session.status === "running",
+          streaming: lastReply?.status === "running" ? lastReply.text : "",
+          thinking: lastThink?.status === "running" ? lastThink.text : "",
+          status: page.session.status,
+          prompts: [],
+          waiting: [],
+        };
+      };
+      let view = snapshot();
+      if (Number.isFinite(since) && view.version <= since) {
+        await new Promise((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            unsub();
+            resolve();
+          };
+          const timer = setTimeout(done, 25000);
+          const unsub = apiChats.subscribe(req.params.id, done);
+          gone.signal.addEventListener("abort", done, { once: true });
+        });
+        view = snapshot();
+      }
+      if (!res.writableEnded && !gone.signal.aborted) res.json(view);
+      return;
+    }
     if (Number.isFinite(since)) {
       await agentSessions.changes(
         req.params.agent,
@@ -6855,6 +7050,7 @@ export async function createReach(overrides = {}) {
       wss.close();
       await codingTasks.close();
       const sessionsExit = Promise.resolve(agentSessions.close?.()).catch(() => {});
+      apiChats.close?.();
       openClaw.close?.();
       doneWatch.stop();
       turnWatch.stop();
