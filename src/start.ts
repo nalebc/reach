@@ -30,6 +30,12 @@ import {
   signWithFaceId,
   type FaceOptions,
 } from "./passkeys";
+import {
+  activateFunnelTransport,
+  capturePairingUrl,
+  probeFunnelOrigin,
+  probePrivateOrigin,
+} from "./device-transport";
 import { bindPrivatePeer, installPrivateRouting, installTailnet, usePrivateWay, type TailnetNode } from "./tailnet-transport";
 import { watchNativeStart } from "./start-native";
 import { connectionLoading } from "./connection-loading";
@@ -616,30 +622,64 @@ async function main() {
     });
     return;
   }
+  const originalHash = location.hash;
+  capturePairingUrl(false);
   render({
     ...connectionLoading(),
     busy: true,
   });
-  const config = await loadConfig();
+  let config = await loadConfig();
   if (!config) {
     render({
       title: "Reach isn’t available right now",
       detail: "Make sure Reach is running on your computer, then try again.",
       action: { label: "Try again", onClick: () => location.reload() },
     });
-    return;
+    // Home Screen launches while the phone's network or Tailscale VPN is still
+    // waking up recover automatically once the computer answers.
+    config = await new Promise<StartConfig | null>((resolve) => {
+      if (workspaceStarted || startupConnection.signal.aborted) return resolve(null);
+      let checking = false;
+      const cleanup = () => {
+        clearInterval(timer);
+        window.removeEventListener("online", retry);
+        window.removeEventListener("pageshow", retry);
+        window.removeEventListener("focus", retry);
+        document.removeEventListener("visibilitychange", retry);
+        startupConnection.signal.removeEventListener("abort", abort);
+      };
+      const abort = () => {
+        cleanup();
+        resolve(null);
+      };
+      const retry = () => {
+        if (checking || document.hidden || workspaceStarted || startupConnection.signal.aborted)
+          return;
+        checking = true;
+        void loadConfig()
+          .then((found) => {
+            if (!found) return;
+            cleanup();
+            resolve(found);
+          })
+          .finally(() => {
+            checking = false;
+          });
+      };
+      const timer = setInterval(retry, 3000);
+      window.addEventListener("online", retry);
+      window.addEventListener("pageshow", retry);
+      window.addEventListener("focus", retry);
+      document.addEventListener("visibilitychange", retry);
+      startupConnection.signal.addEventListener("abort", abort, { once: true });
+      startupStops.add(abort);
+    });
+    if (!config || workspaceStarted) return;
+    render({
+      ...connectionLoading(),
+      busy: true,
+    });
   }
-  // A browser that signed in here before needs the client again: start
-  // fetching it now (usually from cache) while checking for the app.
-  let used = false;
-  try {
-    used = localStorage.getItem(USED) === "1";
-  } catch {}
-  const wasm =
-    used && config.tailnet ? fetch(`/tailnet/${config.tailnet.wasm}`, { signal: startupConnection.signal }) : null;
-  // A native connection can win before the browser consumes this prefetch.
-  // Observe its rejection now; awaiting it still reports an asset failure.
-  void wasm?.catch(() => {});
   // An invitation: the key is single use; take it out of the address now.
   const guest =
     location.pathname === "/guest"
@@ -656,20 +696,19 @@ async function main() {
     first && first !== config.origin
       ? { ...config, origin: first, instance: "" }
       : config;
-  // Already on the tailnet (Tailscale app on): straight to the private address.
-  // With one address, your own devices on the tailnet get Reach right here and
-  // never this page, so there is nowhere else to send you.
+  // 1. Try private Tailscale first with a fast bounded probe (<=850ms).
   if ((guest || !config.home) && (await probeDirect(target))) {
     location.replace(
       guest
         ? `${target.origin}/guest${guestHash(guest.invites)}`
-        : directUrl(config, location),
+        : directUrl(config, { pathname: location.pathname, hash: originalHash }),
     );
     return;
   }
   if (!guest && config.home === location.origin) {
     const native = watchNativeStart(config, (peer) => {
       if (!claimWorkspace()) return;
+      capturePairingUrl(true);
       rememberPrivateConfig(config);
       bindPrivatePeer(peer, "native");
       installPrivateRouting();
@@ -681,17 +720,62 @@ async function main() {
       void openReach(() => import("./main"), view);
     });
     startupStops.add(native.stop);
-    await native.check();
+    const [, privateHit] = await Promise.all([
+      native.check(),
+      probePrivateOrigin([config.home, config.origin], {
+        timeoutMs: 850,
+        expectedInstance: config.instance,
+      }),
+    ]);
     if (workspaceStarted) return;
+    if (privateHit) {
+      if (privateHit !== location.origin) {
+        location.replace(directUrl(config, { pathname: location.pathname, hash: originalHash }));
+        return;
+      }
+      if (!claimWorkspace()) return;
+      capturePairingUrl(true);
+      rememberPrivateConfig(config);
+      installPrivateRouting();
+      usePrivateWay("native");
+      delete document.documentElement.dataset.connection;
+      setHomeOrigin(config.home);
+      await openReach(() => import("./main"), view);
+      return;
+    }
   }
-  // An invited guest's browser (a key now, or joined with one before) uses
-  // its guest device; a guest link without a key signs in to Tailscale.
+  // 2. Rapidly fall back to signed Public Funnel when Tailscale is missing or off.
+  const publicOrigin = guest?.invites[0]?.origin
+    ? `https://${new URL(guest.invites[0].origin).hostname}`
+    : ownOrigin(config);
+  const legacyTailnetMock = !!(globalThis as { reachTailnet?: unknown }).reachTailnet;
+  if (
+    !legacyTailnetMock &&
+    (await probeFunnelOrigin(publicOrigin, {
+      timeoutMs: 1500,
+      expectedInstance: guest ? "" : config.instance,
+    }))
+  ) {
+    if (!claimWorkspace()) return;
+    if (!guest) capturePairingUrl(true);
+    rememberPrivateConfig(config);
+    activateFunnelTransport(publicOrigin, "funnel");
+    document.documentElement.dataset.connection = "funnel";
+    setHomeOrigin(publicOrigin);
+    await openReach(() => import("./main"), view);
+    return;
+  }
+  // 3. Compatibility fallback for older hosts without the signed Funnel device gateway.
+  let used = false;
+  try {
+    used = localStorage.getItem(USED) === "1";
+  } catch {}
+  const wasm =
+    used && config.tailnet ? fetch(`/tailnet/${config.tailnet.wasm}`, { signal: startupConnection.signal }) : null;
+  void wasm?.catch(() => {});
   const joined = !!storeFor("reach.guest:").getState("_current-profile");
-  // Your own browser without a Tailscale device yet (a new one, or signing
-  // in again): whatever it saved belonged to its old device.
   const device = !!storeFor("reach.tailnet:").getState("_current-profile");
   if (!guest && !device) forgetSaved({ keepInterface: true });
-  // Face ID sign-in, when your computer offers it.
   const faceOk =
     !guest && !!config.faceId && !!config.tailnet && (await faceIdReady());
   if (workspaceStarted) return;

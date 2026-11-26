@@ -82,7 +82,7 @@ export async function pairRunningHost(
   print(
     `Reach: ${one || origin.origin}\nPairing code: ${pairing.code.slice(0, 4)} ${pairing.code.slice(4)}\nOne use. Expires in 10 minutes. Previous unused code replaced.` +
       (one
-        ? `\nNo Tailscale app on the phone? It can sign in to Tailscale in its browser for the next ${PAIRING_WINDOW_MS / 60000} minutes.`
+        ? `\nNo Tailscale app on the phone? It can connect securely in its browser for the next ${PAIRING_WINDOW_MS / 60000} minutes.`
         : "\nThe phone needs the Tailscale app, on and signed in to this account."),
   );
   if (!qr) qr = (await import("qrcode-terminal")).default;

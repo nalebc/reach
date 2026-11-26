@@ -286,21 +286,18 @@ async function prepare(options, { say, step, signal }) {
     fs.writeFileSync(stampFile, JSON.stringify({ dependencies, source, agent: agentSource() }), {
       mode: 0o600,
     });
-  // The browser sign-in client, for phones without the Tailscale app.
-  if (!packaged && !options.local) {
+  // Optional legacy Go WASM tailnet client when explicitly requested.
+  if (!packaged && !options.local && process.env.REACH_BUILD_TAILNET === "1") {
     const { buildTailnet, tailnetCurrent } =
       await import("./build-tailnet.mjs");
     if (!tailnetCurrent()) {
       signal?.throwIfAborted();
-      step("preparing browser sign-in for phones (first run or update, about 2 minutes)");
+      step("preparing legacy browser tailnet client");
       try {
-        if (!(await buildTailnet({ log: say, signal })))
-          say(
-            "Reach: Go isn't installed, so phones need the Tailscale app. Install Go (https://go.dev/dl) to let phones sign in from the browser.",
-          );
+        await buildTailnet({ log: say, signal });
       } catch (error) {
         say(
-          `Reach: browser sign-in isn't available: ${error.message.split("\n")[0]}`,
+          `Reach: legacy browser tailnet build skipped: ${error.message.split("\n")[0]}`,
         );
       }
     }

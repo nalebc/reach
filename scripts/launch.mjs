@@ -275,7 +275,7 @@ async function launchRun(options, root, ownPrivateFolders) {
     // is in, so a first run visibly ends with it.
     ...(options.phoneStep && {
       onFirstDevice: () =>
-        console.log(`\n  ✔ 3. Your phone  —  approved. Finish browser connection setup in Reach to use this same link with the phone app on or off.\n`),
+        console.log(`\n  ✔ 3. Your phone  —  approved. This same link reconnects automatically with the phone app on or off.\n`),
     }),
     // A source checkout: interface edits reach phones without a restart.
     liveInterface: !packaged,
@@ -425,6 +425,7 @@ async function launchRun(options, root, ownPrivateFolders) {
           instance: reach.instance,
           since: setupSince(),
           faceId: reach.faceIdAvailable,
+          pairingOpen: () => reach.auth.pairingAdmission(),
         })
       : null;
     // The start page, and its Face ID sign-in (its only requests that

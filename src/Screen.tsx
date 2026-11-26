@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { onAppResume } from "./page-visible";
 import {
   Monitor,
   Play,
@@ -446,6 +447,10 @@ export default function Screen({
       setVisible(!document.hidden);
       if (document.hidden) release();
     };
+    const syncVisible = () => {
+      if (!document.hidden) setVisible(true);
+    };
+    const unsubResume = onAppResume(syncVisible);
     const leave = () => {
       const owned = grant.intent;
       if (!owned || !grant.allowed) return;
@@ -472,6 +477,7 @@ export default function Screen({
     window.addEventListener("pagehide", leave);
     return () => {
       mounted.current = false;
+      unsubResume();
       document.removeEventListener("visibilitychange", hide);
       window.removeEventListener("pagehide", leave);
       leave();

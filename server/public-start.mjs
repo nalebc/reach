@@ -84,6 +84,8 @@ export function publicStartHandler({
   // Whether a new browser can sign in with Face ID alone right now
   // (server/face-join.mjs).
   faceId = () => false,
+  // Whether new devices may request approval over Funnel right now.
+  pairingOpen = () => false,
   // What the steps at /agent call this computer (computer-word.mjs).
   platform = process.platform,
 }) {
@@ -97,6 +99,7 @@ export function publicStartHandler({
       origin: privateOrigin,
       ...(home ? { home } : {}),
       ...(faceId() ? { faceId: true } : {}),
+      ...(pairingOpen() ? { pairingOpen: true } : {}),
       name,
       instance,
       since,

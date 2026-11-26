@@ -1,7 +1,12 @@
 import { guestPeers, readPrivatePeers, peerFromDevice, type Device, type Peer } from "./api";
 import { browserPeerEligible, existingBrowserNode } from "./browser-node";
+import {
+  activateFunnelTransport,
+  bindPrivateRoute,
+  funnelDeviceFetch,
+} from "./device-transport";
 import { setHomeOrigin } from "./home-origin";
-import { parseStartConfig, tailnetSuffix, type StartConfig } from "./start-flow";
+import { ownOrigin, parseStartConfig, tailnetSuffix, type StartConfig } from "./start-flow";
 import { offlineBootstrap } from "./offline-shell";
 import {
   bindPrivatePeer, installPrivateRouting, installTailnet, nativeTailnetFetch,
@@ -11,6 +16,11 @@ import {
 
 export type PrivateHandoff = { mode: PrivateWay; peer: Peer; peers: Peer[]; device: Device };
 type Current = { peer: Peer; device: Device };
+export type FunnelRecovery = {
+  fetch: typeof fetch;
+  activate?(publicOrigin: string): void;
+  bindPrivate?(privateOrigin: string, token: string): Promise<boolean>;
+};
 export type RecoveryOptions = {
   current(): Current | null;
   selected?(): Peer | undefined;
@@ -19,6 +29,7 @@ export type RecoveryOptions = {
   peers?(mode: PrivateWay): Peer[];
   nativeFetch?: typeof fetch;
   browser?(wake?: boolean): Promise<{ node: TailnetNode; fetch: typeof fetch } | null>;
+  funnel?: FunnelRecovery;
 };
 let knownConfig: StartConfig | null = null;
 export function rememberPrivateConfig(config: StartConfig) { knownConfig = config; }
@@ -68,11 +79,11 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
     if (!browser && wokenGeneration !== generation) wakeRequested = true;
     return browser;
   };
-  const read = async (fetcher: typeof fetch, url: string, token?: string) => {
+  const read = async (fetcher: typeof fetch, url: string, token?: string, timeoutMs = 1800) => {
     const response = await fetcher(url, {
       cache: "no-store", redirect: "error", credentials: "omit",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-      signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(1800)]),
+      signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeoutMs)]),
     });
     if (!response.ok) throw Object.assign(Error("Private connection is unavailable."), { status: response.status });
     return response.json();
@@ -84,11 +95,14 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
   function activate(next: PrivateWay, candidate: Peer, device: Device,
     browser: { node: TailnetNode; fetch: typeof fetch } | null, workspaceKey?: string) {
     const peer = { ...peerFromDevice(candidate, device), ...(workspaceKey ? { workspaceKey } : {}) };
-    for (const saved of peers(next)) bindPrivatePeer(saved, next);
+    const storeWay: PrivateWay = next === "funnel" ? "native" : next;
+    if (next === "funnel") options.funnel?.activate?.(peer.url);
+    for (const saved of peers(storeWay)) bindPrivatePeer(saved, next);
     bindPrivatePeer(peer, next);
     if (browser) installTailnet(browser.node, tailnetSuffix(config.origin), next);
     usePrivateWay(next);
     if (next === "browser") document.documentElement.dataset.connection = "browser";
+    else if (next === "funnel") document.documentElement.dataset.connection = "funnel";
     else {
       nativeRecovered();
       delete document.documentElement.dataset.connection;
@@ -96,26 +110,46 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
     }
     setHomeOrigin(peer.url);
     awaiting = peer.token;
-    options.handoff({ mode: next, peer, device, peers: peers(next).map(saved => saved.token === candidate.token ? peer : saved) });
+    options.handoff({
+      mode: next,
+      peer,
+      device,
+      peers: peers(storeWay).map(saved =>
+        saved.token === candidate.token || saved.id === candidate.id ? peer : saved,
+      ),
+    });
   }
   async function restoreBrowserOwner() {
-    // A fresh private page can have only a browser approval. Test that
-    // identity itself before mounting; a native credential is never reused.
-    if (awaiting || mode() !== "native" || guestPeers()) return;
+    // A fresh private page can have only a browser approval, or can have
+    // started on Funnel while the phone's Tailscale VPN was still waking up.
+    // Test each saved identity before mounting; credentials are never mixed.
+    const initialMode = mode();
+    if (awaiting || (initialMode !== "native" && initialMode !== "funnel") || guestPeers()) return;
     const selected = options.selected?.();
     if (selected && (selected.transport === "funnel" || privateOrigin(selected)?.hostname !== location.hostname)) return;
     const candidates = candidatesFor("browser", location.hostname);
-    if (!candidates.length) return;
-    const unchanged = () => !lifetime.signal.aborted && !guestPeers() && !options.current() && mode() === "native" &&
-      peerKey(options.selected?.()) === peerKey(selected);
     const native = candidatesFor("native", location.hostname);
+    if (!candidates.length && !native.length) return;
+    const unchanged = () => !lifetime.signal.aborted && !guestPeers() && !options.current() && mode() === initialMode &&
+      peerKey(options.selected?.()) === peerKey(selected);
     for (const saved of peers("native")) bindPrivatePeer(saved, "native");
     for (const candidate of native) {
       try {
         // Any usable native grant wins, including a deliberately restricted
         // or guest grant. A saved owner alternate must not replace it.
-        await read(direct, candidate.url + "/api/device", candidate.token);
-        nativeRecovered();
+        const device: Device = await read(direct, candidate.url + "/api/device", candidate.token);
+        if (initialMode === "funnel") {
+          if (
+            !device ||
+            device.id !== candidate.id ||
+            (candidate.computerId && device.computerId !== candidate.computerId) ||
+            !unchanged()
+          )
+            continue;
+          activate("native", candidate, device, null);
+        } else {
+          nativeRecovered();
+        }
         return;
       } catch (error) {
         const status = (error as { status?: number }).status;
@@ -125,8 +159,24 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
         // Only the saved browser's own approval below can restore access.
       }
     }
-    if (!unchanged()) return;
+    if (initialMode !== "native" || !unchanged()) return;
     nativeLost = true;
+    if (options.funnel && native.length) {
+      const publicUrl = `https://${location.hostname}`;
+      for (const candidate of native) {
+        try {
+          const device: Device = await read(options.funnel.fetch, publicUrl + "/api/device", candidate.token);
+          if (!owner(device) || device.id !== candidate.id ||
+            (candidate.computerId && device.computerId !== candidate.computerId)) continue;
+          if (!unchanged()) return;
+          activate("funnel", { ...candidate, url: publicUrl }, device, null);
+          return;
+        } catch {
+          /* Try the next saved candidate or standby browser node. */
+        }
+      }
+    }
+    if (!candidates.length) return;
     const browser = await browserForRecovery();
     if (!browser || !unchanged()) return;
     let repair = false;
@@ -166,11 +216,58 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
         scopes(latest.device) === scopes(current.device) && peerKey(latest.peer) === peerKey(current.peer) && mode() === from &&
         peerKey(options.selected?.()) === peerKey(selected);
     };
-    for (const peer of [...peers(from), current.peer]) bindPrivatePeer(peer, from);
+    const storeFrom: PrivateWay = from === "funnel" ? "native" : from;
+    for (const peer of [...peers(storeFrom), current.peer]) bindPrivatePeer(peer, from);
+    if (from === "funnel") {
+      const host = privateOrigin(current.peer)!.hostname;
+      const candidateOrigins = [...new Set([
+        ...(config.home && new URL(config.home).hostname === host ? [config.home] : []),
+        ...(new URL(config.origin).hostname === host ? [config.origin] : []),
+        `https://${host}`,
+      ])];
+      for (const candidateOrigin of candidateOrigins) {
+        try {
+          const health = await read(direct, candidateOrigin + "/api/health", undefined, 900);
+          if (health?.product !== "Reach" || health.transport === "funnel") continue;
+        } catch {
+          continue;
+        }
+        if (!unchanged()) return;
+        let device: Device | null = null;
+        try {
+          device = await read(direct, candidateOrigin + "/api/device", current.peer.token, 1200);
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if ((status === 401 || status === 403) && options.funnel?.bindPrivate) {
+            const bound = await options.funnel.bindPrivate(candidateOrigin, current.peer.token);
+            if (bound && unchanged()) {
+              try {
+                device = await read(direct, candidateOrigin + "/api/device", current.peer.token, 1200);
+              } catch {
+                device = null;
+              }
+            }
+          }
+        }
+        if (
+          !device ||
+          !owner(device) ||
+          device.id !== current.device.id ||
+          scopes(device) !== scopes(current.device) ||
+          (current.device.computerId && device.computerId !== current.device.computerId)
+        )
+          continue;
+        if (!unchanged()) return;
+        activate("native", { ...current.peer, url: candidateOrigin }, device, null, current.peer.workspaceKey || peerKey(current.peer));
+        return;
+      }
+      return;
+    }
     if (from === "browser" && wakeRequested) await browserForRecovery();
     if (from === "native") {
       try {
-        if ((await read(direct, current.peer.url + "/api/health")).product === "Reach") {
+        const health = await read(direct, current.peer.url + "/api/health", undefined, 900);
+        if (health?.product === "Reach" && health.transport !== "funnel") {
           nativeRecovered();
           return;
         }
@@ -179,12 +276,30 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
         if (status && status !== 404 && status !== 503) return;
         // Without the OS route, this same address reaches the public start
         // page (or its closed door), which deliberately returns health 404.
-        // That is availability loss, never approval: the other private device
+        // That is availability loss, never approval: the other route
         // must still authenticate its own saved credential and matching scope.
       }
       nativeLost = true;
     }
     if (!unchanged()) return;
+    if (from === "native" && options.funnel) {
+      const publicUrl = `https://${privateOrigin(current.peer)!.hostname}`;
+      try {
+        const device: Device = await read(options.funnel.fetch, publicUrl + "/api/device", current.peer.token);
+        if (
+          owner(device) &&
+          device.id === current.device.id &&
+          scopes(device) === scopes(current.device) &&
+          (!current.device.computerId || device.computerId === current.device.computerId) &&
+          unchanged()
+        ) {
+          activate("funnel", { ...current.peer, url: publicUrl }, device, null, current.peer.workspaceKey || peerKey(current.peer));
+          return;
+        }
+      } catch {
+        /* Fall back to standby browser relay if configured. */
+      }
+    }
     const next: PrivateWay = from === "browser" ? "native" : "browser";
     const candidates = candidatesFor(next, privateOrigin(current.peer)!.hostname);
     if (!candidates.length) return;
@@ -315,7 +430,16 @@ export function watchPrivateRecovery(options: Pick<RecoveryOptions, "current" | 
     };
     const current = options.current();
     if (privateWay() === "native" && current && owner(current.device) && readPrivatePeers("browser").length) void prepare();
-    stop = watchForApp(config, 5000, { ...options, browser: prepare });
+    const publicOrigin = ownOrigin(config);
+    stop = watchForApp(config, 5000, {
+      ...options,
+      browser: prepare,
+      funnel: {
+        fetch: (input, init) => funnelDeviceFetch(publicOrigin, input, init),
+        activate: (originUrl) => activateFunnelTransport(originUrl, "funnel"),
+        bindPrivate: bindPrivateRoute,
+      },
+    });
   };
   function check() {
     if (stopped || configured || document.hidden) return;

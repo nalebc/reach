@@ -186,6 +186,31 @@ test("getting the app: back on a visit a day later, three times; then only Home'
   await view.unmount();
 });
 
+test("connected through Public Funnel: prompts to Use Tailscale or Skip for now, and hides when Tailscale turns on", async () => {
+  phone();
+  dom.document.documentElement.dataset.connection = "funnel";
+  let view = await show({ url: APP_URL });
+  assert.equal(prompt()?.getAttribute("aria-label"), "Private connection with Tailscale");
+  assert.match(prompt().textContent, /Use Tailscale/);
+  assert.match(prompt().textContent, /Skip for now/);
+  assert.equal(prompt().querySelector("a").href, "https://apps.apple.com/app/tailscale/id1470499037");
+  await click(prompt().querySelector('[aria-label="Skip for now"]'));
+  assert.equal(prompt(), null, "Skip for now dismisses the prompt");
+  await view.unmount();
+
+  const day = 24 * 60 * 60 * 1000;
+  const state = nudges.readNudge("tailscale-app");
+  dom.window.localStorage.setItem("reach.nudge.tailscale-app", JSON.stringify({ ...state, lastAt: state.lastAt - day }));
+  dom.document.documentElement.dataset.connection = "funnel";
+  view = await show({ url: APP_URL });
+  assert.ok(prompt(), "back a day later");
+  dom.window.dispatchEvent(new dom.window.Event("reach-tailscale-app-on"));
+  await settle(30);
+  assert.equal(prompt(), null, "turning Tailscale on clears the prompt");
+  assert.equal(nudges.readNudge("tailscale-app").done, true);
+  await view.unmount();
+});
+
 test("the app connection on a phone never suggests getting the app", async () => {
   phone();
   const view = await show();

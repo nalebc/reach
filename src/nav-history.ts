@@ -41,17 +41,31 @@ export function updateEntry(marks: Record<string, unknown>) {
 }
 
 let steppingBack = false;
-/** One Back action, shared by buttons and nested views. Ignore double taps. */
-export function backOne() {
+/** One Back action, shared by buttons and nested views. Ignore double taps.
+ *  If a restored Home Screen web view pruned back-forward entries while keeping
+ *  history.state, fall back cleanly instead of trapping the user on a sub-page. */
+export function backOne(onStuck?: () => void) {
   if (steppingBack) return true;
   if (!stackDepth()) return false;
+  if (typeof window !== "undefined" && window.history.length <= 1) {
+    seedBase();
+    return false;
+  }
   steppingBack = true;
+  let popped = false;
   const done = () => {
+    popped = true;
     steppingBack = false;
     window.removeEventListener("popstate", done);
     clearTimeout(timer);
   };
-  const timer = setTimeout(done, 800);
+  const timer = setTimeout(() => {
+    if (popped) return;
+    steppingBack = false;
+    window.removeEventListener("popstate", done);
+    seedBase();
+    onStuck?.();
+  }, 350);
   window.addEventListener("popstate", done);
   window.history.back();
   return true;

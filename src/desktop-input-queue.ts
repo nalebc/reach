@@ -64,12 +64,15 @@ export function mergeTyping(a: DesktopAction, b: DesktopAction): DesktopAction |
     : { delete: Number(a.delete) + removed - typed.length, text: String(b.text) };
   return merged.delete <= 256 && bytes(merged.text) <= 4000 ? { ...b, ...merged } : null;
 }
+const MOTION_INTERVAL_MS = 8;
+
 // A small ordered window hides network RTT; the host still dispatches serially.
 export class DesktopInputQueue {
   private pending = new Map<number, Pending>();
   private queued: Pending[] = [];
   private sequence = 0;
-  private lastMotion = -Infinity;
+  private lastMove = -Infinity;
+  private lastScroll = -Infinity;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   private reconnecting = false;
@@ -100,12 +103,18 @@ export class DesktopInputQueue {
         for (let i = this.queued.length - 1; i >= 0 && isMotion(this.queued[i].action); i--) {
           const previous = this.queued[i];
           if (previous.action.type !== action.type) continue;
-          if (action.type === "scroll")
-            action = {
-              ...action,
-              dx: Math.max(-120, Math.min(120, Number(previous.action.dx) + Number(action.dx))),
-              dy: Math.max(-120, Math.min(120, Number(previous.action.dy) + Number(action.dy))),
-            };
+          if (action.type === "scroll") {
+            if (
+              previous.action.phase !== action.phase ||
+              previous.action.momentum !== action.momentum
+            )
+              break;
+            const dx = Number(previous.action.dx) + Number(action.dx);
+            const dy = Number(previous.action.dy) + Number(action.dy);
+            // Keep fast flicks lossless: only merge when combined delta stays within protocol bounds.
+            if (Math.abs(dx) > 120 || Math.abs(dy) > 120) break;
+            action = { ...action, dx, dy };
+          }
           previous.resolve({ ok: true, skipped: true });
           this.queued[i] = { action, resolve, reject, at: this.now(), sent: 0 };
           this.flush();
@@ -143,8 +152,11 @@ export class DesktopInputQueue {
       this.queued.length
     ) {
       const item = this.queued[0],
-        motion = ["move", "scroll"].includes(item.action.type);
-      const wait = 16 - (this.now() - this.lastMotion);
+        isMove = item.action.type === "move",
+        isScroll = item.action.type === "scroll",
+        motion = isMove || isScroll;
+      const lastAt = isMove ? this.lastMove : this.lastScroll;
+      const wait = MOTION_INTERVAL_MS - (this.now() - lastAt);
       if (motion && wait > 0) {
         if (!this.timer)
           this.timer = setTimeout(() => {
@@ -165,7 +177,8 @@ export class DesktopInputQueue {
         return;
       }
       this.queued.shift();
-      if (motion) this.lastMotion = this.now();
+      if (isMove) this.lastMove = this.now();
+      else if (isScroll) this.lastScroll = this.now();
       item.sent = this.now();
       const id = ++this.sequence;
       this.pending.set(id, item);

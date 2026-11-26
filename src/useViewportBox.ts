@@ -19,6 +19,9 @@ export function useViewportBox(
     let frame = 0;
     let last = "";
     let still = 0;
+    let startedAt = 0;
+    const nowMs = () =>
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     // The page underneath is frozen at its top, but Safari still scrolls it
     // to show a field (coming back from the photo picker, opening the
     // keyboard), and then draws this view that far down with taps landing
@@ -38,16 +41,18 @@ export function useViewportBox(
       return `${top} ${height}`;
     };
     // iOS reports the keyboard's size while it is still sliding in or out and
-    // says nothing once it stops (the view stayed squeezed for seconds after
-    // the keyboard closed): keep reading each frame until it holds still.
+    // says nothing once it stops (and on 120Hz ProMotion or Home Screen resume
+    // can pause >20 frames before updating): keep reading until both frame
+    // count and elapsed settle window complete.
     const settle = () => {
       const now = place();
       still = now === last ? still + 1 : 0;
       last = now;
-      frame = still < 20 ? requestAnimationFrame(settle) : 0;
+      frame = still < 20 || nowMs() - startedAt < 380 ? requestAnimationFrame(settle) : 0;
     };
     const schedule = () => {
       still = 0;
+      startedAt = nowMs();
       if (!frame) frame = requestAnimationFrame(settle);
     };
     last = place();
@@ -58,8 +63,10 @@ export function useViewportBox(
     document.addEventListener("focusin", schedule);
     document.addEventListener("focusout", schedule);
     window.addEventListener("scroll", pin);
-    // Back from the photo picker or another app.
+    // Back from the Home Screen, photo picker or another app.
     window.addEventListener("focus", schedule);
+    window.addEventListener("pageshow", schedule);
+    document.addEventListener("resume", schedule);
     document.addEventListener("visibilitychange", schedule);
     return () => {
       cancelAnimationFrame(frame);
@@ -70,6 +77,8 @@ export function useViewportBox(
       document.removeEventListener("focusout", schedule);
       window.removeEventListener("scroll", pin);
       window.removeEventListener("focus", schedule);
+      window.removeEventListener("pageshow", schedule);
+      document.removeEventListener("resume", schedule);
       document.removeEventListener("visibilitychange", schedule);
       for (const name of ["top", "height", "left", "width"])
         box.style.removeProperty(`--${prefix}-${name}`);

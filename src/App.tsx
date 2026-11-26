@@ -4,6 +4,7 @@ import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import { watchStalls } from "./stall-watch";
+import { onAppResume } from "./page-visible";
 import { reconnectUrl } from "./page-recovery";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
@@ -109,7 +110,8 @@ import MobileNav from "./MobileNav";
 import NewSessionSheet from "./NewSessionSheet";
 import { MonitorPlay } from "lucide-react";
 import { homeOrigin, setHomeOrigin } from "./home-origin";
-import { bindPrivatePeer, installTailnet, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
+import { ensureDeviceKey } from "./device-transport";
+import { bindPrivatePeer, funnelBrowser, installTailnet, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
 import { tailnetSuffix, type StartConfig } from "./start-flow";
 import { watchPrivateRecovery } from "./app-watch";
 import { keepDoorKey } from "./door-key";
@@ -154,6 +156,8 @@ const offMenus = new Set(["apps"]);
 const menuPages = pages.filter((p) => !offMenus.has(p.id));
 const connectionLabel = (url: string) => {
   const host = new URL(url).hostname;
+  if (funnelBrowser() || (typeof document !== "undefined" && document.documentElement.dataset.connection === "funnel"))
+    return "Public link · faster with Tailscale";
   // Signed in from the browser: works anywhere, but the app connects device
   // to device and is faster.
   if (tailnetBrowser()) return "Tailscale in browser · faster with the app";
@@ -267,7 +271,9 @@ function ReachWorkspace() {
         setDeviceState({ key, value: checked });
         setPeers(saved);
         setActive(next.id);
-        try { localStorage.setItem(activeKey(), next.id); } catch { /* Keep the current handoff when storage is full. */ }
+        try {
+          localStorage.setItem(activeKey(), next.id);
+        } catch { /* Keep the current handoff when storage is full. */ }
       },
     });
   }, [peerKey, device?.access?.kind, device?.access?.scopes.join(" ")]);
@@ -580,20 +586,20 @@ function ReachWorkspace() {
       if (document.hidden) return;
       if (!liveRef.current || ticks % 12 === 0) refreshSessions();
     }, 5000);
-    const shown = () => !document.hidden && refreshSessions();
-    document.addEventListener("visibilitychange", shown);
     const wake = () => {
       if (!document.hidden) loadDevice(true);
     };
+    const stopResume = onAppResume(() => {
+      refreshSessions();
+      loadDevice(true);
+    });
     const capabilitiesTimer = setInterval(wake, 30000);
     window.addEventListener("online", wake);
-    document.addEventListener("visibilitychange", wake);
     return () => {
       deviceRetry.current.cancel();
       deviceRequest.current?.abort();
       window.removeEventListener("online", wake);
-      document.removeEventListener("visibilitychange", wake);
-      document.removeEventListener("visibilitychange", shown);
+      stopResume();
       connectionGeneration.current++;
       clearInterval(t);
       clearInterval(capabilitiesTimer);
@@ -635,6 +641,10 @@ function ReachWorkspace() {
     if (afterStep.current) return;
     const n = stackDepth() - i;
     if (n <= 0) return then();
+    if (window.history.length <= 1) {
+      seedBase();
+      return then();
+    }
     afterStep.current = then;
     window.history.go(-n);
     // A browser that never says it got there still goes on.
@@ -642,7 +652,7 @@ function ReachWorkspace() {
       if (afterStep.current !== then) return;
       afterStep.current = null;
       then();
-    }, 800);
+    }, 350);
   };
   useEffect(() => {
     const onPop = () => {
@@ -718,7 +728,7 @@ function ReachWorkspace() {
     show();
   };
   const goBack = () => {
-    if (!backOne()) navigate("overview");
+    if (!backOne(() => navigate("overview"))) navigate("overview");
   };
   const openChat = (chat: { agent: AgentName | "openclaw"; id: string }) => {
     setChatTarget(chat);
@@ -1107,7 +1117,7 @@ function ReachWorkspace() {
                     connections={connections}
                     connection={connectionName(peer)}
                     appLink={
-                      connectionWay(peer) === "browser"
+                      connectionWay(peer) === "browser" || connectionWay(peer) === "public"
                         ? tailscaleAppLink()
                         : undefined
                     }
@@ -1442,12 +1452,17 @@ async function pairWith(
   name: string,
 ): Promise<Peer> {
   const origin = normalizeUrl(url);
+  const key = await ensureDeviceKey().catch(() => null);
   let response: Response;
   try {
     response = await fetch(origin + "/api/pair", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: code.replace(/\s/g, ""), name }),
+      body: JSON.stringify({
+        code: code.replace(/\s/g, ""),
+        name,
+        ...(key ? { deviceKey: key.jwk } : {}),
+      }),
       redirect: "error",
       signal: AbortSignal.timeout(12000),
     });

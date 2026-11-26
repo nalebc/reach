@@ -8,8 +8,8 @@ const cmd = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // First-run matrix W1, W5, W6: what the terminal says under the QR.
 test("the owner link supports both paths after setup without a pairing-window deadline", () => {
   const text = phoneLinkText({ oneAddress: true, attended: true });
-  assert.match(text, /With the Tailscale app on your phone, it opens straight away/);
-  assert.match(text, /No Tailscale app\? Sign in to Tailscale in the phone's browser to finish owner setup/);
+  assert.match(text, /With the Tailscale app on your phone, it connects privately straight away/);
+  assert.match(text, /No Tailscale app\? Open this link in any browser to connect securely and approve the code here/);
   assert.match(text, /same link reconnects automatically with the phone app on or off/);
   assert.match(text, /Approve new devices here/);
 });
@@ -28,7 +28,7 @@ test("without the one address, the phone needs the Tailscale app, and the reason
 
 test("linked computers: the shared link for the app, this computer's own for browser sign-in", () => {
   const text = phoneLinkText({ oneAddress: true, attended: true, ownLink: "https://studio.example.ts.net" });
-  assert.match(text, /No Tailscale app\? Open https:\/\/studio\.example\.ts\.net and sign in to Tailscale in the phone's browser to finish owner setup/);
+  assert.match(text, /No Tailscale app\? Open https:\/\/studio\.example\.ts\.net in any browser to connect securely and approve the code here/);
 });
 
 test("the pairing-code way in says, before the QR, that the phone needs the Tailscale app, which account, and why browser sign-in is off", () => {

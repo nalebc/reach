@@ -39,7 +39,7 @@ export const suites = {
     "remote-typing", "remote-keyboard",
     "tap-clicks", "screen-double-click-ui",
     // Oct 18 screen control fixes: iOS's late taps, drags, typing bursts and reconnects.
-    "screen-control-fixes-ui", "screen-typing-reconnect-ui", "screen-typing-reconnect-chrome", "screen-control-diagnostics",
+    "screen-control-fixes-ui", "screen-fullscreen-and-smoothness", "screen-typing-reconnect-ui", "screen-typing-reconnect-chrome", "screen-control-diagnostics",
     // Shared Home / Screen / Tools navigation and permission-aware shortcuts.
     "tools-page-ui", "computer-menu-ui", "chat-tab-home-ui", "chat-back-reload-ui",
     "waiting-computer-ui", "phone-prompts-ui", "view-memory-ui", "home-logos", "home-glance-ui", "home-layout-chrome", "pause-ui",
@@ -70,7 +70,7 @@ export const suites = {
     // lapse of Tailscale's word instead of closed (Oct 18).
     "browser-host-guard", "host-identity-hold", "live-screen-identity-hold",
     "one-address-ui", "security", "delivery", "start-info-route",
-    "build-reload", "app-boot-ui", "page-recovery-ui", "foreground-recovery-chrome", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "face-sign-in-ui",
+    "build-reload", "app-boot-ui", "page-recovery-ui", "foreground-recovery-chrome", "reconnect-page-chrome", "start-native-ui", "start-screens-ui", "funnel-agent-cors", "funnel-agent-gateway", "funnel-device-gateway", "face-sign-in-ui",
     // Simulator orchestration and subprocess guards; real iOS runs in macOS CI.
     "ios-launch", "ios-page-evidence", "ios-proxy", "bounded-command",
     // Keeping what Reach drives in sync: Codex's service update (Oct 13).
@@ -171,7 +171,7 @@ export const suites = {
     // phone, the real helper driven on this runner; the shared list and its
     // checks with them.
     "windows-terminals", "windows-terminals-native", "windows-terminals-ui",
-    "desktop-terminals", "terminal-titles", "terminal-list-ui",
+    "desktop-terminals", "terminal-titles", "terminal-list-ui", "terminal-scroll-and-homescreen-resume",
     // Hearing the computer beside its screen (Oct 13): the shared part.
     "screen-sound", "screen-sound-route", "screen-sound-ui", "sound-worklet", "sound-worklet-recovery", "sound-worklet-cadence", "sound-packet-batch", "tone-stability",
     // OpenClaw's guided setup: its words whole, its progress, one page (Oct 13).

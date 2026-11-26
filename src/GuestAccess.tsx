@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { type Peer } from "./api";
+import { ensureDeviceKey } from "./device-transport";
 import { ErrorLine } from "./ui";
 import { homeOrigin } from "./home-origin";
 import { parseGuestLink } from "./start-flow";
@@ -71,11 +72,17 @@ function redeem(origin: string, secret: string): Promise<Redemption> {
   const existing = redemptions.get(key);
   if (existing) return existing;
   const promise = (async (): Promise<Redemption> => {
-    const invitationId = await invitationIdentity();
+    const [invitationId, devKey] = await Promise.all([
+      invitationIdentity(),
+      ensureDeviceKey().catch(() => null),
+    ]);
     const response = await fetch(`${origin}/api/guest/redeem`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ invitation: secret }),
+      body: JSON.stringify({
+        invitation: secret,
+        ...(devKey ? { deviceKey: devKey.jwk } : {}),
+      }),
       redirect: "error",
       signal: AbortSignal.timeout(15000),
     });

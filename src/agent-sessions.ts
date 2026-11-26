@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { post, request, type Peer } from "./api";
+import { onAppResume } from "./page-visible";
 import type { Workflow } from "./Workflows";
 
 // Every Codex and Claude Code session on the computer (server/agent-sessions).
@@ -593,7 +594,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     if (!peer) return;
     void load();
     const visible = () => !document.hidden && void load();
-    document.addEventListener("visibilitychange", visible);
+    const stopResume = onAppResume(() => void load());
     // The phone's network back: asked at once.
     window.addEventListener("online", visible);
     // Sign-in and usage change rarely; check on open and every minute.
@@ -619,7 +620,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
       healthActive = false;
       clearInterval(healthTimer);
       clearTimeout(retry.current);
-      document.removeEventListener("visibilitychange", visible);
+      stopResume();
       window.removeEventListener("online", visible);
     };
   }, [load, everyMs]);
@@ -968,15 +969,33 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
     const controller = new AbortController();
     let version: number | null = null;
     let failures = 0;
+    let activePoll: AbortController | null = null;
+    let wakeBackoff: (() => void) | null = null;
+    const kickLive = (abortInFlight: boolean) => {
+      failures = 0;
+      if (abortInFlight) activePoll?.abort();
+      wakeBackoff?.();
+    };
+    const stopResume = onAppResume((suspended) => kickLive(suspended));
+    const onOnline = () => kickLive(true);
+    window.addEventListener("online", onOnline);
     void (async () => {
       while (!controller.signal.aborted) {
-        const wait = either(controller.signal, 35000);
+        const poll = new AbortController();
+        activePoll = poll;
+        const onOuterAbort = () => poll.abort();
+        controller.signal.addEventListener("abort", onOuterAbort, { once: true });
+        const wait = either(poll.signal, 35000);
         try {
           const next: LiveView = await request<LiveView>(
             peer,
             `${sessionPath(s)}/live${version === null ? "" : `?since=${version}`}`,
             { signal: wait.signal },
-          ).finally(wait.done);
+          ).finally(() => {
+            wait.done();
+            controller.signal.removeEventListener("abort", onOuterAbort);
+            if (activePoll === poll) activePoll = null;
+          });
           if (controller.signal.aborted) return;
           failures = 0;
           version = next.version;
@@ -984,13 +1003,30 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
           setSeenAt(Date.now());
         } catch {
           if (controller.signal.aborted) return;
+          if (poll.signal.aborted) continue;
           setSeenAt(0);
-          // Back off while the Mac is out of reach.
-          await new Promise((r) => setTimeout(r, Math.min(8000, 500 * 2 ** failures++)));
+          // Back off while the Mac is out of reach, waking early on resume/online.
+          await new Promise<void>((resolve) => {
+            const delay = Math.min(8000, 500 * 2 ** failures++);
+            const timer = setTimeout(() => {
+              wakeBackoff = null;
+              resolve();
+            }, delay);
+            wakeBackoff = () => {
+              clearTimeout(timer);
+              wakeBackoff = null;
+              resolve();
+            };
+          });
         }
       }
     })();
-    return () => controller.abort();
+    return () => {
+      stopResume();
+      window.removeEventListener("online", onOnline);
+      wakeBackoff?.();
+      controller.abort();
+    };
   }, [key, poke]);
   return { view, seenAt, refresh: () => setPoke((n) => n + 1) };
 }

@@ -61,6 +61,21 @@
   background: transparent;
   color: #99aaa0;
 }
+.phone-prompt-skip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: #99aaa0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
 .phone-prompt-sheet {
   position: fixed;
   z-index: 41;

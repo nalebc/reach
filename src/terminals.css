@@ -112,6 +112,7 @@
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: contain;
+  touch-action: none;
 }
 /* The margin goes on xterm's own element, never on its box: the fit addon
    measures the box with its padding (everything is border-box here) and
@@ -119,6 +120,7 @@
 .terminal-screen .xterm {
   height: 100%;
   padding: 8px 4px 2px 8px;
+  touch-action: none;
 }
 /* The key row itself is KeyRow (key-row.css), shared with Screen and apps. */
 .terminal-menu-scrim {
@@ -381,7 +383,8 @@ h1.terminal-switch {
 }
 
 .terminal-screen .xterm-helper-textarea { font-size: 16px !important; }
-.terminal-screen .xterm-viewport { overscroll-behavior: contain; }
+.terminal-screen .xterm-viewport,
+.terminal-screen .xterm-scrollable-element { overscroll-behavior: contain; touch-action: none; }
 .terminal-latest {
   position: absolute;
   z-index: 2;

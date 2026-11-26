@@ -16,9 +16,9 @@ Recommend the app for a potentially faster direct connection and reliability. Bo
 
 ## Connection preference
 
-1. Prefer an eligible native private Tailscale connection. Tailscale establishes a direct device-to-device path when possible and uses an encrypted private relay when necessary.
-2. A previously approved browser or agent Tailscale connection is the next private option. Its encrypted relay remains a private connection.
-3. Use the authenticated public agent gateway only when the grant permits it and eligible private paths are unavailable. Probe for recovery and automatically return to the preferred eligible private connection.
+1. Prefer an eligible native private Tailscale connection (`<=850ms` bounded startup probe). Tailscale establishes a direct device-to-device path when possible and uses an encrypted private relay when necessary.
+2. Rapidly fall back to the cryptographically signed Public Funnel device gateway (`server/funnel-device.mjs`, `src/device-transport.ts`) when native Tailscale is absent, turned off, or connected to another tailnet. Every request is signed with a non-exportable WebCrypto ECDSA P-256 device key (`Reach-Device-Key`, `Reach-Device-Payload`, `Reach-Device-Signature`), live WebSockets (`/ws/screen`, `/ws/screen-input`, `/ws/screen-sound`, `/ws/terminal`, `/ws/presence`) upgrade only with 15-second single-use tickets (`POST /api/device/ws-ticket`), and binary/multipart transfers use 60-second single-use stream tickets (`POST /api/device/stream-ticket`).
+3. While connected over Public Funnel, offer a non-blocking prompt to install or turn on Tailscale (**Use Tailscale** or **Skip for now**), probe for private availability in the background, and automatically upgrade to the direct private Tailscale route when available without losing open work or requiring re-pairing.
 
 Eligibility includes authorization. An owner credential bound to one Tailscale device cannot be sent under another device's identity. Native and browser devices retain their own credentials and approvals, including when owner setup establishes both together. Recovery uses that established authorization; it cannot silently enroll an unrelated device. A signing-key invitation can use the routes already authorized for that same grant. A private-only credential does not acquire public access or approval for another node during recovery. Guest and agent grants do not inherit owner enrollment privileges.
 

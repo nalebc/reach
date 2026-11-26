@@ -78,7 +78,15 @@ export async function startDom({
   for (const name of Object.getOwnPropertyNames(window))
     if (!(name in globalThis) && !name.startsWith("_"))
       define(name, window[name]);
-  for (const name of ["window", "self", "navigator", "Event", "CustomEvent"])
+  for (const name of [
+    "window",
+    "self",
+    "navigator",
+    "Event",
+    "CustomEvent",
+    "localStorage",
+    "sessionStorage",
+  ])
     define(name, name === "window" || name === "self" ? window : window[name]);
   define("fetch", async (url, init = {}) => {
     const href = new URL(url, window.location.href);

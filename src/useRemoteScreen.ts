@@ -301,6 +301,8 @@ export function useRemoteScreen(
         ms,
       );
     };
+    let ctx: CanvasRenderingContext2D | null = null;
+    let ctxSurface: HTMLCanvasElement | null = null;
     const draw = (frame: CanvasImageSource, width: number, height: number) => {
       const surface = canvas.current;
       if (!surface || stopped) return;
@@ -308,9 +310,11 @@ export function useRemoteScreen(
         surface.width = width;
         surface.height = height;
       }
-      surface
-        .getContext("2d", { alpha: false, desynchronized: true })
-        ?.drawImage(frame, 0, 0, width, height);
+      if (ctxSurface !== surface) {
+        ctxSurface = surface;
+        ctx = surface.getContext("2d", { alpha: false, desynchronized: true });
+      }
+      ctx?.drawImage(frame, 0, 0, width, height);
       count++;
       last = Date.now();
       retry.current.reset();
@@ -663,12 +667,18 @@ export function useRemoteScreen(
       if (!document.hidden) retry.current.wake();
     };
     window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    window.addEventListener("focus", wake);
+    document.addEventListener("resume", wake);
     document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
       release();
       retry.current.cancel();
       window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("resume", wake);
       document.removeEventListener("visibilitychange", wake);
       clearTimeout(watchdog);
       clearInterval(metrics);

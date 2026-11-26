@@ -288,17 +288,29 @@ export function useDesktopInput(
         }, () => {});
       queue?.checkTimeout();
     }, 500);
-    // The network is back, or the page is: try now, not after the wait.
+    // The network is back, or the page is: try now, not after the wait,
+    // and probe an open socket immediately so half-open post-sleep links
+    // recover without waiting for the first tap to time out.
     const wake = () => {
-      if (!document.hidden) retry.current.wake();
+      if (document.hidden) return;
+      retry.current.wake();
+      if (queue?.idle && socket.readyState === 1) {
+        void queue.enqueue({ type: "heartbeat" }).catch(() => {});
+      }
     };
     window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    window.addEventListener("focus", wake);
+    document.addEventListener("resume", wake);
     document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
       link.current = null;
       retry.current.cancel();
       window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("resume", wake);
       document.removeEventListener("visibilitychange", wake);
       clearTimeout(deadline);
       clearInterval(heartbeat);

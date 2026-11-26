@@ -278,16 +278,43 @@ export function createBrowserHostGuard({
   const personIn = (req, client) =>
     personIdentity(req, client) && client.macEntry?.status !== "waiting" &&
     (nativeRemote(req) || coexistenceApproved(req, client));
+  const funnelDeviceVerified = (req, client) =>
+    !!req?.reachFunnelDevice &&
+    typeof req.reachFunnelDevice.keyThumbprint === "string" &&
+    !!client?.deviceKey?.thumbprint &&
+    client.deviceKey.thumbprint === req.reachFunnelDevice.keyThumbprint &&
+    client.thisComputer !== true &&
+    expires(client) > now();
+  const funnelOwnerAllowed = (req, client, current) =>
+    funnelDeviceVerified(req, client) &&
+    client.kind === "device" &&
+    client.scopes?.includes("admin") &&
+    (current.approvers.some((approver) => approver.clientId === client.id) ||
+      linkedApprover(client.id, current));
+  const funnelPersonAllowed = (req, client) =>
+    funnelDeviceVerified(req, client) &&
+    client.kind === "guest" &&
+    client.macEntry?.status === "allowed" &&
+    client.macEntry.keyThumbprint === req.reachFunnelDevice.keyThumbprint;
   const allows = (req, verifiedClient = null) => {
     const current = state();
     return !current.active || signedAgentRoute(req, verifiedClient, current) || pinnedRemote(req, current) ||
-      linkedRemote(req, verifiedClient, current) || personIn(req, verifiedClient);
+      linkedRemote(req, verifiedClient, current) || personIn(req, verifiedClient) ||
+      funnelOwnerAllowed(req, verifiedClient, current) || funnelPersonAllowed(req, verifiedClient);
   };
   // A live connection, before its credential arrives in its first message:
   // let through a device a person's access is bound to; the credential is
   // checked (allows, with the client) when it comes.
   const allowsConnection = (req) => {
     if (allows(req)) return true;
+    if (req?.reachFunnelDevice?.clientId) {
+      try {
+        const all = clients();
+        const current = state();
+        const client = Array.isArray(all) ? all.find((c) => c?.id === req.reachFunnelDevice.clientId) : null;
+        return !!(client && (funnelOwnerAllowed(req, client, current) || funnelPersonAllowed(req, client)));
+      } catch { return false; }
+    }
     const node = req?.reachIdentity?.nodeId;
     if (typeof node !== "string" || !node || onHost(req)) return false;
     try {

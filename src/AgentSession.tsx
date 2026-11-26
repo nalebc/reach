@@ -2056,12 +2056,18 @@ export default function AgentSessionView({
     const timer = setInterval(() => void load(false), 30000);
     const shown = () => !document.hidden && void load(false);
     document.addEventListener("visibilitychange", shown);
+    document.addEventListener("resume", shown);
+    window.addEventListener("pageshow", shown);
+    window.addEventListener("focus", shown);
     // The phone's network back: read at once.
     window.addEventListener("online", shown);
     return () => {
       clearInterval(timer);
       clearTimeout(retryRead.current);
       document.removeEventListener("visibilitychange", shown);
+      document.removeEventListener("resume", shown);
+      window.removeEventListener("pageshow", shown);
+      window.removeEventListener("focus", shown);
       window.removeEventListener("online", shown);
     };
   }, [load]);

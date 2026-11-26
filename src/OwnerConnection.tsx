@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, Link2 } from "lucide-react";
 import type { Device, Peer } from "./api";
+import { ensureFunnelKeyBound } from "./device-transport";
 import { watchOwnerEnrollment, type OwnerSetup } from "./owner-connection";
 import type { StartConfig } from "./start-flow";
-import type { TailnetNode } from "./tailnet-transport";
+import { funnelBrowser, tailnetBrowser, tailnetNode, type TailnetNode } from "./tailnet-transport";
 import ConnectionStatus, { useConnectionWait } from "./ConnectionStatus";
 import "./owner-connection.css";
 
 type BrowserApproval = (config: StartConfig, node: TailnetNode) => void;
 const ready: OwnerSetup = { state: "ready" };
 
-// One subscription belongs to the workspace, independent of its current page.
-// Preparing a standby path must not make a working connection look busy.
+// Silently ensure this device's P-256 Funnel key is bound while connected on
+// private Tailscale, so turning off Tailscale falls back with zero second setup.
+// Legacy browser-node enrollment only runs if a browser Tailscale node was pre-installed.
 export function useOwnerConnection(peer: Peer | undefined, device: Device | null, {
   reconnect = false, beginBrowser,
 }: { reconnect?: boolean; beginBrowser?: BrowserApproval } = {}) {
@@ -23,9 +25,14 @@ export function useOwnerConnection(peer: Peer | undefined, device: Device | null
   const canBegin = !!beginBrowser;
   const admin = device?.access?.kind === "device" && device.access.scopes.includes("admin");
   const connected = !!device;
+  useEffect(() => {
+    if (!peer || !device || peer.transport === "funnel" || funnelBrowser() || tailnetBrowser())
+      return;
+    void ensureFunnelKeyBound(peer);
+  }, [key, connected, attempt]);
   let eligible = false;
   try {
-    eligible = !!peer && (reconnect || device?.ownerConnection === 1) && (!device || !!admin) &&
+    eligible = !!tailnetNode() && !!peer && (reconnect || device?.ownerConnection === 1) && (!device || !!admin) &&
       peer.transport !== "funnel" && location.hostname.endsWith(".ts.net") &&
       new URL(peer.url).hostname === location.hostname;
   } catch { /* A malformed saved address cannot start owner enrollment. */ }
