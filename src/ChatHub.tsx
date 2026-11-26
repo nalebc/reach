@@ -420,6 +420,23 @@ export default function ChatHub({
             </button>
           ))}
         </div>
+        {apps.length > 1 && (
+          <div className="ac-app-strip" role="tablist" aria-label="Switch chat view">
+            {apps.map((app) => (
+              <button
+                key={app.agent}
+                type="button"
+                role="tab"
+                aria-selected={app.agent === "all"}
+                className={`ac-app-pill ${app.agent === "all" ? "active" : ""}`}
+                onClick={() => onAgentChange(app.agent)}
+              >
+                <AgentLogo agent={app.agent} name={app.name} logos={logos} size={14} />
+                <span>{app.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </section>
       {!!pending && onReview && (
         <button className="chat-needs-row" onClick={onReview}>

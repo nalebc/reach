@@ -445,6 +445,32 @@
   flex-wrap: wrap;
   margin: 0;
 }
+.ac-app-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid rgb(255 255 255 / 0.07);
+}
+.ac-app-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgb(255 255 255 / 0.09);
+  background: rgb(255 255 255 / 0.03);
+  color: var(--muted, #94a3a0);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ac-app-pill.active {
+  border-color: rgb(185 239 212 / 0.35);
+  background: rgb(185 239 212 / 0.12);
+  color: var(--text, #edf2ef);
+}
 .hub-filter {
   padding: 5px 11px;
   border-radius: 999px;

@@ -179,6 +179,27 @@ test("createApiChats persists sessions, streams replies, and supports mid-chat s
 
     chats.rename(started.session.id, "Tailnet notes");
     assert.equal(chats.list()[0].title, "Tailnet notes");
+
+    // Cross-provider handoff: import a Codex/Claude conversation into Venice and continue.
+    const handedOff = chats.importHistory({
+      title: "Handoff from Claude",
+      fromAgent: "claude",
+      fromId: "claude-session-1",
+      items: [
+        { role: "user", kind: "text", text: "Draft a release checklist" },
+        { role: "assistant", kind: "text", text: "1. Build\n2. Test" },
+      ],
+      providerId: "venice",
+      model: "llama-3.3-70b",
+      resume: true,
+    });
+    assert.equal(handedOff.agent, "api");
+    await new Promise((r) => setTimeout(r, 60));
+    const handoffPage = chats.read(handedOff.id);
+    assert.equal(handoffPage.items.length, 4);
+    assert.equal(handoffPage.items.at(-1).text, "Reply from llama-3.3-70b");
+    chats.remove(handedOff.id);
+
     chats.remove(started.session.id);
     assert.equal(chats.list().length, 0);
   } finally {

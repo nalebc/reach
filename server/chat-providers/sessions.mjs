@@ -397,6 +397,65 @@ export function createApiChats({
       return { session: toSession(rec) };
     },
 
+    importHistory({
+      title = "",
+      fromAgent = "",
+      fromId = "",
+      items = [],
+      providerId,
+      model,
+      resume = false,
+    } = {}) {
+      const provider = providers.getInternal(String(providerId || ""));
+      if (!provider)
+        throw Object.assign(new Error("Pick a connected provider to continue this chat."), { status: 400 });
+      const chosenModel = String(model || provider.defaultModel || "").trim();
+      if (!chosenModel)
+        throw Object.assign(new Error("Pick a model for the destination provider."), { status: 400 });
+      const id = `chat-${crypto.randomBytes(6).toString("hex")}`;
+      const ts = now();
+      const imported = (Array.isArray(items) ? items : [])
+        .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+        .slice(-80)
+        .map((i, idx) => ({
+          id: `imp-${idx}-${crypto.randomBytes(3).toString("hex")}`,
+          role: i.role,
+          kind: "text",
+          text: String(i.text),
+          at: i.at || ts,
+        }));
+      const rec = {
+        id,
+        title: titleFromText(title || imported.find((i) => i.role === "user")?.text || "Continued chat"),
+        providerId: provider.id,
+        providerName: provider.name,
+        providerKind: provider.kind === "local" ? "local" : "api",
+        model: chosenModel,
+        systemPrompt: "",
+        temperature: null,
+        veniceWebSearch: false,
+        createdAt: ts,
+        updatedAt: ts,
+        archived: false,
+        status: "idle",
+        movedFrom: fromAgent && fromId ? { agent: fromAgent, id: fromId, title } : undefined,
+        items: imported,
+      };
+      if (resume) {
+        rec.items.push({
+          id: `u-${crypto.randomBytes(4).toString("hex")}`,
+          role: "user",
+          kind: "text",
+          text: "Continue from where we left off above.",
+          at: ts,
+        });
+        runTurn(rec, provider, chosenModel, []);
+      } else {
+        saveRecord(rec);
+      }
+      return { agent: "api", id: rec.id, session: toSession(rec) };
+    },
+
     archive(id, archived = true) {
       const rec = readRecord(id);
       rec.archived = Boolean(archived);

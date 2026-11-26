@@ -384,6 +384,15 @@ export function ChatLibraryHeader({
       <div className="chat-list-heading">
         <h1>{name}</h1>
         <span className="chat-list-device">{peer.name}</span>
+        {value !== "all" && apps.some((a) => a.agent === "all") && (
+          <button
+            type="button"
+            className="ac-app-pill"
+            onClick={() => onChange("all")}
+          >
+            All chats
+          </button>
+        )}
       </div>
       <div className="chat-heading-actions">
         <button className="chat-refresh" aria-label="Search chats" title="Search chats" aria-expanded={searchOpen} onClick={onSearch}>

@@ -835,10 +835,11 @@ export const moveSession = async (peer: Peer, s: { agent: string; id: string }, 
   // A successful HTTP status does not prove the destination is usable. Keep
   // the source open on incompatible replies; the server may already have
   // created the continuation, so never retry this mutation automatically.
-  if (moved?.agent !== to || typeof moved.id !== "string" || !moved.id.trim())
+  const expectedAgent = to.startsWith("api:") ? "api" : to;
+  if (moved?.agent !== expectedAgent || typeof moved.id !== "string" || !moved.id.trim())
     throw new Error("Reach could not confirm the continued chat. Your source chat is still here. Check the destination app before trying again.");
   return {
-    agent: to,
+    agent: expectedAgent,
     id: moved.id,
     ...(typeof moved.resumeError === "string" ? { resumeError: moved.resumeError } : {}),
   };

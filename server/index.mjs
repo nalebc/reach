@@ -4961,18 +4961,80 @@ export async function createReach(overrides = {}) {
     if (req.params.agent === "api") return res.json(apiChats.stop(req.params.id));
     return res.json(await agentSessions.stop(req.params.agent, req.params.id));
   });
-  // Continue a chat with the other agent, as if forked in the same app
-  // (agent-sessions/move.mjs); the new chat's address comes back. resume:
-  // the new agent is told to keep going too (one tap when out of usage).
+  // Continue a chat with the other agent or any API/Local provider
+  // (codex, claude, openclaw, antigravity, venice, ollama, vllm, openai, etc.).
+  const moveOrForkAny = async (req, { fork = false } = {}) => {
+    const { agent, id } = req.params;
+    const to = String(req.body?.to || "");
+    const resume = req.body?.resume === true;
+    const isDirectTarget = to === "api" || to.startsWith("api:");
+    const isDirectSource = agent === "api" || agent === "antigravity";
+
+    if (isDirectTarget || isDirectSource) {
+      const sourcePage =
+        agent === "api"
+          ? apiChats.read(id, { limit: 200 })
+          : agent === "antigravity"
+            ? antigravitySessions.read(id, { limit: 200 })
+            : await agentSessions.read(agent, id, { limit: 200 });
+
+      if (isDirectTarget) {
+        const providerId =
+          typeof req.body?.providerId === "string" && req.body.providerId
+            ? req.body.providerId
+            : to.startsWith("api:")
+              ? to.slice(4)
+              : "";
+        let model = typeof req.body?.model === "string" ? req.body.model : "";
+        if (!model && providerId) {
+          const modelsRes = await chatProviders.listModels(providerId).catch(() => ({ models: [] }));
+          model = modelsRes.models?.[0]?.id || chatProviders.getInternal(providerId)?.defaultModel || "";
+        }
+        const moved = apiChats.importHistory({
+          title: sourcePage.session?.title || "",
+          fromAgent: agent,
+          fromId: id,
+          items: sourcePage.items || [],
+          providerId,
+          model,
+          resume,
+        });
+        record("session", `${fork ? "Forked" : "Continued"} a chat in ${moved.session.providerName || "API"}`);
+        return moved;
+      }
+
+      // Source is api or antigravity -> destination is codex or claude.
+      if (!["codex", "claude"].includes(to))
+        throw fail(400, "Choose Codex, Claude Code, or an API/Local provider.");
+      const transcript = (sourcePage.items || [])
+        .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+        .slice(-24)
+        .map((i) => `${i.role === "user" ? "User" : "Assistant"}: ${String(i.text).slice(0, 1500)}`)
+        .join("\n\n");
+      const prompt = `Continued from ${sourcePage.session?.providerName || agent} ("${sourcePage.session?.title || "Chat"}"):\n\n${transcript}\n\nPlease review the context above and continue helping from where we left off.`;
+      const started = await agentSessions.start(to, {
+        text: prompt,
+        cwd: sessionFolder(req.body?.cwd),
+        name: sourcePage.session?.title ? String(sourcePage.session.title).slice(0, 120) : undefined,
+      });
+      record("session", `${fork ? "Forked" : "Continued"} a chat in ${agentName(to)}`);
+      return { agent: to, id: started.threadId, resumed: true };
+    }
+    return null;
+  };
   app.post("/api/sessions/:agent/:id/move", async (req, res) => {
     const resume = req.body?.resume === true;
     if (resume) notPaused();
+    const direct = await moveOrForkAny(req, { fork: false });
+    if (direct) return res.json(direct);
     const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to, authorize: () => req.reauthorize(), resume, owner: req.client.id });
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
   app.post("/api/sessions/:agent/:id/fork", async (req, res) => {
     macOwner(req);
+    const direct = await moveOrForkAny(req, { fork: true });
+    if (direct) return res.json(direct);
     const forked = await agentSessions.fork(req.params.agent, req.params.id, {
       to: req.body?.to, through: req.body?.through ?? null, authorize: () => req.reauthorize(),
     });
