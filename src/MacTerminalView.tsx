@@ -133,6 +133,10 @@ export default function MacTerminalView({
       waits.clear();
     };
     const stopResume = onAppResume((suspended) => {
+      try {
+        fitKeepingLatest(fit, term);
+        if (term.rows > 0) term.refresh(0, term.rows - 1);
+      } catch {}
       resume?.();
       if (suspended) abortWaits();
       if (timer) void read();

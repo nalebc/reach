@@ -53,6 +53,7 @@ import AgentMarkdown from "./AgentMarkdown";
 import { createDraftSync } from "./draft-sync";
 import { attachedFiles, mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
+import { onAppResume } from "./page-visible";
 import AgentAccess from "./AgentAccess";
 import { SubagentBadge, SubagentCard, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
@@ -2071,19 +2072,13 @@ export default function AgentSessionView({
   useEffect(() => {
     const timer = setInterval(() => void load(false), 30000);
     const shown = () => !document.hidden && void load(false);
-    document.addEventListener("visibilitychange", shown);
-    document.addEventListener("resume", shown);
-    window.addEventListener("pageshow", shown);
-    window.addEventListener("focus", shown);
+    const stopResume = onAppResume(() => shown());
     // The phone's network back: read at once.
     window.addEventListener("online", shown);
     return () => {
       clearInterval(timer);
       clearTimeout(retryRead.current);
-      document.removeEventListener("visibilitychange", shown);
-      document.removeEventListener("resume", shown);
-      window.removeEventListener("pageshow", shown);
-      window.removeEventListener("focus", shown);
+      stopResume();
       window.removeEventListener("online", shown);
     };
   }, [load]);

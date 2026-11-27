@@ -1,4 +1,5 @@
 import { useOpenWantedNeed } from "./deep-link";
+import { usePageVisible } from "./page-visible";
 import {
   useContext,
   useEffect,
@@ -49,18 +50,6 @@ export function heroStatus(
   return stream.error ? "Preview unavailable" : "Preview reconnecting";
 }
 
-function usePageVisible() {
-  const [visible, setVisible] = useState(!document.hidden);
-  useEffect(() => {
-    const change = () => setVisible(!document.hidden);
-    document.addEventListener("visibilitychange", change);
-    return () => document.removeEventListener("visibilitychange", change);
-  }, []);
-  return visible;
-}
-
-// Whether an element is in view. Off screen for graceMs (scrolled past), it
-// counts as gone; back in view, at once. A quick scroll keeps it.
 export function useOnScreen(ref: { current: Element | null }, graceMs = 5000) {
   const [on, setOn] = useState(true);
   useEffect(() => {

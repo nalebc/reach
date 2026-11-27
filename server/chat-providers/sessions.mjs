@@ -10,8 +10,7 @@ import { streamChatCompletion } from "./stream.mjs";
 // alongside Codex and Claude chats in one unified UI.
 
 function cleanJsonValue(value) {
-  const bytes = Uint8Array.from(Buffer.from(JSON.stringify(value), "utf8"), (b) => b & 0xff);
-  return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+  return JSON.parse(Buffer.from(JSON.stringify(value), "utf8").toString("utf8"));
 }
 
 function titleFromText(text) {
@@ -183,6 +182,7 @@ export function createApiChats({
     }
 
     let lastFlush = 0;
+    let lastPersist = 0;
     const flushLive = (force = false) => {
       const t = now();
       if (!force && t - lastFlush < 60) return;
@@ -190,7 +190,10 @@ export function createApiChats({
       rec.updatedAt = t;
       rec.rev = (Number(rec.rev) || 0) + 1;
       records.set(rec.id, rec);
-      persistStore();
+      if (force || t - lastPersist >= 1500) {
+        lastPersist = t;
+        persistStore();
+      }
       notifySession(rec.id);
     };
 

@@ -449,7 +449,13 @@ export function TerminalView({
     }, 4000);
     const onOnline = () => wake(true);
     window.addEventListener("online", onOnline);
-    const stopResume = onAppResume((suspended) => wake(suspended));
+    const stopResume = onAppResume((suspended) => {
+      resize();
+      try {
+        if (term.rows > 0) term.refresh(0, term.rows - 1);
+      } catch {}
+      wake(suspended);
+    });
     const input = term.onData((typed) => {
       if (stopped || !connectedRef || ws?.readyState !== WebSocket.OPEN) return;
       let data = typed;

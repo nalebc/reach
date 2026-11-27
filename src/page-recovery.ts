@@ -105,40 +105,21 @@ export function watchPageRecovery(options: Partial<{
   let pending: AbortController | undefined;
   let cover: HTMLElement | undefined;
   let recheckTimer: number | undefined;
-  let lastTickAt = Date.now();
   const clearRecheck = () => {
     if (recheckTimer !== undefined) {
       win.clearTimeout(recheckTimer);
       recheckTimer = undefined;
     }
   };
-  const repaintStandalone = () => {
-    if (stopped || doc.hidden || !doc.documentElement) return;
-    if ((win.navigator as { standalone?: boolean })?.standalone === true) {
-      const prev = doc.documentElement.style.transform;
-      if (!prev) {
-        doc.documentElement.style.transform = "translateZ(0)";
-        win.requestAnimationFrame?.(() => {
-          if (!stopped && doc.documentElement.style.transform === "translateZ(0)") {
-            doc.documentElement.style.transform = "";
-          }
-        });
-      }
-    }
-  };
   const uncover = () => { cover?.remove(); cover = undefined; };
   const check = () => {
     if (stopped || opening || !doc.body) return;
-    const now = Date.now();
-    const suspendedGap = now - lastTickAt >= 4000;
-    lastTickAt = now;
     if (doc.hidden) {
       missing = false;
       clearRecheck();
       pending?.abort();
       return;
     }
-    if (suspendedGap) repaintStandalone();
     if (pageHasContent(doc)) {
       missing = false;
       clearRecheck();
@@ -193,7 +174,6 @@ export function watchPageRecovery(options: Partial<{
     });
   };
   const wake = () => {
-    if (!doc.hidden) repaintStandalone();
     check();
   };
   const timer = every(check);

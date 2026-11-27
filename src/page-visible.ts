@@ -25,7 +25,7 @@ export function onAppResume(listener: (suspended: boolean) => void): () => void 
     lastTick = now;
     const suspended =
       forceSuspended ||
-      (hiddenAt !== undefined && now - hiddenAt >= 3000) ||
+      (hiddenAt !== undefined && now - hiddenAt >= 1500) ||
       gap >= 8000;
     hiddenAt = undefined;
     if (now - lastWakeAt < 250 && (!suspended || lastWakeSuspended)) return;
@@ -84,15 +84,20 @@ export function usePageVisible() {
   );
   useEffect(() => {
     const update = () => setVisible(!document.hidden);
+    const pause = () => setVisible(false);
     document.addEventListener("visibilitychange", update);
+    document.addEventListener("freeze", pause);
+    document.addEventListener("resume", update);
+    window.addEventListener("pagehide", pause);
     window.addEventListener("pageshow", update);
     window.addEventListener("focus", update);
-    document.addEventListener("resume", update);
     return () => {
       document.removeEventListener("visibilitychange", update);
+      document.removeEventListener("freeze", pause);
+      document.removeEventListener("resume", update);
+      window.removeEventListener("pagehide", pause);
       window.removeEventListener("pageshow", update);
       window.removeEventListener("focus", update);
-      document.removeEventListener("resume", update);
     };
   }, []);
   return visible;

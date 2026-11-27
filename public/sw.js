@@ -462,7 +462,7 @@ self.addEventListener("fetch", event => {
   };
   const serve = async () => {
     try {
-      if (navigation && url.searchParams.has("reach-reconnect")) {
+      if (navigation && (url.searchParams.has("reach-reconnect") || url.searchParams.has("reach-update"))) {
         const live = await network().catch(() => null);
         if (live?.ok) {
           try {

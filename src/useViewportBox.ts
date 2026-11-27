@@ -18,10 +18,8 @@ export function useViewportBox(
     const viewport = window.visualViewport;
     let frame = 0;
     let last = "";
+    let applied = "";
     let still = 0;
-    let startedAt = 0;
-    const nowMs = () =>
-      typeof performance !== "undefined" ? performance.now() : Date.now();
     // The page underneath is frozen at its top, but Safari still scrolls it
     // to show a field (coming back from the photo picker, opening the
     // keyboard), and then draws this view that far down with taps landing
@@ -33,26 +31,40 @@ export function useViewportBox(
       pin();
       const top = viewport?.offsetTop || 0;
       const height = viewport?.height || window.innerHeight;
-      box.style.setProperty(`--${prefix}-top`, `${top}px`);
-      box.style.setProperty(`--${prefix}-height`, `${height}px`);
-      box.style.setProperty(`--${prefix}-left`, `${viewport?.offsetLeft || 0}px`);
-      box.style.setProperty(`--${prefix}-width`, `${viewport?.width || window.innerWidth}px`);
-      box.dataset.compactViewport = String(height < 360);
-      return `${top} ${height}`;
+      const left = viewport?.offsetLeft || 0;
+      const width = viewport?.width || window.innerWidth;
+      const next = `${top} ${height} ${left} ${width}`;
+      if (next !== applied) {
+        applied = next;
+        box.style.setProperty(`--${prefix}-top`, `${top}px`);
+        box.style.setProperty(`--${prefix}-height`, `${height}px`);
+        box.style.setProperty(`--${prefix}-left`, `${left}px`);
+        box.style.setProperty(`--${prefix}-width`, `${width}px`);
+        box.dataset.compactViewport = String(height < 360);
+      }
+      return next;
     };
     // iOS reports the keyboard's size while it is still sliding in or out and
-    // says nothing once it stops (and on 120Hz ProMotion or Home Screen resume
-    // can pause >20 frames before updating): keep reading until both frame
-    // count and elapsed settle window complete.
+    // says nothing once it stops: keep reading for a few frames until steady.
     const settle = () => {
+      if (document.hidden) {
+        frame = 0;
+        return;
+      }
       const now = place();
       still = now === last ? still + 1 : 0;
       last = now;
-      frame = still < 20 || nowMs() - startedAt < 380 ? requestAnimationFrame(settle) : 0;
+      frame = still < 12 ? requestAnimationFrame(settle) : 0;
     };
     const schedule = () => {
+      if (document.hidden) {
+        if (frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
+        return;
+      }
       still = 0;
-      startedAt = nowMs();
       if (!frame) frame = requestAnimationFrame(settle);
     };
     last = place();

@@ -50,14 +50,33 @@ function titleFromText(text) {
   return line.length > 72 ? `${line.slice(0, 71)}…` : line;
 }
 
-function readOpenedTranscript(file) {
+const transcriptCache = new Map(); // file -> { mtimeMs, size, parsed }
+
+function readCachedTranscript(file) {
+  let stat;
+  try {
+    stat = fs.statSync(file);
+    if (!stat.isFile()) return null;
+  } catch {
+    transcriptCache.delete(file);
+    return null;
+  }
+  const hit = transcriptCache.get(file);
+  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) {
+    return { stat, parsed: hit.parsed };
+  }
   let fd;
   try {
     fd = fs.openSync(file, "r");
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile()) return null;
+    const fstat = fs.fstatSync(fd);
+    if (!fstat.isFile()) return null;
     const content = fs.readFileSync(fd, "utf8");
-    return { stat, content };
+    const parsed = parseAntigravityTranscript(content);
+    if (transcriptCache.size > 200) {
+      transcriptCache.delete(transcriptCache.keys().next().value);
+    }
+    transcriptCache.set(file, { mtimeMs: fstat.mtimeMs, size: fstat.size, parsed });
+    return { stat: fstat, parsed };
   } catch {
     return null;
   } finally {
@@ -235,7 +254,7 @@ export function createAntigravitySessions({
   const openTranscriptById = (id) => {
     const files = candidateTranscripts().get(id) || [];
     for (const file of files) {
-      const opened = readOpenedTranscript(file);
+      const opened = readCachedTranscript(file);
       if (opened) return opened;
     }
     return null;
@@ -622,12 +641,11 @@ export function createAntigravitySessions({
       for (const [id, files] of candidateTranscripts()) {
         let opened = null;
         for (const file of files) {
-          opened = readOpenedTranscript(file);
+          opened = readCachedTranscript(file);
           if (opened) break;
         }
         if (!opened) continue;
-        const { stat, content } = opened;
-        const parsed = parseAntigravityTranscript(content);
+        const { stat, parsed } = opened;
         if (!parsed.items.length && !activeRuns.has(id)) continue;
         seen.add(id);
         out.push(sessionObject(id, { parsed, stat }).session);
@@ -639,6 +657,22 @@ export function createAntigravitySessions({
       return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     },
 
+    version(id) {
+      const cleanId = String(id || "");
+      if (!UUID_RE.test(cleanId)) return 0;
+      const run = activeRuns.get(cleanId);
+      if (run?.version) return run.version;
+      const files = candidateTranscripts().get(cleanId) || [];
+      for (const file of files) {
+        try {
+          const stat = fs.statSync(file);
+          if (stat.isFile()) return Math.max(1, Math.floor(stat.mtimeMs) + stat.size);
+        } catch {}
+      }
+      const meta = sessionMeta.get(cleanId);
+      return meta?.createdAt ? Math.floor(meta.createdAt) : 0;
+    },
+
     read(id, { limit = 200, before } = {}) {
       const cleanId = String(id || "");
       if (!UUID_RE.test(cleanId))
@@ -647,7 +681,7 @@ export function createAntigravitySessions({
       if (!opened && !activeRuns.has(cleanId) && !sessionMeta.has(cleanId)) {
         throw Object.assign(new Error("Antigravity conversation not found."), { status: 404 });
       }
-      const parsed = opened ? parseAntigravityTranscript(opened.content) : { items: [], model: null, createdAt: 0, updatedAt: 0, firstUser: "" };
+      const parsed = opened ? opened.parsed : { items: [], model: null, createdAt: 0, updatedAt: 0, firstUser: "" };
       const { session, items: allItems } = sessionObject(cleanId, { parsed, stat: opened?.stat });
       const max = Math.min(Math.max(Number(limit) || 200, 1), 500);
       const end = before != null ? Math.min(Math.max(Number(before) || 0, 0), allItems.length) : allItems.length;

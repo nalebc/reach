@@ -448,11 +448,16 @@ export default function Screen({
       setVisible(!document.hidden);
       if (document.hidden) release();
     };
+    const pause = () => {
+      setVisible(false);
+      release();
+    };
     const syncVisible = () => {
       if (!document.hidden) setVisible(true);
     };
     const unsubResume = onAppResume(syncVisible);
     const leave = () => {
+      setVisible(false);
       const owned = grant.intent;
       if (!owned || !grant.allowed) return;
       grant.intent = false;
@@ -475,11 +480,19 @@ export default function Screen({
       }).catch(() => {});
     };
     document.addEventListener("visibilitychange", hide);
+    document.addEventListener("freeze", pause);
+    document.addEventListener("resume", syncVisible);
+    window.addEventListener("pageshow", syncVisible);
+    window.addEventListener("focus", syncVisible);
     window.addEventListener("pagehide", leave);
     return () => {
       mounted.current = false;
       unsubResume();
       document.removeEventListener("visibilitychange", hide);
+      document.removeEventListener("freeze", pause);
+      document.removeEventListener("resume", syncVisible);
+      window.removeEventListener("pageshow", syncVisible);
+      window.removeEventListener("focus", syncVisible);
       window.removeEventListener("pagehide", leave);
       leave();
     };

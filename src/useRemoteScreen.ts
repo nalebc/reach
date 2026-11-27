@@ -4,6 +4,7 @@ import { computerWord } from "./pause";
 import { ReconnectTimer, screenCanRetry } from "./reconnect";
 import { latestFramePainter } from "./frame-painter";
 import { holdReload } from "./build-reload";
+import { onAppResume } from "./page-visible";
 // Video decoders open on this page, for the log when one fails: a phone runs
 // only so many hardware decoders at once.
 const decoders = new Set<VideoDecoder>();
@@ -666,6 +667,43 @@ export function useRemoteScreen(
     const wake = () => {
       if (!document.hidden) retry.current.wake();
     };
+    const resetSurface = () => {
+      ctxSurface = null;
+      ctx = null;
+    };
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      resetSurface();
+    };
+    const onContextRestored = () => {
+      resetSurface();
+      if (!stopped && !document.hidden) {
+        retry.current.reset();
+        fail("Screen surface restored. Reconnecting…", true);
+      }
+    };
+    const watchedCanvas = canvas.current;
+    watchedCanvas?.addEventListener("contextlost", onContextLost);
+    watchedCanvas?.addEventListener("contextrestored", onContextRestored);
+    const stopResume = onAppResume((suspended) => {
+      if (stopped || document.hidden) return;
+      resetSurface();
+      if (failed) {
+        retry.current.wake();
+        return;
+      }
+      if (suspended || (last > 0 && Date.now() - last >= 4000)) {
+        retry.current.reset();
+        failed = true;
+        clearTimeout(watchdog);
+        clearInterval(metrics);
+        painter.stop();
+        try {
+          socket.close();
+        } catch {}
+        setAttempt((n) => n + 1);
+      }
+    });
     window.addEventListener("online", wake);
     window.addEventListener("pageshow", wake);
     window.addEventListener("focus", wake);
@@ -674,6 +712,9 @@ export function useRemoteScreen(
     return () => {
       stopped = true;
       release();
+      stopResume();
+      watchedCanvas?.removeEventListener("contextlost", onContextLost);
+      watchedCanvas?.removeEventListener("contextrestored", onContextRestored);
       retry.current.cancel();
       window.removeEventListener("online", wake);
       window.removeEventListener("pageshow", wake);

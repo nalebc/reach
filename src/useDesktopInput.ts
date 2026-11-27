@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
 import { ReconnectTimer } from "./reconnect";
+import { onAppResume } from "./page-visible";
 import {
   DesktopInputQueue,
   inputEnded,
@@ -298,6 +299,15 @@ export function useDesktopInput(
         void queue.enqueue({ type: "heartbeat" }).catch(() => {});
       }
     };
+    const stopResume = onAppResume((suspended) => {
+      if (stopped || document.hidden) return;
+      if (suspended && !failed && !parked && on.current) {
+        retry.current.reset();
+        stop("Desktop control reconnecting…", true);
+        return;
+      }
+      wake();
+    });
     window.addEventListener("online", wake);
     window.addEventListener("pageshow", wake);
     window.addEventListener("focus", wake);
@@ -305,6 +315,7 @@ export function useDesktopInput(
     document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
+      stopResume();
       link.current = null;
       retry.current.cancel();
       window.removeEventListener("online", wake);

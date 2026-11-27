@@ -271,6 +271,26 @@ test("Home Screen resume helpers recover when visibilitychange is omitted, histo
     assert.equal(handoffs[0].mode, "native");
     assert.equal(dom.document.documentElement.dataset.connection, undefined);
     recovery.stop();
+
+    // 5. usePageVisible pauses immediately on freeze/pagehide (even when document.hidden stays false)
+    //    so Screen/HomeLive stop background H.264 decoding before iOS Jetsam terminates the web view.
+    const { usePageVisible } = await dom.load("/src/page-visible.ts");
+    let visibleState = null;
+    function VisibilityProbe() {
+      visibleState = usePageVisible();
+      return dom.React.createElement("span", null, String(visibleState));
+    }
+    const visView = await dom.render(dom.React.createElement(VisibilityProbe));
+    assert.equal(visibleState, true);
+    dom.update(() => dom.window.dispatchEvent(new dom.window.PageTransitionEvent("pagehide", { persisted: true })));
+    assert.equal(visibleState, false, "pagehide pauses visibility immediately even before hidden flips");
+    dom.update(() => dom.window.dispatchEvent(new dom.window.PageTransitionEvent("pageshow", { persisted: true })));
+    assert.equal(visibleState, true, "pageshow restores visibility immediately");
+    dom.update(() => dom.document.dispatchEvent(new dom.window.Event("freeze")));
+    assert.equal(visibleState, false, "freeze pauses visibility immediately");
+    dom.update(() => dom.document.dispatchEvent(new dom.window.Event("resume")));
+    assert.equal(visibleState, true, "resume restores visibility immediately");
+    await visView.unmount();
   } finally {
     await dom.close();
   }

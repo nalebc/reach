@@ -5395,8 +5395,9 @@ export async function createReach(overrides = {}) {
         const page = antigravitySessions.read(req.params.id, { limit: 200 });
         const lastReply = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "text");
         const lastThink = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "thinking");
+        const ver = antigravitySessions.version?.(req.params.id) || Math.max(1, Math.floor(page.session.rev || page.session.updatedAt || 1));
         return {
-          version: Math.max(1, Math.floor(page.session.rev || page.session.updatedAt || 1)),
+          version: ver,
           running: page.session.status === "running",
           streaming: lastReply?.status === "running" ? lastReply.text : "",
           thinking: lastThink?.status === "running" ? lastThink.text : "",
@@ -5423,6 +5424,8 @@ export async function createReach(overrides = {}) {
             gone.signal.addEventListener("abort", done, { once: true });
           });
           if (gone.signal.aborted) break;
+          const quickVer = antigravitySessions.version?.(req.params.id);
+          if (quickVer && quickVer <= since) continue;
           view = readSnap();
         }
       }
