@@ -1181,7 +1181,7 @@ export default function EverythingChat({
   // The apps a new chat can be started in (not All or transcript-only Antigravity without agy CLI): always offer API & Local too.
   const startApps = useMemo<ChatAppChoice[]>(() => {
     const base = apps.filter(
-      (app) => app.agent !== "all" && !(app.agent === "antigravity" && !antigravityCanReply),
+      (app) => app.agent !== "all" && !(app.agent === "antigravity" && app.supported && !antigravityCanReply),
     );
     if (!base.some((app) => app.agent === "api")) {
       base.push({ agent: "api", name: agentLabel("api"), supported: true });
@@ -1228,7 +1228,7 @@ export default function EverythingChat({
   };
   const newApp =
     startApps.find((app) => app.agent === newPick) ||
-    (picked.agent === "all" || (picked.agent === "antigravity" && !antigravityCanReply)
+    (picked.agent === "all" || (picked.agent === "antigravity" && picked.supported && !antigravityCanReply)
       ? startApps.find((app) => (AGENTS.includes(app.agent as AgentName) || app.agent === "antigravity") && canAnswer(app.agent)) ||
         (readyProviderCount > 0 ? startApps.find((app) => app.agent === "api") : undefined) ||
         startApps[0] ||
