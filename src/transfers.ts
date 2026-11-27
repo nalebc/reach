@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Share } from "@capacitor/share";
 import { isNative } from "./native";
-import { peerUsesBrowserTailnet } from "./tailnet-transport";
+import { peerUsesBrowserTailnet, tailnetBrowser } from "./tailnet-transport";
 import {
   fileBlob,
   post,
@@ -549,8 +549,8 @@ export async function downloadThroughBrowser(
   root: number,
   entry: FileEntry,
 ) {
-  // The download manager can't reach the computer without the Tailscale app.
-  if (peerUsesBrowserTailnet(peer)) return false;
+  // The download manager can't reach the computer through the Go WASM node.
+  if (tailnetBrowser()) return false;
   try {
     const { url } = await request<{ url: string }>(
       peer,

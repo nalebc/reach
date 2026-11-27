@@ -49,33 +49,58 @@ export type TailnetNode = {
   ): GoSocket;
 };
 
-export type PrivateWay = "native" | "browser";
+export type PrivateWay = "native" | "browser" | "funnel";
 type PrivatePeer = { url: string; token: string; transport?: string };
+type FunnelHandler = { fetch: typeof fetch; Socket: typeof WebSocket };
 let active: { node: TailnetNode; routed: (url: URL) => boolean } | null = null;
+let funnel: FunnelHandler | null = null;
 let way: PrivateWay = "native";
 const credentials = new Map<string, { origin: string; way: PrivateWay }>();
 let installed = false;
 export const tailnetBrowser = () => !!active && way === "browser";
+export const funnelBrowser = () => !!funnel && way === "funnel";
 export const tailnetNode = () => active?.node;
 export const privateWay = () => way;
 
+const sameDeviceHost = (aOrigin: string, bOrigin: string) => {
+  try {
+    const a = new URL(aOrigin);
+    const b = new URL(bOrigin);
+    return (
+      a.protocol === "https:" &&
+      b.protocol === "https:" &&
+      a.hostname.toLowerCase() === b.hostname.toLowerCase() &&
+      a.hostname.endsWith(".ts.net")
+    );
+  } catch {
+    return false;
+  }
+};
+
 // A request already in progress may retain its old Peer after a handoff. Its
-// device-bound credential must stay on that device's original transport.
+// device-bound credential must stay on that device's original transport, except
+// when unified native <-> funnel device credentials switch on the same computer.
 export function bindPrivatePeer(peer: PrivatePeer, route: PrivateWay) {
   if (peer.transport === "funnel" || !peer.token) return;
   const origin = new URL(peer.url).origin;
   const old = credentials.get(peer.token);
-  if (old && (old.origin !== origin || old.way !== route))
-    throw Error("This credential belongs to another private connection.");
+  if (old) {
+    const browserInvolved = old.way === "browser" || route === "browser";
+    if (browserInvolved ? old.origin !== origin || old.way !== route : !sameDeviceHost(old.origin, origin))
+      throw Error("This credential belongs to another private connection.");
+  }
   credentials.set(peer.token, { origin, way: route });
 }
 export const privatePeerWay = (peer: PrivatePeer) => credentials.get(peer.token)?.way;
 export function peerUsesBrowserTailnet(peer: PrivatePeer) {
-  return peer.transport !== "funnel" && (privatePeerWay(peer) || way) === "browser";
+  if (peer.transport === "funnel") return false;
+  const route = privatePeerWay(peer) || way;
+  return route === "browser" || route === "funnel";
 }
 export const nativeTailnetFetch = nativeBrowserFetch;
 export function usePrivateWay(next: PrivateWay) {
   if (next === "browser" && !active) throw Error("The browser's private connection is not ready.");
+  if (next === "funnel" && !funnel) throw Error("The public link connection is not ready.");
   way = next;
 }
 
@@ -358,6 +383,12 @@ export function installTailnet(node: TailnetNode, tailnetSuffix: string, route: 
   installPrivateRouting();
 }
 
+export function installFunnelTransport(handler: FunnelHandler, route: PrivateWay = "funnel") {
+  funnel = handler;
+  way = route;
+  installPrivateRouting();
+}
+
 export function installPrivateRouting() {
   if (installed) return;
   installed = true;
@@ -366,9 +397,22 @@ export function installPrivateRouting() {
     (url.hostname.endsWith(".ts.net") && PRIVATE_PATH.test(url.pathname));
   const credentialRoute = (token: string, url: URL, fallback: PrivateWay) => {
     const old = credentials.get(token);
-    if (old && old.origin !== url.origin) throw Error("This credential belongs to another computer address.");
-    if (!old) bindPrivatePeer({ url: url.origin, token }, fallback);
-    return old?.way || fallback;
+    if (old) {
+      if (old.way === "browser") {
+        if (old.origin !== url.origin) throw Error("This credential belongs to another computer address.");
+        return "browser";
+      }
+      if (!sameDeviceHost(old.origin, url.origin) && old.origin !== url.origin)
+        throw Error("This credential belongs to another computer address.");
+      if (fallback === "native" || fallback === "funnel") {
+        if (old.way !== fallback || old.origin !== url.origin)
+          credentials.set(token, { origin: url.origin, way: fallback });
+        return fallback;
+      }
+      return old.way;
+    }
+    bindPrivatePeer({ url: url.origin, token }, fallback);
+    return fallback;
   };
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
@@ -380,6 +424,10 @@ export function installPrivateRouting() {
     const token = /^Bearer (.+)$/.exec(headers.get("Authorization") || "")?.[1];
     const route = token ? credentialRoute(token, url, way) : way;
     if (route === "native") return nativeFetch(input, init);
+    if (route === "funnel") {
+      if (!funnel) return Promise.reject(new TypeError("The public link connection is unavailable."));
+      return funnel.fetch(input instanceof Request ? input : url.href, init);
+    }
     if (!active) return Promise.reject(new TypeError("The browser's private connection is unavailable."));
     return tailnetFetch(active.node, input instanceof Request ? input : url.href, init);
   };
@@ -387,9 +435,11 @@ export function installPrivateRouting() {
     const target = new URL(url, location.href);
     if (!routed(target)) return new NativeSocket(url, protocols);
     const route = way;
-    const socket = route === "browser" && active
-      ? new TailnetSocket(active.node, target, protocols)
-      : new NativeSocket(url, protocols);
+    const socket = route === "funnel" && funnel
+      ? new funnel.Socket(target, protocols)
+      : route === "browser" && active
+        ? new TailnetSocket(active.node, target, protocols)
+        : new NativeSocket(url, protocols);
     const send = socket.send?.bind(socket);
     if (send) socket.send = (data: Parameters<WebSocket["send"]>[0]) => {
       if (typeof data === "string") {

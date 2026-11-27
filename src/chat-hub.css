@@ -144,10 +144,11 @@
   margin-top: 1px;
   color: var(--warning, #d6c38f);
 }
-/* What a chat changed lately shows under its name here (the list keeps
-   phones to one line; this line is what the All page is for). */
-.chat-hub .chat-card-preview.hub-changed {
-  display: block;
+/* Keep phone rows cleanly single-line; show file changes on wider screens. */
+@media (min-width: 601px) {
+  .chat-hub .chat-card-preview.hub-changed {
+    display: block;
+  }
 }
 /* Across computers (fleet-chats.ts): the ones whose chats aren't here, and
    which computer a row is on when the page covers more than one. */

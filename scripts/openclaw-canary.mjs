@@ -136,11 +136,17 @@ export function sandboxEnv(dir, { port, token, source = process.env } = {}) {
 // The least a Gateway needs to start here, without secrets: local mode
 // (without it 2026.10.2 starts under --allow-unconfigured, 2026.1.29 not at
 // all). logging.file: 2026.1.29 still files console errors when silent. No
-// heartbeat: nothing may start a model turn.
-export const throwawayConfig = (dir) => ({
+// heartbeat: nothing may start a model turn (retired in 2026.11.10+).
+function hasRetiredHeartbeat(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version || ""));
+  if (!m) return false;
+  const [maj, min, pat] = m.slice(1).map(Number);
+  return maj > 2026 || (maj === 2026 && (min > 11 || (min === 11 && pat >= 10)));
+}
+export const throwawayConfig = (dir, version = "") => ({
   gateway: { mode: "local" },
   logging: { file: path.join(dir, "logs", "openclaw.log") },
-  agents: { defaults: { heartbeat: { every: "0m" } } },
+  ...(hasRetiredHeartbeat(version) ? {} : { agents: { defaults: { heartbeat: { every: "0m" } } } }),
 });
 
 // Records the Gateway's answer to Reach's connect (its hello: methods,
@@ -235,6 +241,7 @@ export async function openClawCanary(executable = "openclaw", {
       result.reason = "OpenClaw did not report its version. Check that this OpenClaw runs on this Node.";
       return result;
     }
+    fs.writeFileSync(env.OPENCLAW_CONFIG_PATH, JSON.stringify(throwawayConfig(dir, result.version), null, 2), { mode: 0o600 });
 
     const gaps = { required: [], optional: [] };
     for (const entry of CLI) {

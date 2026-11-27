@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { post, request, type Peer } from "./api";
+import { onAppResume } from "./page-visible";
 import type { Workflow } from "./Workflows";
 
-// Every Codex and Claude Code session on the computer (server/agent-sessions).
-export type AgentName = "codex" | "claude" | "gemini";
+// Every Codex, Claude Code, Gemini, Antigravity, and API/Local session on the computer.
+export type AgentName = "codex" | "claude" | "gemini" | "antigravity" | "api";
 // A sub-agent a chat started (server/agent-sessions/subagents.mjs).
 export type Subagent = {
   id: string;
@@ -38,6 +39,13 @@ export type AgentSession = {
   live?: { where: "claude-app" | "terminal" | "background"; pid: number; tty: string | null };
   // Filled when one session is read.
   model?: string | null;
+  // Direct API / local provider metadata (Venice, Ollama, vLLM, OpenAI, Anthropic, custom).
+  providerId?: string;
+  providerName?: string;
+  providerKind?: "api" | "local";
+  systemPrompt?: string;
+  temperature?: number | null;
+  veniceWebSearch?: boolean;
   // Its sub-agents, newest first.
   subagents?: Subagent[];
   // Rewound: shown as it stood then, until the next message goes on from there.
@@ -294,7 +302,7 @@ export const modesFor = (modes: AgentMode[], model?: AgentModel | null) =>
   modes.filter((m) => !(m.id === "auto" && model && model.autoMode === false));
 
 export const agentLabel = (agent: string) =>
-  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", openclaw: "OpenClaw", all: "All" })[agent] || agent;
+  ({ codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI", antigravity: "Antigravity", openclaw: "OpenClaw", api: "API & Local", all: "All" })[agent] || agent;
 
 // Out of usage: the page each agent sends you to for more, opened on the
 // phone, where you buy it. Codex's own message names its page ("Visit … to
@@ -408,6 +416,8 @@ const MODES: Record<AgentName, Record<string, string>> = {
     yolo: "YOLO",
     plan: "Plan",
   },
+  antigravity: {},
+  api: {},
 };
 export const modeLabel = (agent: AgentName, mode?: string | null) =>
   mode ? MODES[agent][mode] || mode : "";
@@ -593,7 +603,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
     if (!peer) return;
     void load();
     const visible = () => !document.hidden && void load();
-    document.addEventListener("visibilitychange", visible);
+    const stopResume = onAppResume(() => void load());
     // The phone's network back: asked at once.
     window.addEventListener("online", visible);
     // Sign-in and usage change rarely; check on open and every minute.
@@ -619,7 +629,7 @@ export function useAgentSessions(peer: Peer | null, everyMs = 4000, revision?: s
       healthActive = false;
       clearInterval(healthTimer);
       clearTimeout(retry.current);
-      document.removeEventListener("visibilitychange", visible);
+      stopResume();
       window.removeEventListener("online", visible);
     };
   }, [load, everyMs]);
@@ -825,10 +835,11 @@ export const moveSession = async (peer: Peer, s: { agent: string; id: string }, 
   // A successful HTTP status does not prove the destination is usable. Keep
   // the source open on incompatible replies; the server may already have
   // created the continuation, so never retry this mutation automatically.
-  if (moved?.agent !== to || typeof moved.id !== "string" || !moved.id.trim())
+  const expectedAgent = to.startsWith("api:") ? "api" : to;
+  if (moved?.agent !== expectedAgent || typeof moved.id !== "string" || !moved.id.trim())
     throw new Error("Reach could not confirm the continued chat. Your source chat is still here. Check the destination app before trying again.");
   return {
-    agent: to,
+    agent: expectedAgent,
     id: moved.id,
     ...(typeof moved.resumeError === "string" ? { resumeError: moved.resumeError } : {}),
   };
@@ -968,15 +979,33 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
     const controller = new AbortController();
     let version: number | null = null;
     let failures = 0;
+    let activePoll: AbortController | null = null;
+    let wakeBackoff: (() => void) | null = null;
+    const kickLive = (abortInFlight: boolean) => {
+      failures = 0;
+      if (abortInFlight) activePoll?.abort();
+      wakeBackoff?.();
+    };
+    const stopResume = onAppResume((suspended) => kickLive(suspended));
+    const onOnline = () => kickLive(true);
+    window.addEventListener("online", onOnline);
     void (async () => {
       while (!controller.signal.aborted) {
-        const wait = either(controller.signal, 35000);
+        const poll = new AbortController();
+        activePoll = poll;
+        const onOuterAbort = () => poll.abort();
+        controller.signal.addEventListener("abort", onOuterAbort, { once: true });
+        const wait = either(poll.signal, 35000);
         try {
           const next: LiveView = await request<LiveView>(
             peer,
             `${sessionPath(s)}/live${version === null ? "" : `?since=${version}`}`,
             { signal: wait.signal },
-          ).finally(wait.done);
+          ).finally(() => {
+            wait.done();
+            controller.signal.removeEventListener("abort", onOuterAbort);
+            if (activePoll === poll) activePoll = null;
+          });
           if (controller.signal.aborted) return;
           failures = 0;
           version = next.version;
@@ -984,13 +1013,30 @@ export function useSessionLive(peer: Peer, s: { agent: AgentName; id: string } |
           setSeenAt(Date.now());
         } catch {
           if (controller.signal.aborted) return;
+          if (poll.signal.aborted) continue;
           setSeenAt(0);
-          // Back off while the Mac is out of reach.
-          await new Promise((r) => setTimeout(r, Math.min(8000, 500 * 2 ** failures++)));
+          // Back off while the Mac is out of reach, waking early on resume/online.
+          await new Promise<void>((resolve) => {
+            const delay = Math.min(8000, 500 * 2 ** failures++);
+            const timer = setTimeout(() => {
+              wakeBackoff = null;
+              resolve();
+            }, delay);
+            wakeBackoff = () => {
+              clearTimeout(timer);
+              wakeBackoff = null;
+              resolve();
+            };
+          });
         }
       }
     })();
-    return () => controller.abort();
+    return () => {
+      stopResume();
+      window.removeEventListener("online", onOnline);
+      wakeBackoff?.();
+      controller.abort();
+    };
   }, [key, poke]);
   return { view, seenAt, refresh: () => setPoke((n) => n + 1) };
 }

@@ -44,7 +44,8 @@ export default function RemoteTyping({
 }) {
   const shadow = useRef(""),
     composing = useRef(false),
-    valid = useRef(true);
+    valid = useRef(true),
+    openedAt = useRef(0);
   const beforeInput = useRef<(e: InputEvent) => void>(() => {});
   const queued = useRef<DesktopAction[]>([]);
   const heldReport = useRef(onHeld);
@@ -74,6 +75,7 @@ export default function RemoteTyping({
   };
   useEffect(() => {
     valid.current = true;
+    openedAt.current = Date.now();
     const element = editorRef.current;
     const handler = (event: Event) => beforeInput.current(event as InputEvent);
     element?.addEventListener("beforeinput", handler);
@@ -201,7 +203,13 @@ export default function RemoteTyping({
         // Explicit keyboard-button fallback for apps without accessibility fields.
         for (let i = 0; i < edit.delete; i++)
           dispatch({ type: "key", key: "backspace" });
-        if (edit.text) dispatch({ type: "text", text: edit.text });
+        if (edit.text) {
+          const lines = edit.text.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i]) dispatch({ type: "text", text: lines[i] });
+            if (i < lines.length - 1) dispatch({ type: "key", key: "enter" });
+          }
+        }
       }
     } catch (error) {
       fail(error as Error);
@@ -230,7 +238,15 @@ export default function RemoteTyping({
     writingsuggestions: "false",
     enterKeyHint: "enter" as const,
     onBlur: (event: React.FocusEvent<Editor>) => {
-      if (!renewingKeyboardFocus(event.currentTarget)) onClose();
+      if (renewingKeyboardFocus(event.currentTarget)) return;
+      // iOS Safari can fire a transient blur while the software keyboard
+      // animates in and resizes the visual viewport; keep focus instead of
+      // immediately dismissing the keyboard the user just opened.
+      if (Date.now() - openedAt.current < 450 && valid.current) {
+        event.currentTarget.focus({ preventScroll: true });
+        return;
+      }
+      onClose();
     },
     onChange: (e: React.ChangeEvent<Editor>) => commit(e.target.value),
     onPaste: (e: React.ClipboardEvent<Editor>) => {

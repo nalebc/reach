@@ -1,9 +1,10 @@
 import { useMemo, useState, type RefObject } from "react";
-import { ArrowUpRight, FolderOpen, LoaderCircle, Search, ShieldCheck, X } from "lucide-react";
+import { ArrowUpRight, Check, Cpu, FolderOpen, KeyRound, LoaderCircle, Search, ShieldCheck, Sparkles, X } from "lucide-react";
 import { viewScope, useViewState, useViewScroll, useSearchFocus } from "./view-memory";
 import type { Peer } from "./api";
 import { AgentLogo, type AgentLogos } from "./agent-logos";
 import { agentLabel, cancelRelay, projectName, projectOfChat, type AgentHealth, type AgentSession, type Relay, type Team } from "./agent-sessions";
+import { quickConnectProvider, type ChatProvider } from "./chat-providers";
 import { mergeHealth } from "./usage";
 import { BrandCourier } from "./ReachIdentity";
 import { ChatLibraryHeader, FlowRuns, ago, chatRank, firstFew, flowFinder, foldedAway, inFlowTitle, inFlows, needsYou, plainLine, type ChatAppChoice, type WorkflowsEntry } from "./ChatList";
@@ -42,9 +43,6 @@ type Hit = { agent: string; id: string; role: string; at: number; snippet: strin
 export { projectOf } from "./agent-sessions";
 const base = (file: string) => file.split(/[\\/]/).pop() || file;
 const priority = (s: AgentSession) => (needsYou(s) ? 2 : s.status === "running" ? 1 : 0);
-// The chats that changed one file, each name once: two chats with the same
-// name (a chat and the one split off from it, say) are "two Claude Code chats
-// named …", never one name twice.
 const COUNTS = ["", "one", "two", "three", "four"];
 const whoChanged = (chats: { agent: string; title: string }[]) => {
   const named = new Map<string, { agent: string; title: string; n: number }>();
@@ -208,6 +206,12 @@ export default function ChatHub({
   onRelaysChanged,
   workflows,
   health = [],
+  onProviders,
+  providerCount = 0,
+  providers = [],
+  onReloadProviders,
+  onQuickStart,
+  currentApp = "all",
 }: {
   peer: Peer;
   active?: boolean;
@@ -234,6 +238,13 @@ export default function ChatHub({
   workflows?: WorkflowsEntry;
   // This computer's agents (the live feed); the others' are asked here.
   health?: AgentHealth[];
+  // Manage API key & local providers (Venice, Ollama, vLLM, OpenAI, Anthropic, custom).
+  onProviders?: () => void;
+  providerCount?: number;
+  providers?: ChatProvider[];
+  onReloadProviders?: (refresh?: boolean) => Promise<void> | void;
+  onQuickStart?: (agent: string, providerId?: string) => void;
+  currentApp?: string;
 }) {
   const scope = viewScope(peer, "chats:all");
   const [searchOpen, setSearchOpen] = useViewState(scope, "search", false);
@@ -280,6 +291,12 @@ export default function ChatHub({
   const openOn = (computer: Peer, chat: Ref) => (computer.id === peer.id ? onOpen(chat) : onOpenOn?.(computer, chat));
   const [opened, setOpened] = useViewState<string[]>(scope, "folders", []);
   const [cancelling, setCancelling] = useState("");
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [quickKey, setQuickKey] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyStatus, setKeyStatus] = useState("");
+  const [keyError, setKeyError] = useState("");
+  const readyProviders = useMemo(() => providers.filter((p) => p.configured || p.reachable), [providers]);
   const all = useMemo(() => (sessions || []).filter((s) => !s.archived), [sessions]);
   const chatLists = useMemo<ComputerChats[]>(
     () => [
@@ -291,11 +308,9 @@ export default function ChatHub({
     ],
     [peer, all, lists],
   );
-  // Projects across agents, the one with the newest chat first. The same
-  // folder on two computers is two projects.
   const projects = useMemo(() => {
     const map = new Map<string, { computer: Peer; root: string; list: AgentSession[] }>();
-    for (const { computer, sessions } of chatLists)
+    for (const { computer, sessions } of chatLists) {
       for (const s of sessions) {
         const root = projectOfChat(s);
         const key = `${computer.id}\n${root}`;
@@ -303,9 +318,14 @@ export default function ChatHub({
         group.list.push(s);
         map.set(key, group);
       }
+    }
     return [...map.entries()]
-      .map(([key, group]) => ({ ...group, key, list: group.list.sort((a, b) => priority(b) - priority(a) || b.updatedAt - a.updatedAt) }))
-      .sort((a, b) => Math.max(...b.list.map((s) => s.updatedAt)) - Math.max(...a.list.map((s) => s.updatedAt)));
+      .map(([key, group]) => ({
+        ...group,
+        key,
+        list: group.list.sort((a, b) => priority(b) - priority(a) || (b.updatedAt || 0) - (a.updatedAt || 0)),
+      }))
+      .sort((a, b) => Math.max(...b.list.map((s) => s.updatedAt || 0)) - Math.max(...a.list.map((s) => s.updatedAt || 0)));
   }, [chatLists]);
   // This computer's workflows: each one's chats together (FlowRuns).
   const flowsOf = useMemo(() => flowFinder(workflows?.list), [workflows?.list]);
@@ -341,7 +361,7 @@ export default function ChatHub({
       <ChatLibraryHeader
         peer={peer}
         apps={apps}
-        value="all"
+        value={currentApp}
         logos={logos}
         pending={appPending}
         onChange={onAgentChange}
@@ -360,6 +380,105 @@ export default function ChatHub({
       <div hidden={!searchOpen}>
         <SearchAll scope={scope} computers={asked} lists={chatLists} labelled={labelled} logos={logos} field={field} onOpen={openOn} />
       </div>
+      <section className="ac-hero ac-toolbar" aria-label="Anything Chat">
+        <span className="ac-sr-only">Anything Chat</span>
+        <div className="ac-toolbar-row">
+          {apps.length > 1 ? (
+            <div className="ac-app-strip" role="tablist" aria-label="Switch chat view">
+              {apps.map((app) => (
+                <button
+                  key={app.agent}
+                  type="button"
+                  role="tab"
+                  aria-selected={app.agent === currentApp}
+                  className={`ac-app-pill ${app.agent === currentApp ? "active" : ""}`}
+                  onClick={() => onAgentChange(app.agent)}
+                >
+                  <AgentLogo agent={app.agent} name={app.name} logos={logos} size={14} />
+                  <span>{app.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="ac-toolbar-spacer" />
+          )}
+          <div className="ac-hero-actions">
+            <button
+              type="button"
+              className={`ac-hero-btn ${keyOpen ? "active" : ""}`}
+              title="Paste API key or local server URL"
+              onClick={() => (setKeyOpen((v) => !v), setKeyError(""), setKeyStatus(""))}
+            >
+              <KeyRound size={13} />
+              <span>{providerCount > 0 ? `Keys · ${providerCount}` : "+ Key"}</span>
+            </button>
+            {onProviders && currentApp === "api" && (
+              <button
+                type="button"
+                className="ac-hero-btn"
+                onClick={onProviders}
+              >
+                <span>Providers</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {(keyOpen || (currentApp === "api" && providerCount === 0)) && (
+          <form
+            className="ac-inline-key"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const raw = quickKey.trim();
+              if (!raw || keyBusy) return;
+              setKeyBusy(true);
+              setKeyError("");
+              setKeyStatus("");
+              try {
+                const res = await quickConnectProvider(peer, { key: raw });
+                setQuickKey("");
+                setKeyOpen(false);
+                setKeyStatus(`${res.provider.name} ready · ${res.modelCount} models detected`);
+                await onReloadProviders?.(true);
+              } catch (err) {
+                setKeyError((err as Error).message || "Could not connect key.");
+              } finally {
+                setKeyBusy(false);
+              }
+            }}
+          >
+            <input
+              type="password"
+              autoComplete="off"
+              aria-label="Paste any API key or local URL"
+              placeholder="Paste any API key (Venice, OpenAI, Claude, Groq…) or Ollama/vLLM URL"
+              value={quickKey}
+              onChange={(e) => setQuickKey(e.target.value)}
+            />
+            <button type="submit" className="cp-primary" disabled={keyBusy || !quickKey.trim()}>
+              {keyBusy ? <LoaderCircle size={14} className="spin" /> : <><Check size={14} /> Connect</>}
+            </button>
+          </form>
+        )}
+        {keyStatus && <p className="cp-status" role="status">{keyStatus}</p>}
+        {keyError && <p className="cp-error" role="alert">{keyError}</p>}
+
+        {onQuickStart && currentApp === "api" && readyProviders.length > 0 && (
+          <div className="ac-launchpad" aria-label="Start chat with any provider">
+            {readyProviders.map((p) => (
+              <button
+                key={`p:${p.id}`}
+                type="button"
+                className={`ac-launch-chip ${p.kind === "local" ? "local" : "api"}`}
+                onClick={() => onQuickStart("api", p.id)}
+              >
+                {p.kind === "local" ? <Cpu size={13} /> : <Sparkles size={13} />}
+                <span>{p.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
       {!!pending && onReview && (
         <button className="chat-needs-row" onClick={onReview}>
           <ShieldCheck size={16} />
@@ -431,10 +550,10 @@ export default function ChatHub({
         <section className="chat-projects" aria-label="Projects">
           {projects.map(({ key, computer, root, list }) => {
             const open = opened.includes(key);
-            // Two chats changing one file: on the same computer only.
             const overlaps = activityOf(computer)?.overlaps;
-            const warn = (Array.isArray(overlaps) ? overlaps : []).filter((o) => root && o.file.replace(/\\/g, "/").startsWith(root.replace(/\\/g, "/").replace(/\/$/, "") + "/"));
-            const agents = [...new Set(list.map((s) => s.agent))];
+            const warn = (Array.isArray(overlaps) ? overlaps : []).filter(
+              (o) => root && o.file.replace(/\\/g, "/").startsWith(root.replace(/\\/g, "/").replace(/\/$/, "") + "/"),
+            );
             const flowOf = (s: AgentSession) => (computer.id === peer.id ? flowsOf(s) : undefined);
             const rows = inFlows(list, flowOf);
             const few = firstFew(rows, flowOf, chatRank);
@@ -448,11 +567,6 @@ export default function ChatHub({
                   <h2 title={root || undefined}>
                     <FolderOpen size={14} />
                     <span className="chat-project-name">{projectName(root) || "Workspace"}</span>
-                    <span className="hub-project-agents" aria-label={agents.map(agentLabel).join(", ")}>
-                      {agents.map((a) => (
-                        <AgentLogo key={a} agent={a} logos={logos} size={13} />
-                      ))}
-                    </span>
                     {labelled && <Where computer={computer} />}
                   </h2>
                 </div>
@@ -471,47 +585,58 @@ export default function ChatHub({
                   </details>
                 )}
                 <div className="chat-entries">
-                  <FlowRuns list={open ? rows : rows.slice(0, few)} flowOf={flowOf} rank={chatRank} onOpenFlow={workflows?.onOpenFlow} row={(s) => {
-                    const files = changedBy.get(`${computer.id}\n${s.agent}:${s.id}`)?.files || [];
-                    return (
-                      <button
-                        key={`${s.agent}:${s.id}`}
-                        className={`chat-card ${needsYou(s) ? "waiting" : s.status}`}
-                        aria-label={`${s.title || "New chat"}, ${agentLabel(s.agent)}${labelled ? `, on ${computer.name}` : ""}`}
-                        onClick={() => openOn(computer, s)}
-                      >
-                        <span className="chat-entry-logo" title={agentLabel(s.agent)}>
-                          <AgentLogo agent={s.agent} logos={logos} size={18} />
-                        </span>
-                        <span className="chat-entry-copy">
-                          <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
-                          <span className={`chat-card-preview ${files.length ? "hub-changed" : ""}`}>
-                            {files.length
-                              ? `Changed ${files
-                                  .slice(0, 3)
-                                  .map((f) => base(f.file))
-                                  .join(", ")}${files.length > 3 ? ` +${files.length - 3}` : ""}`
-                              : s.prompts?.[0]?.title || plainLine(s.preview || "") || agentLabel(s.agent)}
+                  <FlowRuns
+                    list={open ? rows : rows.slice(0, few)}
+                    flowOf={flowOf}
+                    rank={chatRank}
+                    onOpenFlow={workflows?.onOpenFlow}
+                    row={(s) => {
+                      const files = changedBy.get(`${computer.id}\n${s.agent}:${s.id}`)?.files || [];
+                      const providerTag = s.providerName || agentLabel(s.agent);
+                      return (
+                        <button
+                          key={`${s.agent}:${s.id}`}
+                          className={`chat-card ac-chat-card ${needsYou(s) ? "waiting" : s.status}`}
+                          aria-label={`${s.title || "New chat"}, ${agentLabel(s.agent)}${labelled ? `, on ${computer.name}` : ""}`}
+                          onClick={() => openOn(computer, s)}
+                        >
+                          <span className="chat-entry-logo" title={providerTag}>
+                            <AgentLogo agent={s.agent} logos={logos} size={18} />
                           </span>
-                        </span>
-                        <span className="chat-entry-tail">
-                          {needsYou(s) ? (
-                            <span className="chat-row-status waiting" aria-label="Needs you" title="Needs you">
-                              <span className="chat-state-dot" />
+                          <span className="chat-entry-copy">
+                            <strong>{(flowOf(s) ? inFlowTitle(plainLine(s.title || "")) : plainLine(s.title || "")) || "New chat"}</strong>
+                            <span className={`chat-card-preview ${files.length ? "hub-changed" : ""}`}>
+                              {files.length
+                                ? `Changed ${files
+                                    .slice(0, 3)
+                                    .map((f) => base(f.file))
+                                    .join(", ")}${files.length > 3 ? ` +${files.length - 3}` : ""}`
+                                : s.prompts?.[0]?.title || plainLine(s.preview || "") || providerTag}
                             </span>
-                          ) : s.status === "running" ? (
-                            <LoaderCircle className="chat-row-status spin" size={17} aria-label="Working" />
-                          ) : null}
-                          <time className="chat-card-time" dateTime={new Date(s.updatedAt).toISOString()}>
-                            {ago(s.updatedAt)}
-                          </time>
-                        </span>
-                      </button>
-                    );
-                  }} />
+                          </span>
+                          <span className="chat-entry-tail">
+                            {needsYou(s) ? (
+                              <span className="chat-row-status waiting" aria-label="Needs you" title="Needs you">
+                                <span className="chat-state-dot" />
+                              </span>
+                            ) : s.status === "running" ? (
+                              <LoaderCircle className="chat-row-status spin" size={17} aria-label="Working" />
+                            ) : null}
+                            <time className="chat-card-time" dateTime={new Date(s.updatedAt).toISOString()}>
+                              {ago(s.updatedAt)}
+                            </time>
+                          </span>
+                        </button>
+                      );
+                    }}
+                  />
                 </div>
                 {list.length > few && (
-                  <button className="chat-list-more" aria-expanded={open} onClick={() => setOpened((o) => (open ? o.filter((r) => r !== key) : [...o, key]))}>
+                  <button
+                    className="chat-list-more"
+                    aria-expanded={open}
+                    onClick={() => setOpened((o) => (open ? o.filter((r) => r !== key) : [...o, key]))}
+                  >
                     {open ? "Show fewer" : `Show all ${list.length - foldedAway(rows, flowOf, chatRank)}`}
                   </button>
                 )}

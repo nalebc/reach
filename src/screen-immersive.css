@@ -19,13 +19,13 @@
   padding: max(10px, env(safe-area-inset-top))
     max(14px, env(safe-area-inset-right)) 10px
     max(14px, env(safe-area-inset-left));
-  background: linear-gradient(#080c0ee6, #080c0e00);
+  background: linear-gradient(rgb(0 0 0 / 0.72), rgb(0 0 0 / 0));
 }
 .simple-screen.screen-immersive > .simple-screen-dock {
   bottom: 0;
   padding: 10px max(14px, env(safe-area-inset-right))
     max(10px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
-  background: linear-gradient(#080c0e00, #080c0ee6);
+  background: linear-gradient(rgb(0 0 0 / 0), rgb(0 0 0 / 0.72));
 }
 /* The dock floats over the stage in fullscreen; keep zoom clear of it. */
 .simple-screen.screen-immersive .remote-zoom.compact {
@@ -81,7 +81,7 @@
   position: relative;
   top: auto;
   bottom: auto;
-  background: #0b1012;
+  background: #000;
   transform: none;
   opacity: 1;
 }
@@ -128,9 +128,22 @@
 .simple-screen.screen-waiting:not(.screen-expanded) .remote-stage {
   min-height: clamp(280px, 78vw, 440px);
 }
-.simple-screen.screen-expanded {
+.simple-screen.screen-expanded,
+.simple-screen.screen-immersive,
+.simple-screen:fullscreen {
+  background: #000;
   border-radius: 0;
   border: 0;
+  box-shadow: none;
+}
+.simple-screen.screen-expanded .remote-stage,
+.simple-screen.screen-immersive .remote-stage,
+.simple-screen:fullscreen .remote-stage {
+  background: #000;
+}
+html:has(.screen-expanded, .screen-immersive),
+body:has(.screen-expanded, .screen-immersive) {
+  background: #000;
 }
 .simple-screen.screen-expanded.screen-typing > .screen-toolbar {
   display: flex;

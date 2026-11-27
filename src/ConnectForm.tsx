@@ -19,6 +19,11 @@ import { storageBlocked } from "./storage-fallback";
 import { tailscaleAppLink } from "./connection";
 import { ErrorLine } from "./ui";
 import { homeOrigin } from "./home-origin";
+import {
+  clearCapturedPairingCode,
+  ensureDeviceKey,
+  readCapturedPairingCode,
+} from "./device-transport";
 import { hasTicket, saveTicket, startFresh, takeTicket } from "./face-start";
 import {
   createWithFaceId,
@@ -33,7 +38,11 @@ import "./connect-steps.css";
 
 type Method = {
   method: "tailscale" | "pairing";
+  transport?: "funnel";
   eligible: boolean;
+  pairingOpen?: boolean;
+  faceId?: boolean;
+  name?: string;
   login?: string;
   // This browser signed in with Face ID here before (its access ended).
   faceJoin?: boolean;
@@ -112,6 +121,7 @@ export default function ConnectForm({
   const [fallback, setFallback] = useState(false);
   // Face ID: options fetched ahead (Safari wants it straight from the tap).
   const [faceOptions, setFaceOptions] = useState<FaceOptions | null>(null);
+  const [funnelFaceAsk, setFunnelFaceAsk] = useState<{ id: string; options: FaceOptions } | null>(null);
   const [faceNote, setFaceNote] = useState("");
   const [faceAvailable, setFaceAvailable] = useState(false);
   useEffect(() => {
@@ -125,6 +135,7 @@ export default function ConnectForm({
   const [offerTry, setOfferTry] = useState(0);
   // A fresh browser asks its computer at once (no second "Connect" tap).
   const autoAsked = useRef(false);
+  const pairCodeUsed = useRef(false);
   // Approved, and offered Face ID for this phone's other browsers next time.
   const [offer, setOffer] = useState<{
     peer: Peer;
@@ -142,18 +153,65 @@ export default function ConnectForm({
     redeemed.current = true;
     const t = takeTicket();
     if (!t) return setJoining(false);
-    call(t.origin, "/api/auth/face-join", { ticket: t.ticket, name }).then(
-      (result) =>
-        onDone.current({ ...result.device, url: t.origin, token: result.token }),
-      (e) => {
-        // No answer from the computer (no HTTP status): the ticket wasn't
-        // used, so keep it for another try.
-        if (!(e as { status?: number }).status) saveTicket(t.ticket, t.origin);
-        setJoining(false);
-        setError((e as Error).message);
-      },
-    );
+    const funnel = document.documentElement.dataset.connection === "funnel";
+    (funnel ? ensureDeviceKey().then((k) => k.jwk, () => undefined) : Promise.resolve(undefined))
+      .then((deviceKey) =>
+        call(t.origin, "/api/auth/face-join", {
+          ticket: t.ticket,
+          name,
+          ...(deviceKey ? { deviceKey } : {}),
+        }),
+      )
+      .then(
+        (result) =>
+          onDone.current({ ...result.device, url: t.origin, token: result.token }),
+        (e) => {
+          // No answer from the computer (no HTTP status): the ticket wasn't
+          // used, so keep it for another try.
+          if (!(e as { status?: number }).status) saveTicket(t.ticket, t.origin);
+          setJoining(false);
+          setError((e as Error).message);
+        },
+      );
   }, []);
+  // Auto-redeem a QR/URL #pair=<code> when arriving over Public Funnel from `reach pair`.
+  useEffect(() => {
+    if (
+      pairCodeUsed.current ||
+      isNative ||
+      joining ||
+      document.documentElement.dataset.connection !== "funnel" ||
+      readPeers().length > 0
+    )
+      return;
+    const captured = readCapturedPairingCode();
+    if (!captured) return;
+    let origin: string;
+    try {
+      origin = normalizeUrl(url || homeOrigin());
+    } catch {
+      return;
+    }
+    pairCodeUsed.current = true;
+    clearCapturedPairingCode();
+    setBusy(true);
+    setError("");
+    void (async () => {
+      try {
+        const key = await ensureDeviceKey().catch(() => null);
+        const result = await call(origin, "/api/pair", {
+          code: captured.code,
+          name,
+          ...(key ? { deviceKey: key.jwk } : {}),
+        });
+        onDone.current({ ...result.device, url: origin, token: result.token });
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, [url, joining, name]);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => {
     const abort = new AbortController();
@@ -234,7 +292,7 @@ export default function ConnectForm({
           if (
             !pending.passkey &&
             !dismissed &&
-            document.documentElement.dataset.connection === "browser" &&
+            ["browser", "funnel"].includes(document.documentElement.dataset.connection || "") &&
             sameComputer(origin) &&
             (await faceIdReady())
           ) {
@@ -284,10 +342,11 @@ export default function ConnectForm({
     setError("");
     try {
       const origin = normalizeUrl(url);
+      const key = await ensureDeviceKey().catch(() => null);
       const request = await call(
         origin,
         "/api/auth/requests",
-        { name },
+        { name, ...(key ? { deviceKey: key.jwk } : {}) },
         abort.signal,
       );
       if (abort.signal.aborted) return;
@@ -298,6 +357,66 @@ export default function ConnectForm({
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
+  };
+  const funnelFaceAvailable =
+    method?.transport === "funnel" && !!method.faceId && faceAvailable && sameComputer(url);
+  // Pre-fetch 1-tap Face ID options over Funnel when available without a pending request.
+  useEffect(() => {
+    if (!funnelFaceAvailable || pending) {
+      setFunnelFaceAsk(null);
+      return;
+    }
+    let origin: string;
+    try {
+      origin = normalizeUrl(url);
+    } catch {
+      return;
+    }
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const load = async () => {
+      if (faceBusy.current) {
+        if (live) timer = setTimeout(load, 5000);
+        return;
+      }
+      try {
+        const res = await call(origin, "/api/auth/face-passkey/options", {});
+        if (live && res?.id && res?.options) setFunnelFaceAsk(res);
+      } catch {
+        if (live) setFunnelFaceAsk(null);
+      }
+      if (live) timer = setTimeout(load, 100000);
+    };
+    void load();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      setFunnelFaceAsk(null);
+    };
+  }, [funnelFaceAvailable, pending?.id, url]);
+  const signInFunnelFaceId = () => {
+    if (!funnelFaceAsk) return;
+    const origin = normalizeUrl(url);
+    const { id, options } = funnelFaceAsk;
+    setFaceNote("");
+    setFunnelFaceAsk(null);
+    faceBusy.current = true;
+    signWithFaceId(options)
+      .then((credential) =>
+        call(origin, "/api/auth/face-passkey/join", { id, credential, name }),
+      )
+      .then((result) => {
+        faceBusy.current = false;
+        onDone.current({ ...result.device, url: origin, token: result.token });
+      })
+      .catch((e) => {
+        faceBusy.current = false;
+        setFaceNote(faceIdError(e));
+        call(origin, "/api/auth/face-passkey/options", {}).then(
+          (res) => res?.id && res?.options && setFunnelFaceAsk(res),
+          () => {},
+        );
+      });
   };
   // Just signed in, nothing connected yet, on this page's own computer:
   // asking is the only thing to do here, so it happens by itself. (Adding
@@ -310,6 +429,7 @@ export default function ConnectForm({
       pending ||
       busy ||
       error ||
+      funnelFaceAvailable ||
       method?.method !== "tailscale" ||
       !method.eligible ||
       readPeers().length > 0
@@ -322,7 +442,7 @@ export default function ConnectForm({
     }
     autoAsked.current = true;
     void requestAccess();
-  }, [method, pending, busy, error, fallback, url]);
+  }, [method, pending, busy, error, fallback, funnelFaceAvailable, url]);
   // While a request waits: Face ID options, renewed before they expire.
   useEffect(() => {
     if (!pending?.passkey || !sameComputer(url)) return;
@@ -534,10 +654,38 @@ export default function ConnectForm({
             </>
           )}
         </div>
+      ) : funnelFaceAvailable ? (
+        <div className="connection-approval" role="status" aria-live="polite">
+          <ScanFace size={30} />
+          <h3>Open {method?.name || "your computer"}</h3>
+          <p>Sign in with Face ID on this device. Nothing to install.</p>
+          <button
+            className="button primary full"
+            disabled={!funnelFaceAsk}
+            onClick={signInFunnelFaceId}
+          >
+            {funnelFaceAsk ? "Continue with Face ID" : "Preparing Face ID…"}
+          </button>
+          {faceNote && <p className="form-note">{faceNote}</p>}
+          {method?.eligible && (
+            <button
+              className="text-button"
+              onClick={() => void requestAccess()}
+            >
+              Approve with a code on your computer instead
+            </button>
+          )}
+        </div>
       ) : (
         <>
           <p className="form-note">
-            {method?.eligible ? (
+            {method?.transport === "funnel" ? (
+              method.eligible ? (
+                "Connected through your encrypted public link. Approve this device once on your computer."
+              ) : (
+                "Connected through your encrypted public link."
+              )
+            ) : method?.eligible ? (
               <>
                 Signed in through Tailscale as <strong>{method.login}</strong>.
                 Approve this browser once on your computer.
@@ -565,37 +713,70 @@ export default function ConnectForm({
                 : "Connect to this computer"}
           </button>
           {(error || (method && !method.eligible)) && (
-            <div className="tailscale-help">
-              <Smartphone size={22} />
-              <h3>Connect your phone first</h3>
-              <ol>
-                <li>
-                  <a
-                    href={tailscaleAppLink()}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Install Tailscale
-                  </a>{" "}
-                  on this phone.
-                </li>
-                <li>
-                  Sign in with the same account as your computer and turn it on.
-                </li>
-                <li>Return here and reconnect.</li>
-              </ol>
-              <p>
-                On iPhone, enable MagicDNS hostname matching in Tailscale’s VPN
-                On Demand settings to reconnect automatically.
-              </p>
-              <button
-                className="button full"
-                onClick={() => setRetry((n) => n + 1)}
-              >
-                <RefreshCw size={16} />
-                Check connection
-              </button>
-            </div>
+            method?.transport === "funnel" && !error ? (
+              <div className="tailscale-help">
+                <ShieldCheck size={22} />
+                <h3>Approve this new device</h3>
+                <ol>
+                  <li>
+                    <strong>Connect without Tailscale:</strong> run{" "}
+                    <code>{method.command || "reach"} pair</code> on your
+                    computer, then tap <strong>Check connection</strong> (or scan
+                    its QR code).
+                  </li>
+                  <li>
+                    <strong>Or connect privately anytime:</strong>{" "}
+                    <a
+                      href={tailscaleAppLink()}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      install or turn on Tailscale
+                    </a>{" "}
+                    signed in to your computer’s account.
+                  </li>
+                </ol>
+                <button
+                  className="button full"
+                  onClick={() => setRetry((n) => n + 1)}
+                >
+                  <RefreshCw size={16} />
+                  Check connection
+                </button>
+              </div>
+            ) : (
+              <div className="tailscale-help">
+                <Smartphone size={22} />
+                <h3>Connect your phone first</h3>
+                <ol>
+                  <li>
+                    <a
+                      href={tailscaleAppLink()}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Install Tailscale
+                    </a>{" "}
+                    on this phone.
+                  </li>
+                  <li>
+                    Sign in with the same account as your computer and turn it on.
+                  </li>
+                  <li>Return here and reconnect.</li>
+                </ol>
+                <p>
+                  On iPhone, enable MagicDNS hostname matching in Tailscale’s VPN
+                  On Demand settings to reconnect automatically.
+                </p>
+                <button
+                  className="button full"
+                  onClick={() => setRetry((n) => n + 1)}
+                >
+                  <RefreshCw size={16} />
+                  Check connection
+                </button>
+              </div>
+            )
           )}
         </>
       )}

@@ -1,14 +1,14 @@
 import { post, type Peer } from "./api";
-import { tailnetBrowser } from "./tailnet-transport";
+import { funnelBrowser, tailnetBrowser } from "./tailnet-transport";
 
 // Reach's public link answers strangers with 404 (the door, server/index.mjs).
 // A browser that came in without the Tailscale app talks to the computer
-// through the tailnet, but its page and code (a screen opened later, a
-// reload) come from that public link: its own door key, asked for over the
-// private connection, goes with them as a cookie while its access lasts.
+// through Funnel or the browser tailnet, and its page and code (a screen
+// opened later, a reload) come from that public link: its own door key goes
+// with them as a cookie while its access lasts.
 const asked = new Set<string>();
 export function keepDoorKey(peer: Peer) {
-  if (!tailnetBrowser()) return;
+  if (!tailnetBrowser() && !funnelBrowser()) return;
   // Only the computer whose public link this page came from.
   try {
     if (new URL(peer.url).hostname !== location.hostname) return;

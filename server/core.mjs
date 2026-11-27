@@ -8,6 +8,7 @@ import { defaultFileRoots } from "./file-roots.mjs";
 import { validateBrowserRoot } from "./browser-private-paths.mjs";
 import { createMascotDeck } from "./mascots.mjs";
 import { STANDING_SECONDS, fullControlNeedsInvitation, hostGuardedPreset, presetPolicy, presetScopes, standingPolicy, validatePresetInvitation } from "./agent-presets.mjs";
+import { normalizeDeviceKey } from "./funnel-device.mjs";
 
 export const fail = (status, message) =>
   Object.assign(new Error(message), { status });
@@ -285,9 +286,31 @@ const faceJoined = (client) =>
 export const PAIRING_WINDOW_MS = 15 * 60 * 1000;
 export const pairingWindowFile = (dataDir) => path.join(dataDir, "pairing-window.json");
 export function openPairingWindow(dataDir, { now = Date.now, ms = PAIRING_WINDOW_MS } = {}) {
-  const until = now() + Math.min(ms, PAIRING_WINDOW_MS);
-  atomicJson(pairingWindowFile(dataDir), { until });
+  const current = now();
+  const until = current + Math.min(ms, PAIRING_WINDOW_MS);
+  const existing = loadJson(pairingWindowFile(dataDir), null);
+  const token =
+    typeof existing?.token === "string" &&
+    /^[A-Za-z0-9_-]{43}$/.test(existing.token) &&
+    Number.isFinite(existing?.until) &&
+    existing.until > current
+      ? existing.token
+      : crypto.randomBytes(32).toString("base64url");
+  atomicJson(pairingWindowFile(dataDir), { until, token, tokenHash: hash(token) });
   return until;
+}
+export function readPairingWindowToken(dataDir, { now = Date.now } = {}) {
+  const current = now();
+  const pairing = loadJson(pairingWindowFile(dataDir), null);
+  if (
+    !pairing ||
+    typeof pairing.token !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/.test(pairing.token) ||
+    !Number.isFinite(pairing.until) ||
+    pairing.until <= current
+  )
+    return "";
+  return pairing.token;
 }
 export function closePairingWindow(dataDir) {
   fs.rmSync(pairingWindowFile(dataDir), { force: true });
@@ -632,8 +655,15 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     }
     return client ? applyAgentPolicy(client, config) : null;
   }
-  function pair(code, name, address, identity) {
-    if (
+  function pair(code, name, address, identity, options = {}) {
+    const funnel = options.funnel === true;
+    const normalizedKey = options.deviceKey
+      ? normalizeDeviceKey(options.deviceKey.jwk || options.deviceKey)
+      : null;
+    if (funnel) {
+      if (!normalizedKey)
+        throw fail(400, "A valid device key is required to pair.");
+    } else if (
       config.tailscaleOwner &&
       (!identity ||
         identity.tagged ||
@@ -671,9 +701,14 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       name || "My browser",
       ALL_SCOPES,
       "device",
-      identity
-        ? { tailscale: { userId: identity.userId, nodeId: identity.nodeId } }
-        : {},
+      {
+        ...(!funnel && identity
+          ? { tailscale: { userId: identity.userId, nodeId: identity.nodeId } }
+          : {}),
+        ...(normalizedKey
+          ? { deviceKey: { jwk: normalizedKey.jwk, thumbprint: normalizedKey.thumbprint } }
+          : {}),
+      },
     );
     // Single use: generating a fresh code is a local-computer action.
     pairing = { code: "", expiresAt: 0, usedAt: now, usedBy: issued.name };
@@ -1399,19 +1434,66 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   // person comes in, bound to their device, and waits for the owner's Allow
   // (allowPerson) before anything else: an agent that saw the link on the
   // Mac's screen can't use it to step outside its own limits.
-  function redeemGuest(invitation, identity, { hold = false } = {}) {
-    return redeemInvitation(invitation, identity, undefined, false, hold);
+  function redeemGuest(invitation, identity, { hold = false, deviceKey = null } = {}) {
+    return redeemInvitation(invitation, identity, undefined, false, hold, deviceKey);
+  }
+  function redeemFunnelGuest(invitation, deviceKey, { hold = false } = {}) {
+    const normalized = normalizeDeviceKey(deviceKey?.jwk || deviceKey);
+    if (typeof invitation !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(invitation))
+      throw fail(401, "This guest link expired, was revoked, or has already been used.");
+    let result;
+    changeClients((latest) => {
+      const now = Date.now();
+      const client = latest.find(
+        (c) =>
+          c.kind === "guest" &&
+          sameHash(c.inviteHash, hash(invitation)) &&
+          c.expiresAt > now &&
+          !(c.inviteExpiresAt && c.inviteExpiresAt <= now),
+      );
+      if (!client)
+        throw fail(401, "This guest link expired, was revoked, or has already been used.");
+      const token = crypto.randomBytes(32).toString("base64url");
+      delete client.inviteHash;
+      delete client.inviteExpiresAt;
+      client.hash = hash(token);
+      client.redeemedAt = new Date(now).toISOString();
+      client.deviceKey = { jwk: normalized.jwk, thumbprint: normalized.thumbprint };
+      if (hold) {
+        client.macEntry = {
+          status: "waiting",
+          requestedAt: new Date(now).toISOString(),
+          keyThumbprint: normalized.thumbprint,
+          nodeName: "Browser",
+        };
+      }
+      result = {
+        token,
+        clientId: client.id,
+        expiresAt: client.expiresAt,
+        kind: client.kind,
+        scopes: client.scopes,
+        ...(client.macEntry?.status === "waiting" ? { waiting: true } : {}),
+      };
+      return latest;
+    });
+    return result;
   }
   // A pre-existing browser person also needs explicit coexistence approval:
   // its embedded Tailscale node does not prove a separate physical device.
-  function holdPerson(clientId, identity) {
+  function holdPerson(clientId, identity, { keyThumbprint } = {}) {
     let result = null;
     changeClients((latest) => {
       const client = latest.find((c) => c.id === clientId && c.kind === "guest");
-      if (!client || !identity?.nodeId || client.tailscale?.nodeId !== identity.nodeId ||
-          client.macEntry?.status === "waiting" || !(client.expiresAt > Date.now())) return latest;
-      client.macEntry = { status: "waiting", nodeId: identity.nodeId, requestedAt: new Date().toISOString(),
-        ...(typeof identity.nodeName === "string" ? { nodeName: identity.nodeName.slice(0, 160) } : {}) };
+      if (!client || client.macEntry?.status === "waiting" || !(client.expiresAt > Date.now())) return latest;
+      if (keyThumbprint) {
+        if (client.deviceKey?.thumbprint !== keyThumbprint) return latest;
+        client.macEntry = { status: "waiting", keyThumbprint, requestedAt: new Date().toISOString(), nodeName: "Browser" };
+      } else {
+        if (!identity?.nodeId || client.tailscale?.nodeId !== identity.nodeId) return latest;
+        client.macEntry = { status: "waiting", nodeId: identity.nodeId, requestedAt: new Date().toISOString(),
+          ...(typeof identity.nodeName === "string" ? { nodeName: identity.nodeName.slice(0, 160) } : {}) };
+      }
       result = { id: client.id, name: client.name, macEntry: client.macEntry };
       return latest;
     });
@@ -1508,7 +1590,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     });
     return result;
   }
-  function redeemInvitation(invitation, identity, keyThumbprint, reconnect = false, hold = false) {
+  function redeemInvitation(invitation, identity, keyThumbprint, reconnect = false, hold = false, guestDeviceKey = null) {
     const funnel = keyThumbprint !== undefined;
     if (
       typeof invitation !== "string" ||
@@ -1523,7 +1605,11 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       const client = latest.find(
         (c) =>
           ["guest", "agent"].includes(c.kind) &&
-          (funnel ? (isFunnelBrowser(c) || toolsLink(c)) && c.hosted !== true : c.browserTransport !== "funnel" && !c.browserBinding) &&
+          (funnel
+            ? guestDeviceKey
+              ? c.kind === "guest" && !c.policy?.browser
+              : (isFunnelBrowser(c) || toolsLink(c)) && c.hosted !== true
+            : c.browserTransport !== "funnel" && !c.browserBinding) &&
           sameHash(c.inviteHash, hash(invitation)) &&
           c.expiresAt > Date.now() &&
           !(c.inviteExpiresAt && c.inviteExpiresAt <= Date.now()),
@@ -1565,6 +1651,10 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
           nodeId: identity.nodeId,
           ...(identity.tagged ? { tagged: true } : {}),
         };
+      if (guestDeviceKey) {
+        const normalized = normalizeDeviceKey(guestDeviceKey.jwk || guestDeviceKey);
+        client.deviceKey = { jwk: normalized.jwk, thumbprint: normalized.thumbprint };
+      }
       delete client.inviteExpiresAt;
       if (hold && client.kind === "guest")
         client.macEntry = {
@@ -1781,6 +1871,7 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
   // agent that ended hears that it ended instead of finding nothing.
   const ENDED_KEYS_MS = 7 * 86400_000;
   const endedKeys = new Map();
+  const endedDeviceKeys = new Map();
   let endedVersion = 0;
   const endedHosted = new Map();
   const endedConnectors = new Map();
@@ -1789,6 +1880,10 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       endedKeys.set(key, Date.now() + ENDED_KEYS_MS);
       if (client.hosted === true) endedHosted.set(key, Date.now() + ENDED_KEYS_MS);
       if (client.hosted === true && typeof client.connectorHash === "string") endedConnectors.set(client.connectorHash, Date.now() + ENDED_KEYS_MS);
+    }
+    if (validBrowserBinding(client?.deviceKey?.thumbprint)) {
+      endedDeviceKeys.set(client.deviceKey.thumbprint, Date.now() + ENDED_KEYS_MS);
+      while (endedDeviceKeys.size > 256) endedDeviceKeys.delete(endedDeviceKeys.keys().next().value);
     }
     while (endedKeys.size > 256) endedKeys.delete(endedKeys.keys().next().value);
     endedVersion++;
@@ -1819,6 +1914,131 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       .flatMap((c) => [c.browserBinding, c.approvedBinding]), ...endedKeys.keys()].filter(validBrowserBinding));
     keysMemo = { revision, ended: endedVersion, at: now, keys };
     return keys;
+  }
+  let deviceKeysMemo = { revision: null, ended: -1, at: 0, keys: new Set(), jwks: new Map() };
+  function refreshDeviceKeysMemo() {
+    const now = Date.now();
+    const revision = credentialRevision();
+    if (revision === null) return { keys: new Set(), jwks: new Map() };
+    if (deviceKeysMemo.revision === revision && deviceKeysMemo.ended === endedVersion && now - deviceKeysMemo.at < 60_000)
+      return deviceKeysMemo;
+    const stored = publicDoorClients();
+    if (stored === null) return { keys: new Set(), jwks: new Map() };
+    for (const [key, until] of endedDeviceKeys) if (until <= now) endedDeviceKeys.delete(key);
+    const jwks = new Map();
+    const keys = new Set([...endedDeviceKeys.keys()].filter(validBrowserBinding));
+    for (const c of stored) {
+      if ((c.kind === "device" || c.kind === "guest") && !c.policy?.browser &&
+          validBrowserBinding(c.deviceKey?.thumbprint) && c.expiresAt > now - ENDED_KEYS_MS) {
+        keys.add(c.deviceKey.thumbprint);
+        if (c.expiresAt > now && c.deviceKey.jwk) jwks.set(c.deviceKey.thumbprint, c.deviceKey);
+      }
+    }
+    deviceKeysMemo = { revision, ended: endedVersion, at: now, keys, jwks };
+    return deviceKeysMemo;
+  }
+  function deviceFunnelKeys() {
+    return refreshDeviceKeysMemo().keys;
+  }
+  function devicePublicKey(thumbprint) {
+    if (!validBrowserBinding(thumbprint)) return null;
+    return refreshDeviceKeysMemo().jwks.get(thumbprint) || null;
+  }
+  function verifyDeviceFunnelDigest(digest, keyThumbprint) {
+    clients = loadJson(file, []);
+    if (typeof digest !== "string" || !digest || !validBrowserBinding(keyThumbprint)) return null;
+    const now = Date.now();
+    const authorized = (c) =>
+      ownerConnectionLive(c, clients) &&
+      (c.kind === "device" || c.kind === "guest") &&
+      !c.policy?.browser &&
+      c.deviceKey?.thumbprint === keyThumbprint;
+    if (!settleRotation(digest, now, authorized)) return null;
+    const client = clients.find(
+      (c) =>
+        holdsDigest(c, digest, now) &&
+        authorized(c) &&
+        !idle(c, now) &&
+        now < (c.expiresAt || Date.parse(c.createdAt) + 30 * 86400000),
+    );
+    if (!client) return null;
+    noteUse(client.id, now);
+    client.expiresAt ||= Date.parse(client.createdAt) + 30 * 86400000;
+    if (client.kind === "guest") {
+      const roots = (client.guestRoots || []).filter((root) =>
+        config.roots.some((shared) => within(shared, root)),
+      );
+      return { ...client, agentRoots: roots };
+    }
+    return applyAgentPolicy(client, config);
+  }
+  function verifyDeviceFunnel(token, keyThumbprint, expectedToken) {
+    if (!token || typeof token !== "string" || token.length > 256) return null;
+    if (expectedToken !== undefined && (typeof expectedToken !== "string" || !sameHash(hash(token), hash(expectedToken)))) return null;
+    return verifyDeviceFunnelDigest(hash(token), keyThumbprint);
+  }
+  function pairingAdmission(pairingToken = "") {
+    const now = Date.now();
+    const currentPairing = loadJson(pairingFile, null);
+    let written = -Infinity;
+    try { written = Math.floor(fs.statSync(pairingFile).mtimeMs); } catch { /* none */ }
+    const pairingUntil = Number.isFinite(currentPairing?.until) && written <= now + 2000
+      ? Math.min(currentPairing.until, written + PAIRING_WINDOW_MS)
+      : 0;
+    if (pairingUntil > now) return true;
+    if (
+      typeof pairingToken === "string" &&
+      /^[A-Za-z0-9_-]{43}$/.test(pairingToken) &&
+      typeof currentPairing?.tokenHash === "string" &&
+      pairingUntil > now &&
+      sameHash(hash(pairingToken), currentPairing.tokenHash)
+    )
+      return true;
+    return false;
+  }
+  function bindDeviceFunnelKey(clientId, publicKey) {
+    const normalized = normalizeDeviceKey(publicKey?.jwk || publicKey);
+    let result = null;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === clientId);
+      if (!client || !["device", "guest"].includes(client.kind) || client.policy?.browser || !(client.expiresAt > Date.now()))
+        throw fail(403, "Only an active device or invited guest can register a Funnel key.");
+      client.deviceKey = { jwk: normalized.jwk, thumbprint: normalized.thumbprint };
+      result = { clientId: client.id, keyThumbprint: normalized.thumbprint };
+      return latest;
+    });
+    return result;
+  }
+  function bindDeviceTailscale(token, keyThumbprint, identity) {
+    if (
+      !identity?.nodeId ||
+      !(identity.validUntil > Date.now()) ||
+      identity.tagged
+    )
+      throw fail(403, "Connect Tailscale using a personal device account.");
+    const verified = verifyDeviceFunnel(token, keyThumbprint);
+    if (!verified) throw fail(401, "Device access expired or was revoked.");
+    if (
+      verified.kind === "device" &&
+      config.tailscaleOwner &&
+      identity.userId !== config.tailscaleOwner.userId
+    )
+      throw fail(403, "Connect Tailscale using the owner account configured on this computer.");
+    let result = null;
+    changeClients((latest) => {
+      const client = latest.find((c) => c.id === verified.id);
+      if (!client || !(client.expiresAt > Date.now()))
+        throw fail(401, "Device access expired or was revoked.");
+      client.tailscale = {
+        userId: identity.userId || "",
+        nodeId: identity.nodeId,
+      };
+      if (typeof identity.nodeName === "string" && identity.nodeName)
+        client.nodeName = identity.nodeName.slice(0, 160);
+      result = { clientId: client.id, scopes: client.scopes, expiresAt: client.expiresAt };
+      return latest;
+    });
+    return result;
   }
   // Door keys (Oct 10): a browser that came in without the Tailscale app
   // talks to Reach through the tailnet, but its page and code (a screen
@@ -1893,9 +2113,10 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     connectorsMemo = { revision, ended: endedVersion, at: now, map };
     return map;
   }
-  function verifyFunnel(token, keyThumbprint) {
+  function verifyFunnel(token, keyThumbprint, expectedToken) {
     if (typeof token !== "string" || !token || token.length > 256 ||
         !validBrowserBinding(keyThumbprint)) return null;
+    if (expectedToken !== undefined && (typeof expectedToken !== "string" || !sameHash(hash(token), hash(expectedToken)))) return null;
     const digest = hash(token);
     clients = loadJson(file, []);
     const now = Date.now();
@@ -2054,6 +2275,19 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       expiresAt: Date.now() + ttlSeconds * 1000,
       ...(policy ? { policy } : {}),
       ...(options.tailscale ? { tailscale: options.tailscale } : {}),
+      ...(options.deviceKey
+        ? {
+            deviceKey: (() => {
+              const normalized = normalizeDeviceKey(options.deviceKey.jwk || options.deviceKey);
+              return { jwk: normalized.jwk, thumbprint: normalized.thumbprint };
+            })(),
+          }
+        : {}),
+      ...(options.faceJoin === true ? { faceJoin: true } : {}),
+      ...(typeof options.passkeyId === "string" && options.passkeyId
+        ? { passkeyId: options.passkeyId }
+        : {}),
+      ...(options.thisComputer === true ? { thisComputer: true } : {}),
       ...(typeof options.nodeName === "string"
         ? { nodeName: options.nodeName.slice(0, 160) }
         : {}),
@@ -2173,7 +2407,15 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
     verify,
     verifyDigest,
     verifyFunnel,
+    verifyDeviceFunnel,
+    verifyDeviceFunnelDigest,
     funnelKeys,
+    deviceFunnelKeys,
+    devicePublicKey,
+    pairingAdmission,
+    bindDeviceFunnelKey,
+    bindDeviceTailscale,
+    redeemFunnelGuest,
     issueDoorKey,
     doorKeyKnown,
     rotateCredential,
@@ -2218,8 +2460,9 @@ export function createAuth(config, { rotatePairing = true, firstDevice = () => {
       if (mascots.needs(listStoredClients())) changeClients((latest) => latest);
     },
     list: () =>
-      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ownerConnection, ...rest }) => ({
+      (endIdle(), listStoredClients()).map(({ hash, inviteHash, admission, linkHash, doorHash, ownerConnection, deviceKey, ...rest }) => ({
         ...rest,
+        ...(deviceKey?.thumbprint ? { deviceKey: { thumbprint: deviceKey.thumbprint } } : {}),
         ...(fullControlNeedsInvitation(rest.policy) ? { needsInvitation: true } : {}),
         // The owner may reopen this agent's link (Agents & people).
         ...(linkHash && rest.expiresAt > Date.now() ? { relink: true } : {}),

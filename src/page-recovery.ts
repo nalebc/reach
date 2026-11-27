@@ -104,22 +104,40 @@ export function watchPageRecovery(options: Partial<{
   let missing = false, stopped = false, opening = false;
   let pending: AbortController | undefined;
   let cover: HTMLElement | undefined;
+  let recheckTimer: number | undefined;
+  const clearRecheck = () => {
+    if (recheckTimer !== undefined) {
+      win.clearTimeout(recheckTimer);
+      recheckTimer = undefined;
+    }
+  };
   const uncover = () => { cover?.remove(); cover = undefined; };
   const check = () => {
     if (stopped || opening || !doc.body) return;
     if (doc.hidden) {
       missing = false;
+      clearRecheck();
       pending?.abort();
       return;
     }
     if (pageHasContent(doc)) {
       missing = false;
+      clearRecheck();
       pending?.abort();
       uncover();
       return;
     }
     // An ordinary React commit or startup transition may briefly be empty.
-    if (!missing) { missing = true; return; }
+    if (!missing) {
+      missing = true;
+      if (!options.every && recheckTimer === undefined) {
+        recheckTimer = win.setTimeout(() => {
+          recheckTimer = undefined;
+          check();
+        }, 150);
+      }
+      return;
+    }
     if (pending) return;
     if (!cover) {
       cover = doc.createElement("section");
@@ -155,19 +173,23 @@ export function watchPageRecovery(options: Partial<{
       finish();
     });
   };
+  const wake = () => {
+    check();
+  };
   const timer = every(check);
-  for (const event of ["pageshow", "focus", "online"]) win.addEventListener(event, check);
-  doc.addEventListener("visibilitychange", check);
-  doc.addEventListener("resume", check);
+  for (const event of ["pageshow", "focus", "online"]) win.addEventListener(event, wake);
+  doc.addEventListener("visibilitychange", wake);
+  doc.addEventListener("resume", wake);
   check();
   return () => {
     stopped = true;
+    clearRecheck();
     pending?.abort();
     clear(timer);
     uncover();
-    for (const event of ["pageshow", "focus", "online"]) win.removeEventListener(event, check);
-    doc.removeEventListener("visibilitychange", check);
-    doc.removeEventListener("resume", check);
+    for (const event of ["pageshow", "focus", "online"]) win.removeEventListener(event, wake);
+    doc.removeEventListener("visibilitychange", wake);
+    doc.removeEventListener("resume", wake);
   };
 }
 

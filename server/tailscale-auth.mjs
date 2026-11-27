@@ -148,6 +148,7 @@ export async function listenPrivateIngress({
   upgrade,
   resolveIdentity,
   publicApp,
+  publicUpgrade = null,
 }) {
   if (process.platform === "win32")
     throw Error("Private Tailscale ingress requires POSIX socket ownership and permissions.");
@@ -198,7 +199,14 @@ export async function listenPrivateIngress({
       });
   });
   server.on("upgrade", (req, socket, head) => {
-    if (fromInternet(req)) return socket.destroy();
+    ingress.add(req);
+    if (fromInternet(req)) {
+      if (!publicUpgrade || !publicUpgrade(req)) return socket.destroy();
+      Promise.resolve()
+        .then(() => upgrade(req, socket, head))
+        .catch(() => socket.destroy());
+      return;
+    }
     prepare(req)
       .then(() => upgrade(req, socket, head))
       .catch(() => socket.destroy());
@@ -248,6 +256,7 @@ export async function listenKeyedIngress({
   upgrade,
   resolveIdentity,
   publicApp,
+  publicUpgrade = null,
   peerCheck,
   // "" or why the route is closed now: "route" (another route leads to the
   // port) or "settings" (Tailscale's own no longer allow it).
@@ -352,7 +361,14 @@ export async function listenKeyedIngress({
     }
     if (!open(socket) || refuse()) return socket.destroy();
     strip(req);
-    if (fromInternet(req)) return socket.destroy();
+    ingress.add(req);
+    if (fromInternet(req)) {
+      if (!publicUpgrade || !publicUpgrade(req)) return socket.destroy();
+      Promise.resolve()
+        .then(() => upgrade(req, socket, head))
+        .catch(() => socket.destroy());
+      return;
+    }
     markSource(req);
     prepare(req)
       .then(() => upgrade(req, socket, head))

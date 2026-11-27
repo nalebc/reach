@@ -1,19 +1,24 @@
 import { useSyncExternalStore } from "react";
-import { tailnetBrowser } from "./tailnet-transport";
+import { funnelBrowser, tailnetBrowser } from "./tailnet-transport";
 import { appLink } from "./start-flow";
 
 // How this page reaches the computer: with the Tailscale app (device to
 // device when possible), Tailscale running in this browser (no phone app,
-// encrypted private relay), the public link (a guest or agent's invitation,
+// encrypted private relay), the public link (signed device or invitation,
 // through Funnel), or directly (this computer, --local).
 export type ConnectionWay = "app" | "browser" | "public" | "direct";
 type Route = { url: string; transport?: string };
 export function connectionWay(route: Route | string): ConnectionWay {
   const { url, transport } = typeof route === "string" ? { url: route, transport: undefined } : route;
   // Funnel's names end in .ts.net too: the public link first.
-  if (transport === "funnel") return "public";
+  if (
+    transport === "funnel" ||
+    funnelBrowser() ||
+    (typeof document !== "undefined" && document.documentElement.dataset.connection === "funnel")
+  )
+    return "public";
   // The start page marks the page when its own Tailscale node runs (start.ts).
-  if (tailnetBrowser() || document.documentElement.dataset.connection === "browser") return "browser";
+  if (tailnetBrowser() || (typeof document !== "undefined" && document.documentElement.dataset.connection === "browser")) return "browser";
   try {
     return new URL(url).hostname.endsWith(".ts.net") ? "app" : "direct";
   } catch {

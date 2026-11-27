@@ -647,13 +647,41 @@ export function desktopConnection(
         void answerLook(message.id, action);
         return;
       }
-      // Only replace consecutive queued moves. Button and key order is preserved.
-      if (action.type === "move" && queue.at(-1)?.action.type === "move") {
-        const previous = queue.pop();
+      // Coalesce consecutive queued moves, stale probes ahead of a click/probe,
+      // or matching-phase scrolls so fast pointer/scroll/tap bursts never stall
+      // behind the native helper.
+      const prev = queue.at(-1);
+      if (
+        (action.type === "move" && prev?.action.type === "move") ||
+        (prev?.action.type === "probe" && (action.type === "click" || action.type === "probe" || action.type === "down"))
+      ) {
+        queue.pop();
         ws.send(
           JSON.stringify({
             type: "ack",
-            id: previous.id,
+            id: prev.id,
+            ok: true,
+            skipped: true,
+          }),
+        );
+      } else if (
+        action.type === "scroll" &&
+        prev?.action.type === "scroll" &&
+        prev.action.phase === action.phase &&
+        prev.action.momentum === action.momentum &&
+        Math.abs(prev.action.dx + action.dx) <= 120 &&
+        Math.abs(prev.action.dy + action.dy) <= 120
+      ) {
+        queue.pop();
+        action = {
+          ...action,
+          dx: prev.action.dx + action.dx,
+          dy: prev.action.dy + action.dy,
+        };
+        ws.send(
+          JSON.stringify({
+            type: "ack",
+            id: prev.id,
             ok: true,
             skipped: true,
           }),

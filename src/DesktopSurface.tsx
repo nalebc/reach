@@ -7,6 +7,7 @@ import {
   type RefObject,
 } from "react";
 import type { DesktopAction } from "./useDesktopInput";
+import { onAppResume } from "./page-visible";
 import {
   boundView,
   dragView,
@@ -430,9 +431,11 @@ export default function DesktopSurface({
   useEffect(() => {
     const hidden = () => { if (document.hidden) release(); };
     const blur = () => release();
+    const unsubResume = onAppResume(() => release());
     document.addEventListener("visibilitychange", hidden);
     window.addEventListener("blur", blur);
     return () => {
+      unsubResume();
       document.removeEventListener("visibilitychange", hidden);
       window.removeEventListener("blur", blur);
     };
@@ -722,7 +725,15 @@ export default function DesktopSurface({
     else {
       const point = normalized(e.clientX, e.clientY);
       if (!point) return;
-      action({ type: "move", ...point });
+      if (
+        Math.hypot(
+          point.x - cursorRef.current.x,
+          point.y - cursorRef.current.y,
+        ) > 1e-4
+      ) {
+        moveCursor(point);
+        action({ type: "move", ...point });
+      }
       const units =
         e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? size.height : 1;
       if (e.deltaX || e.deltaY) {
@@ -759,13 +770,28 @@ export default function DesktopSurface({
   };
   const down = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") lastTouch.current = performance.now();
-    if (!ready || event.button !== 0) return;
+    if (!ready || (event.pointerType !== "touch" && event.button !== 0)) return;
+    // Clear an orphaned pointer left behind by a swallowed OS gesture or blur
+    // so a fresh primary touch/click never wedges into a phantom multi-touch.
+    if (
+      pointers.current.size > 0 &&
+      ((event.pointerType === "mouse" && event.isPrimary) ||
+        (event.isPrimary &&
+          gesture.current &&
+          performance.now() - gesture.current.at > 15000))
+    ) {
+      release();
+    }
     const stopper = stopMomentum();
     dropScroll();
     serial.current++;
     if (typing) event.preventDefault();
     else stage.current?.focus({ preventScroll: true });
-    event.currentTarget.setPointerCapture(event.pointerId);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Rapid or synthetic touches can already be inactive when capture runs.
+    }
     const p = local(event.clientX, event.clientY);
     pointers.current.set(event.pointerId, p);
     setTouching(true);
@@ -910,6 +936,17 @@ export default function DesktopSurface({
   };
   const move = (event: React.PointerEvent<HTMLDivElement>) => {
     const g = gesture.current;
+    if (
+      g &&
+      pointers.current.has(event.pointerId) &&
+      event.pointerType === "mouse" &&
+      event.isTrusted &&
+      event.buttons === 0
+    ) {
+      // Mouse button was released outside the window without delivering pointerup.
+      release();
+      return;
+    }
     if (!g || !pointers.current.has(event.pointerId)) {
       if (
         event.pointerType === "mouse" &&
@@ -988,7 +1025,8 @@ export default function DesktopSurface({
     if (g.multiple) return;
     const dx = p.x - g.last.x,
       dy = p.y - g.last.y;
-    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > MOVE_SLOP) {
+    const slop = event.pointerType === "touch" ? 12 : MOVE_SLOP;
+    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > slop) {
       tapClicks.current.reset();
       g.moved = true;
       clearHold();
@@ -1065,7 +1103,8 @@ export default function DesktopSurface({
       setGestureFeedback(null);
     }
     pointers.current.delete(event.pointerId);
-    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > MOVE_SLOP)
+    const upSlop = event.pointerType === "touch" ? 12 : MOVE_SLOP;
+    if (Math.hypot(event.clientX - g.clientStart.x, event.clientY - g.clientStart.y) > upSlop)
       g.moved = true;
     // Flush the finger's final travel. Two-finger momentum waits until both
     // fingers lift; the remaining finger never produces a click.
@@ -1075,7 +1114,12 @@ export default function DesktopSurface({
     }
     // Not held, not moved: a tap however long the finger rested (a busy
     // page can run this after HOLD_MS before the hold's own timer).
-    const tapped = !g.held && !g.multiple && !g.moved && event.button === 0;
+    // Touch pointerup can report button === -1 on some mobile browsers.
+    const tapped =
+      !g.held &&
+      !g.multiple &&
+      !g.moved &&
+      (event.pointerType === "touch" || event.button === 0);
     const point = tapped && !g.stopper && mode !== "pan"
       ? mode === "trackpad" ? cursorRef.current
         : event.pointerType === "touch" ? g.point : normalized(event.clientX, event.clientY)

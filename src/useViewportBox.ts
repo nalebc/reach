@@ -18,6 +18,7 @@ export function useViewportBox(
     const viewport = window.visualViewport;
     let frame = 0;
     let last = "";
+    let applied = "";
     let still = 0;
     // The page underneath is frozen at its top, but Safari still scrolls it
     // to show a field (coming back from the photo picker, opening the
@@ -30,23 +31,39 @@ export function useViewportBox(
       pin();
       const top = viewport?.offsetTop || 0;
       const height = viewport?.height || window.innerHeight;
-      box.style.setProperty(`--${prefix}-top`, `${top}px`);
-      box.style.setProperty(`--${prefix}-height`, `${height}px`);
-      box.style.setProperty(`--${prefix}-left`, `${viewport?.offsetLeft || 0}px`);
-      box.style.setProperty(`--${prefix}-width`, `${viewport?.width || window.innerWidth}px`);
-      box.dataset.compactViewport = String(height < 360);
-      return `${top} ${height}`;
+      const left = viewport?.offsetLeft || 0;
+      const width = viewport?.width || window.innerWidth;
+      const next = `${top} ${height} ${left} ${width}`;
+      if (next !== applied) {
+        applied = next;
+        box.style.setProperty(`--${prefix}-top`, `${top}px`);
+        box.style.setProperty(`--${prefix}-height`, `${height}px`);
+        box.style.setProperty(`--${prefix}-left`, `${left}px`);
+        box.style.setProperty(`--${prefix}-width`, `${width}px`);
+        box.dataset.compactViewport = String(height < 360);
+      }
+      return next;
     };
     // iOS reports the keyboard's size while it is still sliding in or out and
-    // says nothing once it stops (the view stayed squeezed for seconds after
-    // the keyboard closed): keep reading each frame until it holds still.
+    // says nothing once it stops: keep reading for a few frames until steady.
     const settle = () => {
+      if (document.hidden) {
+        frame = 0;
+        return;
+      }
       const now = place();
       still = now === last ? still + 1 : 0;
       last = now;
-      frame = still < 20 ? requestAnimationFrame(settle) : 0;
+      frame = still < 12 ? requestAnimationFrame(settle) : 0;
     };
     const schedule = () => {
+      if (document.hidden) {
+        if (frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
+        return;
+      }
       still = 0;
       if (!frame) frame = requestAnimationFrame(settle);
     };
@@ -58,8 +75,10 @@ export function useViewportBox(
     document.addEventListener("focusin", schedule);
     document.addEventListener("focusout", schedule);
     window.addEventListener("scroll", pin);
-    // Back from the photo picker or another app.
+    // Back from the Home Screen, photo picker or another app.
     window.addEventListener("focus", schedule);
+    window.addEventListener("pageshow", schedule);
+    document.addEventListener("resume", schedule);
     document.addEventListener("visibilitychange", schedule);
     return () => {
       cancelAnimationFrame(frame);
@@ -70,6 +89,8 @@ export function useViewportBox(
       document.removeEventListener("focusout", schedule);
       window.removeEventListener("scroll", pin);
       window.removeEventListener("focus", schedule);
+      window.removeEventListener("pageshow", schedule);
+      document.removeEventListener("resume", schedule);
       document.removeEventListener("visibilitychange", schedule);
       for (const name of ["top", "height", "left", "width"])
         box.style.removeProperty(`--${prefix}-${name}`);

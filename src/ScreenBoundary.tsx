@@ -2,6 +2,7 @@ import { Component, Suspense, type ReactNode } from "react";
 import { RefreshCw, House, TriangleAlert } from "lucide-react";
 import { Spinner } from "./ui";
 import { retryFailedPages } from "./lazy-page";
+import { currentPageMatches, freshInterfaceUrl } from "./build-reload";
 
 /** Keep navigation mounted when a page fails; retry remounts only its contents.
  * Pages whose code loads on demand show a spinner here while it arrives. */
@@ -20,6 +21,14 @@ export default class ScreenBoundary extends Component<
   }
   static getDerivedStateFromError() {
     return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    if (/(?:Failed to fetch dynamically imported module|Importing a module script failed|Unable to preload CSS|error loading dynamically imported module)/i.test(message)) {
+      void currentPageMatches().then((matches) => {
+        if (matches === false) location.replace(freshInterfaceUrl(location.href));
+      }).catch(() => {});
+    }
   }
   render() {
     if (this.state.failed)

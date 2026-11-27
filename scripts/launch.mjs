@@ -425,6 +425,7 @@ async function launchRun(options, root, ownPrivateFolders) {
           instance: reach.instance,
           since: setupSince(),
           faceId: reach.faceIdAvailable,
+          pairingOpen: () => reach.auth.pairingAdmission(),
         })
       : null;
     // The start page, and its Face ID sign-in (its only requests that

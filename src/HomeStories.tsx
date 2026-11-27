@@ -290,7 +290,7 @@ export default function HomeStories({
       .map((s): Story => ({
         key: `agent:${s.agent}:${s.id}`,
         name: s.title,
-        kind: s.agent,
+        kind: s.agent === "api" || s.agent === "antigravity" ? "chat" : s.agent,
         state:
           s.status === "waiting"
             ? "attention"

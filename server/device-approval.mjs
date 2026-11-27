@@ -7,6 +7,7 @@ import {
   sameIdentity,
   identityBinding,
 } from "./tailscale-auth.mjs";
+import { normalizeDeviceKey } from "./funnel-device.mjs";
 
 const validId = (id) => typeof id === "string" && /^[a-f0-9-]{36}$/.test(id);
 // "iphone-browser-1.tail.ts.net" -> "iphone-browser"
@@ -19,6 +20,7 @@ const baseName = (name) =>
 // device (browsers sharing the Tailscale app), or, signed in from the browser,
 // another browser of the same kind on your account ("iphone-browser").
 export function sameDevice(auth, request) {
+  if (!request?.identity?.userId || !request.identity.nodeId) return {};
   const devices = auth
     .list()
     .filter(
@@ -28,7 +30,7 @@ export function sameDevice(auth, request) {
         c.expiresAt > Date.now(),
     );
   const twin =
-    devices.find((c) => c.tailscale.nodeId === request.identity.nodeId) ||
+    devices.find((c) => c.tailscale?.nodeId === request.identity.nodeId) ||
     (/-browser$/.test(baseName(request.nodeName))
       ? devices.find(
           (c) =>
@@ -71,12 +73,17 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
     list: () => list().map(({ secretHash, token, ...rest }) => rest),
     // `thisComputer`: asked from this computer itself (server/index.mjs), kept
     // so the prompt says so and only the code typed there approves it.
-    request(identity, name, owner, { thisComputer = false } = {}) {
-      if (!ownerIdentity(identity, owner))
+    request(identity, name, owner, { thisComputer = false, funnel = false, deviceKey = null, nodeName } = {}) {
+      const normalizedKey = deviceKey ? normalizeDeviceKey(deviceKey.jwk || deviceKey) : null;
+      if (funnel) {
+        if (!normalizedKey)
+          throw fail(400, "A valid device key is required to request access.");
+      } else if (!ownerIdentity(identity, owner)) {
         throw fail(
           403,
           "Connect Tailscale using the account configured on this computer.",
         );
+      }
       if (
         typeof name !== "string" ||
         !name.trim() ||
@@ -85,9 +92,13 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       )
         throw fail(400, "Choose a device name (up to 80 characters).");
       const existing = list();
+      const sameRequester = (r) =>
+        funnel
+          ? r.transport === "funnel" && r.deviceKey?.thumbprint === normalizedKey.thumbprint
+          : r.transport !== "funnel" && sameIdentity(r.identity, identity);
       if (
         existing.length >= 32 ||
-        existing.filter((r) => sameIdentity(r.identity, identity)).length >= 3
+        existing.filter(sameRequester).length >= 3
       )
         throw fail(
           429,
@@ -97,9 +108,21 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       const request = {
         id: crypto.randomUUID(),
         name: name.trim(),
-        identity: identityBinding(identity),
-        login: identity.login,
-        nodeName: identity.nodeName,
+        ...(funnel
+          ? {
+              transport: "funnel",
+              deviceKey: { jwk: normalizedKey.jwk, thumbprint: normalizedKey.thumbprint },
+              login: "",
+              nodeName: String(nodeName || "Browser").slice(0, 160),
+            }
+          : {
+              identity: identityBinding(identity),
+              login: identity.login,
+              nodeName: identity.nodeName,
+              ...(normalizedKey
+                ? { deviceKey: { jwk: normalizedKey.jwk, thumbprint: normalizedKey.thumbprint } }
+                : {}),
+            }),
         secretHash: hash(secret),
         expiresAt: now() + 300000,
         status: "pending",
@@ -138,11 +161,15 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       );
     },
     // A request still waiting, asked about by the browser that made it (its
-    // secret, from the same Tailscale device). Changes nothing.
-    pending(id, secret, identity, owner) {
+    // secret, from the same Tailscale device or Funnel key). Changes nothing.
+    pending(id, secret, identity, owner, { keyThumbprint } = {}) {
       const r = validId(id) ? loadJson(file(id), null) : null;
+      const isFunnel = r?.transport === "funnel";
+      const identityOk = isFunnel
+        ? typeof keyThumbprint === "string" && r.deviceKey?.thumbprint === keyThumbprint
+        : ownerIdentity(identity, owner) && sameIdentity(r?.identity, identity);
       if (
-        !ownerIdentity(identity, owner) ||
+        !identityOk ||
         !r ||
         r.id !== id ||
         !(r.expiresAt > now()) ||
@@ -150,7 +177,6 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         typeof secret !== "string" ||
         secret.length > 100 ||
         !sameHash(hash(secret), r.secretHash) ||
-        !sameIdentity(r.identity, identity) ||
         fs.existsSync(file(id) + ".decision")
       )
         throw fail(
@@ -159,17 +185,20 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
         );
       return { id: r.id, name: r.name, ...(r.thisComputer === true && { thisComputer: true }) };
     },
-    poll(id, secret, identity, owner, auth) {
+    poll(id, secret, identity, owner, auth, { keyThumbprint } = {}) {
       const r = loadJson(file(id), null);
+      const isFunnel = r?.transport === "funnel";
+      const identityOk = isFunnel
+        ? typeof keyThumbprint === "string" && r.deviceKey?.thumbprint === keyThumbprint
+        : ownerIdentity(identity, owner) && sameIdentity(r?.identity, identity);
       if (
-        !ownerIdentity(identity, owner) ||
+        !identityOk ||
         !r ||
         r.id !== id ||
         !(r.expiresAt > now()) ||
         typeof secret !== "string" ||
         secret.length > 100 ||
-        !sameHash(hash(secret), r.secretHash) ||
-        !sameIdentity(r.identity, identity)
+        !sameHash(hash(secret), r.secretHash)
       )
         throw fail(
           403,
@@ -178,7 +207,7 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
       if (r.status === "issuing")
         throw fail(401, "Approval was interrupted. Request approval again.");
       // Bind subsequent writes to this server-issued record, after checking
-      // its exact ID, claimant secret and Tailscale identity above.
+      // its exact ID, claimant secret and Tailscale/Funnel identity above.
       const recordFile = file(r.id);
       const decision = loadJson(recordFile + ".decision", null);
       if (decision?.secretHash === r.secretHash && r.status === "pending") {
@@ -188,15 +217,19 @@ export function approvalStore(dataDir, { now = Date.now } = {}) {
           // another credential on retry. Interruptions fail closed for reapproval.
           atomicJson(recordFile, { ...r, status: "issuing" });
           const issued = auth.issue(r.name, ALL_SCOPES, "device", {
-            tailscale: r.identity,
+            ...(isFunnel ? {} : { tailscale: r.identity, ...sameDevice(auth, r) }),
+            ...(r.deviceKey ? { deviceKey: r.deviceKey } : {}),
             nodeName: r.nodeName,
-            ...sameDevice(auth, r),
+            ...(r.thisComputer === true ? { thisComputer: true } : {}),
           });
           r.token = issued.token;
         }
         atomicJson(recordFile, r);
       }
-      if (r.status === "approved" && !auth.verify(r.token, identity))
+      const stillValid = isFunnel
+        ? auth.verifyDeviceFunnel?.(r.token, keyThumbprint)
+        : auth.verify(r.token, identity);
+      if (r.status === "approved" && !stillValid)
         throw fail(401, "Device access was revoked. Request approval again.");
       // Retries return the same credential until the request expires; a dropped
       // response never creates a second client. Expired private receipts are cleaned by the host.

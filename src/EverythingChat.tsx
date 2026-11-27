@@ -43,6 +43,9 @@ import { BrandCourier } from "./ReachIdentity";
 import { useAppNotifications } from "./Notifications";
 import ChatAppPager from "./ChatAppPager";
 import ChatHub from "./ChatHub";
+import AnythingNewChat from "./AnythingNewChat";
+import ChatProvidersSheet from "./ChatProvidersSheet";
+import { useChatProviders } from "./chat-providers";
 import { outcomeNeeds, outcomeForChat, workflowActive } from "./outcome-navigation";
 import type { FleetConnections } from "./useFleetConnections";
 import { relayAgents } from "./Relays";
@@ -282,7 +285,13 @@ export function NewChat({
   const modeChoices: AgentMode[] =
     agent === "codex"
       ? modes || CODEX_MODE_CHOICES
-      : [
+      : agent === "antigravity"
+        ? modes || [
+            { id: "auto", label: "Auto" },
+            { id: "accept-edits", label: "Accept edits" },
+            { id: "plan", label: "Plan" },
+          ]
+        : [
           { id: "default", label: "Default" },
           ...modesFor(
             modes ||
@@ -1118,7 +1127,20 @@ export default function EverythingChat({
   const macPrompts = (shared || own).macPrompts || [];
   const notificationCounts = useAppNotifications(peer);
   const logos = useAgentLogos(peer);
+  const chatProviders = useChatProviders(peer);
+  const readyProviderCount = useMemo(
+    () => chatProviders.providers.filter((p) => p.configured || p.reachable).length,
+    [chatProviders.providers],
+  );
   const [savedAgent, setAgent] = useChatAgent();
+  const hasApiSessions = useMemo(
+    () => (sessions || []).some((s) => s.agent === "api"),
+    [sessions],
+  );
+  const hasAntigravitySessions = useMemo(
+    () => (sessions || []).some((s) => s.agent === "antigravity"),
+    [sessions],
+  );
   const apps = useMemo<ChatAppChoice[]>(() => {
     const list = AGENTS.map((agent) => ({
       agent: agent as string,
@@ -1130,26 +1152,74 @@ export default function EverythingChat({
         list.push({
           agent: item.agent,
           name: item.name || item.agent,
-          // OpenClaw has its own space; others as the Mac says (Gemini CLI's
-          // chats are read here).
-          supported: item.agent === "openclaw" || !!item.supported,
+          // OpenClaw has its own space; Antigravity is supported when local transcripts exist; others as the Mac says.
+          supported:
+            item.agent === "openclaw" ||
+            (item.agent === "antigravity" && hasAntigravitySessions) ||
+            !!item.supported,
         });
     }
-    // With more than one agent here: every agent's chats together, first
-    // (ChatHub.tsx, docs/ACROSS_AGENTS.md).
-    const here = list.filter((a) => a.supported && health.some((h) => h.agent === a.agent && h.installed));
+    if (hasAntigravitySessions && !list.some((a) => a.agent === "antigravity")) {
+      list.push({ agent: "antigravity", name: "Antigravity", supported: true });
+    }
+    if (readyProviderCount > 0 || hasApiSessions) {
+      list.push({ agent: "api", name: agentLabel("api"), supported: true });
+    }
+    // With more than one agent here: every chat together, first.
+    const here = list.filter(
+      (a) =>
+        a.supported &&
+        (a.agent === "api" || a.agent === "antigravity" || health.some((h) => h.agent === a.agent && h.installed)),
+    );
     if (here.length > 1) list.unshift({ agent: "all", name: "All", supported: true });
     return list;
+  }, [health, readyProviderCount, hasApiSessions, hasAntigravitySessions]);
+  const antigravityCanReply = useMemo(() => {
+    const h = health.find((item) => item.agent === "antigravity") as (AgentHealth & { canReply?: boolean }) | undefined;
+    return !!h && h.installed && !!h.supported && h.canReply !== false;
   }, [health]);
-  // The apps a new chat can be started in (not All).
-  const startApps = apps.filter((app) => app.agent !== "all");
+  // The apps a new chat can be started in (not All or transcript-only Antigravity without agy CLI): always offer API & Local too.
+  const startApps = useMemo<ChatAppChoice[]>(() => {
+    const base = apps.filter(
+      (app) => app.agent !== "all" && !(app.agent === "antigravity" && app.supported && !antigravityCanReply),
+    );
+    if (!base.some((app) => app.agent === "api")) {
+      base.push({ agent: "api", name: agentLabel("api"), supported: true });
+    }
+    return base;
+  }, [apps, antigravityCanReply]);
+  useEffect(() => {
+    if (
+      (savedAgent === "codex" || savedAgent === "claude") &&
+      (hasAntigravitySessions || hasApiSessions || readyProviderCount > 0) &&
+      apps.some((app) => app.agent === "all")
+    ) {
+      try {
+        if (localStorage.getItem("reach.anythingChat.v2") !== "1") {
+          localStorage.setItem("reach.anythingChat.v2", "1");
+          setAgent("all");
+        }
+      } catch {}
+    }
+  }, [savedAgent, hasAntigravitySessions, hasApiSessions, readyProviderCount, apps]);
   const picked = apps.find((app) => app.agent === savedAgent) || apps[0];
   // The list follows the app of a chat opened or started, but All stays All:
   // Back from a chat opened there landed on Codex's list. New chat keeps its
   // own pick for that.
   const [newPick, setNewPick] = useState<string | null>(null);
+  const [preferredProviderId, setPreferredProviderId] = useState<string>("");
   const follow = (agent: string) => picked.agent !== "all" && setAgent(agent);
-  const pickNew = (agent: string) => (setNewPick(agent), follow(agent));
+  const pickNew = (agent: string, providerId = "") => {
+    setNewPick(agent);
+    if (providerId) setPreferredProviderId(providerId);
+    follow(agent);
+  };
+  const quickStart = (agent: string, providerId = "") => {
+    setNewFolder("");
+    setNewPick(agent);
+    setPreferredProviderId(providerId);
+    setSheet("new");
+  };
   // The app a new chat starts in: the one picked, the one shown, or from All,
   // the first that can answer now (not one out of usage; unknown usage still can).
   const canAnswer = (agent: string) => {
@@ -1158,17 +1228,22 @@ export default function EverythingChat({
   };
   const newApp =
     startApps.find((app) => app.agent === newPick) ||
-    (picked.agent === "all"
-      ? apps.find((app) => AGENTS.includes(app.agent as AgentName) && canAnswer(app.agent)) || apps.find((app) => app.agent !== "all") || picked
+    (picked.agent === "all" || (picked.agent === "antigravity" && picked.supported && !antigravityCanReply)
+      ? startApps.find((app) => (AGENTS.includes(app.agent as AgentName) || app.agent === "antigravity") && canAnswer(app.agent)) ||
+        (readyProviderCount > 0 ? startApps.find((app) => app.agent === "api") : undefined) ||
+        startApps[0] ||
+        picked
       : picked);
   useEffect(() => {
     // The app last picked isn't here (anymore): All when there is one.
     if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent(apps.some((app) => app.agent === "all") ? "all" : "codex");
   }, [health, apps, savedAgent]);
-  const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
-  const newAgent: AgentName = newApp.agent === "claude" || newApp.agent === "gemini" ? newApp.agent : "codex";
+  const current: AgentName =
+    picked.agent === "claude" || picked.agent === "gemini" || picked.agent === "antigravity" ? picked.agent : "codex";
+  const newAgent: AgentName =
+    newApp.agent === "claude" || newApp.agent === "gemini" || newApp.agent === "antigravity" ? newApp.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
-  const [sheet, setSheet] = useState<"" | "new" | "review">("");
+  const [sheet, setSheet] = useState<"" | "new" | "review" | "providers">("");
   // A new chat's folder, when one was asked for (a chat's menu on the list).
   const [newFolder, setNewFolder] = useState("");
   // An OpenClaw chat to open in its own space (one a chat just moved to).
@@ -1356,6 +1431,12 @@ export default function EverythingChat({
             onRelaysChanged={() => void reload()}
             workflows={flowEntry}
             health={health}
+            onProviders={() => setSheet("providers")}
+            providerCount={readyProviderCount}
+            providers={chatProviders.providers}
+            onReloadProviders={chatProviders.reload}
+            onQuickStart={quickStart}
+            currentApp="all"
           />
         </div>
       );
@@ -1371,6 +1452,47 @@ export default function EverythingChat({
             deviceRequests={macPrompts.length} onReviewDevice={() => setSheet("review")}
             onNew={() => { setNewFolder(""); setSheet("new"); }} />
         </RunCommandContext.Provider>
+      );
+    if (app.agent === "api" || app.agent === "antigravity")
+      return (
+        <div className="chat-workspace">
+          {active && <StrandedMessages peer={peer} sessions={sessions} logos={logos} onChanged={() => void reload()} />}
+          <ChatHub
+            active={active}
+            peer={peer}
+            computers={computers}
+            connections={connections}
+            onOpenOn={onOpenOn}
+            sessions={(sessions || []).filter((s) => s.agent === app.agent)}
+            relays={[]}
+            teams={[]}
+            logos={logos}
+            apps={apps}
+            appPending={appPending}
+            pending={0}
+            onAgentChange={setAgent}
+            onOpen={openRef}
+            onNew={() => {
+              if (app.agent === "api") pickNew("api");
+              else if (app.agent === "antigravity" && antigravityCanReply) pickNew("antigravity");
+              else if (app.agent === "antigravity" && readyProviderCount > 0 && !AGENTS.some((a) => canAnswer(a))) pickNew("api");
+              setNewFolder("");
+              setSheet("new");
+            }}
+            onRefresh={() => {
+              void chatProviders.reload(true);
+              void reload();
+            }}
+            workflows={flowEntry}
+            health={health}
+            onProviders={() => setSheet("providers")}
+            providerCount={readyProviderCount}
+            providers={chatProviders.providers}
+            onReloadProviders={chatProviders.reload}
+            onQuickStart={quickStart}
+            currentApp={app.agent}
+          />
+        </div>
       );
     const agent: AgentName = app.agent === "claude" || app.agent === "gemini" ? app.agent : "codex";
     const appHealth = health.find(h => h.agent === agent);
@@ -1477,9 +1599,60 @@ export default function EverythingChat({
               }}
             />
           }
-          onClose={() => (setSheet(""), setNewKind(""))}
+          onClose={() => (setSheet(""), setNewKind(""), setPreferredProviderId(""))}
         >
-          {newApp.agent === "openclaw" && clawTooOld ? (
+          <div className="ac-unified-strip" role="group" aria-label="Choose provider">
+            {startApps
+              .filter((app) => app.agent !== "api" && app.agent !== "gemini" && app.supported)
+              .map((app) => (
+                <button
+                  key={app.agent}
+                  type="button"
+                  className={`ac-unified-pill ${newApp.agent === app.agent ? "active" : ""}`}
+                  aria-pressed={newApp.agent === app.agent}
+                  onClick={() => pickNew(app.agent)}
+                >
+                  <AgentLogo agent={app.agent} name={app.name} logos={logos} size={14} />
+                  <span>{app.name}</span>
+                </button>
+              ))}
+            {chatProviders.providers
+              .filter((p) => p.configured || p.reachable)
+              .map((p) => {
+                const selected = newApp.agent === "api" && (preferredProviderId === p.id || (!preferredProviderId && chatProviders.providers.filter((x) => x.configured || x.reachable)[0]?.id === p.id));
+                return (
+                  <button
+                    key={`p:${p.id}`}
+                    type="button"
+                    className={`ac-unified-pill ${selected ? "active" : ""}`}
+                    aria-pressed={selected}
+                    onClick={() => pickNew("api", p.id)}
+                  >
+                    <AgentLogo agent="api" name={p.name} logos={logos} size={14} />
+                    <span>{p.name}</span>
+                  </button>
+                );
+              })}
+            <button
+              type="button"
+              className={`ac-unified-pill add ${newApp.agent === "api" && readyProviderCount === 0 ? "active" : ""}`}
+              onClick={() => pickNew("api")}
+            >
+              <span>{readyProviderCount > 0 ? "+ API / Local" : "+ Paste API Key / Local"}</span>
+            </button>
+          </div>
+          {newApp.agent === "api" ? (
+            <AnythingNewChat
+              peer={peer}
+              providers={chatProviders.providers}
+              loading={chatProviders.loading}
+              preferredProviderId={preferredProviderId}
+              onReloadProviders={chatProviders.reload}
+              onOpenProviders={() => setSheet("providers")}
+              onStarted={openChat}
+              autoFocus={!coarsePointer()}
+            />
+          ) : newApp.agent === "openclaw" && clawTooOld ? (
             // Its Gateway is older than Reach works with: no new chat there.
             <ClawTooOld peer={peer} to={clawTooOld.to} onChanged={recheck} />
           ) : newApp.agent === "openclaw" ? (
@@ -1592,6 +1765,16 @@ export default function EverythingChat({
             setFlow(null);
             if (flow.back) setFlowsOpen(true);
           }}
+        />
+      )}
+      {sheet === "providers" && (
+        <ChatProvidersSheet
+          peer={peer}
+          providers={chatProviders.providers}
+          presets={chatProviders.presets}
+          loading={chatProviders.loading}
+          onReload={(refresh) => chatProviders.reload(refresh)}
+          onClose={() => setSheet("")}
         />
       )}
       {sheet === "review" && (

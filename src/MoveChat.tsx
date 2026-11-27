@@ -12,6 +12,7 @@ import {
 import type { Peer } from "./api";
 import { anchorOf, ChatPopover, type Anchor } from "./ChatPopover";
 import { computerWord } from "./pause";
+import { useChatProviders } from "./chat-providers";
 import "./move-chat.css";
 
 // Continuing a chat in another app, as if it had been forked in the same app
@@ -24,7 +25,7 @@ import "./move-chat.css";
 export type MoveSource = { agent: string; id: string; title?: string; cwd?: string; through?: string };
 
 // The apps Reach chats with, in the order offered.
-const APPS = ["codex", "claude", "openclaw"];
+const APPS = ["codex", "claude", "openclaw", "antigravity"];
 // Every other app here that can take the chat.
 export const moveTargets = (agent: string, health: AgentHealth[]) =>
   APPS.filter((a) => a !== agent && health.some((h) => h.agent === a && h.installed && h.supported !== false));
@@ -117,7 +118,16 @@ export function MoveItems({
   onBack: () => void;
   onMoved: (s: AgentSession) => void;
 }) {
-  const choices = forkChoices(session.agent, health, word ?? computerWord(peer.platform));
+  const { providers } = useChatProviders(peer);
+  const baseChoices = forkChoices(session.agent, health, word ?? computerWord(peer.platform));
+  const apiChoices = providers
+    .filter((p) => p.configured || p.reachable)
+    .map((p) => ({
+      to: `api:${p.id}`,
+      name: `${p.name} (${p.kind === "local" ? "Local" : "API"})`,
+      blocked: "",
+    }));
+  const choices = [...baseChoices, ...apiChoices];
   const [asking, setAsking] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState("");
@@ -162,7 +172,7 @@ export function MoveItems({
         if (blocked)
           return (
             <button key={to} role="menuitem" className="move-item blocked" disabled aria-disabled="true">
-              <AgentLogo agent={to} name={name} logos={logos} size={20} />
+              <AgentLogo agent={to.startsWith("api:") ? "api" : to} name={name} logos={logos} size={20} />
               <span className="move-item-text">
                 <span>{name}</span>
                 <small>{blocked}</small>
@@ -177,7 +187,7 @@ export function MoveItems({
             disabled={busy}
             onClick={() => (here ? void go(to) : (setAsking(to), setProblem("")))}
           >
-            <AgentLogo agent={to} name={name} logos={logos} size={20} />
+            <AgentLogo agent={to.startsWith("api:") ? "api" : to} name={name} logos={logos} size={20} />
             <span className="move-item-text">
               <span>{name}</span>
               {here && <small>{problem || (to === session.agent && to !== "openclaw" ? "Keeps the native chat context and settings" : "Copies the conversation and tool output; uses this app’s model, tools and permissions")}</small>}

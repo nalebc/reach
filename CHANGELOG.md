@@ -8,6 +8,50 @@ release notes, so date the heading before tagging.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-11-26
+
+Unified Anything Chat (subscriptions, API keys, and local inference servers),
+private-first connection with signed Public Funnel fallback, reliable terminal
+scrolling and Home Screen PWA resume, and smoother borderless fullscreen
+Screen Control.
+
+### Added
+
+- Unified Anything Chat studio, provider registry, and streaming engine
+  supporting Venice, OpenAI, Anthropic, OpenRouter, Groq, xAI, DeepSeek,
+  Mistral, Gemini API, Hugging Face / Experiential Router, Cerebras, NVIDIA
+  NIM, Kimi, custom OpenAI/Anthropic-compatible endpoints, and auto-detected
+  local Ollama, vLLM, LM Studio, llama.cpp/MLX, Jan, and Exo servers alongside
+  Codex, Claude Code, Antigravity, Gemini CLI, and OpenClaw.
+- One-click API key and server URL onboarding that automatically identifies
+  providers by key signature or parallel model-endpoint probing, stores
+  credentials locally with `0600` permissions, and supports mid-chat model and
+  provider switching plus cross-provider conversation handoff (`@` mentions and
+  fork/continue across Codex, Claude, Antigravity, cloud APIs, and local
+  models).
+- Cryptographically signed Public Funnel device gateway allowing any browser
+  to connect rapidly when Tailscale is not installed on the client device,
+  with one-tap upgrade to Private Tailscale whenever available.
+- Live interactive Antigravity (`agy`) chat sessions with real-time streaming,
+  model and thinking selection, new conversation creation, and one-tap
+  continuation when replying from Gemini CLI transcripts.
+
+### Fixed
+
+- Terminal touch scrolling no longer conflicts with xterm v6's gesture
+  listener, preserves scrollback position across reconnect snapshots, and
+  supports smooth decaying momentum and alternate-screen wheel dispatch.
+- Standalone Home Screen PWA wakeups recover cleanly after OS suspension
+  via unified resume detection, iOS background memory guards, bounded IndexedDB
+  storage timeouts, public Funnel bootstrap fallback when opened from a private
+  Tailscale port away from home, stale socket teardown, and pruned navigation
+  history recovery.
+- Fullscreen Screen Control renders pure black edge-to-edge with no gray
+  safe-area or letterbox boxes, coalesces stale pre-tap probes so clicks land
+  without Accessibility queue lag, activates the mobile keyboard reliably on
+  first touch with iOS viewport-resize blur protection and multiline Return
+  dispatch, and organizes Screen options into clearly labeled sections.
+
 ## [0.5.2] — 2026-11-03
 
 Early-access maintenance release for foreground recovery and a quieter,

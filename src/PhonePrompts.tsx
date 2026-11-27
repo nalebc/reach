@@ -12,10 +12,10 @@ import "./phone-prompts.css";
 
 // One suggestion at a time, on Home, just above the bottom bar
 // (docs/FIRST_RUN_MATRIX.md, S and N):
-// - Signed in from the browser, without the Tailscale app: get the app. The
-//   same owner link works with either connection; the app can connect directly.
-// - With the app, in a phone's browser tab: add Reach to the Home Screen. The
-//   Home Screen copy is this same Tailscale device, so it's approved at once.
+// - Connected through the public link or browser relay, without Tailscale:
+//   prompt to install/turn on Tailscale for a faster private connection, or
+//   Skip for now.
+// - With the app, in a phone's browser tab: add Reach to the Home Screen.
 // Each comes back from time to time (nudges.ts) and stops for good once done.
 // Only for your own devices: guests come and go, agents have their own page.
 export default function PhonePrompts({ owner, url, peer, device }: { owner: boolean; url: string; peer?: Peer; device?: Device }) {
@@ -25,7 +25,6 @@ export default function PhonePrompts({ owner, url, peer, device }: { owner: bool
   const [steps, setSteps] = useState(false);
   const [settingUp, setSettingUp] = useState(false);
   const offerFallback = !!peer && !!device && device.ownerConnection !== 1 && canSetUpFallback(peer, device) && fallbackSetupNeeded(peer);
-  // Another connection or access: its setup starts over from its own row.
   useEffect(() => setSettingUp(false), [peer?.token, peer?.url, device?.id, device?.access?.kind, device?.access?.scopes.join("\n")]);
   useEffect(() => {
     // Opened from the Home Screen: it's there; never suggested again.
@@ -34,13 +33,13 @@ export default function PhonePrompts({ owner, url, peer, device }: { owner: bool
   useEffect(() => {
     if (!owner || isNative) return;
     const pick = (): NudgeName | null => {
-      if (way === "browser") return nudgeDue("tailscale-app") ? "tailscale-app" : null;
+      if (way === "public" || way === "browser") return nudgeDue("tailscale-app") ? "tailscale-app" : null;
       if (way === "app" && offerFallback && nudgeDue("fallback")) return "fallback";
       if (way === "app" && isPhone() && !standalone() && nudgeDue("home-screen")) return "home-screen";
       return null;
     };
-    // Once Home has settled; getting the app is said straight away.
-    const timer = setTimeout(() => setShown(pick()), way === "browser" ? 1500 : 4000);
+    // Once Home has settled; getting Tailscale is offered promptly.
+    const timer = setTimeout(() => setShown(pick()), way === "public" || way === "browser" ? 1200 : 4000);
     const appOn = () => {
       finishNudge("tailscale-app");
       setShown((now) => (now === "tailscale-app" ? null : now));
@@ -66,6 +65,21 @@ export default function PhonePrompts({ owner, url, peer, device }: { owner: bool
     setShown(null);
     setSteps(false);
   };
+  if (shown === "tailscale-app" && way === "public")
+    return (
+      <div className="phone-prompt" role="note" aria-label="Private connection with Tailscale">
+        <span className="phone-prompt-icon">
+          <Zap size={16} aria-hidden="true" />
+        </span>
+        <span className="phone-prompt-text">Private connection · install or turn on Tailscale for lower latency</span>
+        <a className="phone-prompt-go" href={tailscaleAppLink()} target="_blank" rel="noopener noreferrer">
+          Use Tailscale
+        </a>
+        <button className="phone-prompt-skip" aria-label="Skip for now" onClick={later}>
+          Skip for now
+        </button>
+      </div>
+    );
   if (shown === "tailscale-app")
     return (
       <div className="phone-prompt" role="note" aria-label="Get the Tailscale app">

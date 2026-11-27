@@ -439,7 +439,15 @@ self.addEventListener("fetch", event => {
     return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="5;url=${href}"><title>Reconnecting to Reach</title></head><body style="margin:0;padding:32px;background:#111816;color:#edf2ee;font:18px/1.5 system-ui"><h1>Reconnecting to Reach…</h1><p>Your connection changed. Reach will retry automatically at this same link.</p><p>Keep your computer online with Reach and Tailscale running.</p><a href="${href}" style="color:#b9efd8">Try again now</a></body></html>`, { status: 503, headers });
   };
   const network = async () => {
-    if (!navigation) return fetch(request);
+    if (!navigation) {
+      const assetController = new AbortController();
+      const assetTimer = setTimeout(() => assetController.abort(), 10000);
+      try {
+        return await fetch(request, { signal: assetController.signal });
+      } finally {
+        clearTimeout(assetTimer);
+      }
+    }
     const response = await fetch(request, { signal: controller.signal });
     if (response.type === "opaqueredirect") return response;
     if (response.status >= 500 || [408, 429].includes(response.status)) {
@@ -454,8 +462,29 @@ self.addEventListener("fetch", event => {
   };
   const serve = async () => {
     try {
-      const cache = await caches.open(shellRecords), bodies = await caches.open(shellBodies), cohorts = await shellCohorts(cache);
+      if (navigation && (url.searchParams.has("reach-reconnect") || url.searchParams.has("reach-update"))) {
+        const live = await network().catch(() => null);
+        if (live?.ok) {
+          try {
+            const records = await caches.open(shellRecords);
+            const active = await shellJson(records, "active");
+            if (active) {
+              const cohorts = await shellCohorts(records);
+              const current = cohorts.find(record => record.id === active.id);
+              const html = await live.clone().text();
+              const liveBuild = /<meta\s+name="reach-shell-build"\s+content="([a-f0-9]{64})"/i.exec(html)?.[1];
+              if (!current || (liveBuild && current.build !== liveBuild)) {
+                await records.delete(shellKey("active"));
+              }
+            }
+          } catch {}
+          return live;
+        }
+      }
+      const cache = await caches.open(shellRecords);
       const active = await shellJson(cache, "active");
+      if (!active && (navigation || !shellPins.has(event.clientId))) return network();
+      const bodies = await caches.open(shellBodies), cohorts = await shellCohorts(cache);
       const selected = cohorts.find(record => record.id === active?.id);
       const cohort = navigation ? selected : cohorts.find(record => record.id === shellPins.get(event.clientId)?.id) || selected;
       // The permanent owner URL boots the connection screen. It can resume

@@ -48,11 +48,12 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import type { Peer } from "./api";
+import { post, type Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
 import { createDraftSync } from "./draft-sync";
 import { attachedFiles, mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
 import { useViewportBox } from "./useViewportBox";
+import { onAppResume } from "./page-visible";
 import AgentAccess from "./AgentAccess";
 import { SubagentBadge, SubagentCard, TodoStrip } from "./Subagents";
 import MentionMenu from "./MentionMenu";
@@ -189,6 +190,22 @@ const SKIN = {
     menu: TextAlignStart,
     compose: SquarePen,
     where: Terminal,
+    disclaimer: "",
+  },
+  api: {
+    placeholder: "Message…",
+    app: "API & Local",
+    menu: TextAlignStart,
+    compose: SquarePen,
+    where: null,
+    disclaimer: "",
+  },
+  antigravity: {
+    placeholder: "Antigravity conversation (read-only)",
+    app: "Antigravity",
+    menu: TextAlignStart,
+    compose: SquarePen,
+    where: null,
     disclaimer: "",
   },
 } as const;
@@ -1698,7 +1715,7 @@ export default function AgentSessionView({
     () => allSiblings.filter((s) => s.agent === agent && !s.archived),
     [allSiblings, agent],
   );
-  const skin = SKIN[agent];
+  const skin = SKIN[agent] || SKIN.api;
   useClaudeFonts(peer, agent === "claude");
   const word = computerWord(peer.platform);
   const [info, setInfo] = useState<AgentSession>(initial);
@@ -2055,13 +2072,13 @@ export default function AgentSessionView({
   useEffect(() => {
     const timer = setInterval(() => void load(false), 30000);
     const shown = () => !document.hidden && void load(false);
-    document.addEventListener("visibilitychange", shown);
+    const stopResume = onAppResume(() => shown());
     // The phone's network back: read at once.
     window.addEventListener("online", shown);
     return () => {
       clearInterval(timer);
       clearTimeout(retryRead.current);
-      document.removeEventListener("visibilitychange", shown);
+      stopResume();
       window.removeEventListener("online", shown);
     };
   }, [load]);
@@ -2209,6 +2226,7 @@ export default function AgentSessionView({
       | { type: "agent"; item: SessionItem }
     )[] = [];
     for (const raw of items || []) {
+      if ((agent === "api" || agent === "antigravity") && raw.role === "assistant" && raw.status === "running" && live.streaming) continue;
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text), mentions: mentionedChats(raw.text) } : raw;
       if (item.role === "user" && !item.text && !item.images && !item.repeats && !item.skills?.length && !item.attachments?.length) continue;
@@ -2282,6 +2300,8 @@ export default function AgentSessionView({
   // Why replying isn't possible from here, if it isn't.
   const claudeHealth = health.find((h) => h.agent === "claude");
   const codexHealth = health.find((h) => h.agent === "codex");
+  const agHealth = health.find((h) => h.agent === "antigravity") as (AgentHealth & { canReply?: boolean }) | undefined;
+  const agCanReply = !!agHealth && agHealth.installed && agHealth.supported === true && agHealth.canReply !== false;
   // Where the session lives decides what sending does; writing is never
   // switched off, the note just says what will happen.
   const elsewhere =
@@ -2298,7 +2318,9 @@ export default function AgentSessionView({
     !(info.inApp && claudeHealth.app?.open);
   const blocked =
     agent === "gemini"
-      ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app from ⋯."
+      ? agCanReply
+        ? ""
+        : "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app from ⋯."
       : agent === "claude"
       ? elsewhere === "terminal"
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
@@ -2313,9 +2335,9 @@ export default function AgentSessionView({
           // In the Claude app, working or asking: nothing to say (Oct 9: "it
           // is unnecessary"); what you send goes next in the same session.
           : ""
-      : codexHealth?.tooOld
+      : agent === "codex" && codexHealth?.tooOld
         ? tooOldLine("Codex", codexHealth.tooOld.to)
-      : codexHealth && codexHealth.installed && !codexHealth.signedIn
+      : agent === "codex" && codexHealth && codexHealth.installed && !codexHealth.signedIn
         ? `Codex is signed out on your ${word}.`
         : "";
   const outOfUsage = agent === "codex" && codexHealth?.usable === false;
@@ -2381,18 +2403,28 @@ export default function AgentSessionView({
       ? claudeSignedOut && (!elsewhere || elsewhere === "claude-app")
       : agent === "codex" && !!codexHealth && codexHealth.installed && !codexHealth.signedIn && !codexHealth.tooOld;
 
-  const modelId = choice.model || info.model || null;
+  const modelId =
+    agent === "api"
+      ? choice.model || (info.providerId && info.model ? `${info.providerId}::${info.model}` : info.model || null)
+      : choice.model || info.model || null;
   const effort = choice.effort || info.effort || null;
   const selectedModel = currentModel(models, modelId);
   // The level always (a change must show); Ultracode only when no level is named.
   const effortShown = effortLabel(effort, agent) || (agent === "claude" && info.ultracode === true ? effortLabel("ultracode", agent) : "");
   const modelLabel =
-    selectedModel?.name ||
-    (agent === "codex"
-      ? modelId
-        ? modelDisplayName(modelId)
-        : ""
-      : claudeModel(modelId));
+    agent === "api"
+      ? [
+          (selectedModel as (AgentModel & { providerName?: string }) | undefined)?.providerName || info.providerName,
+          selectedModel?.name || (modelId?.includes("::") ? modelId.split("::")[1] : modelId),
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : selectedModel?.name ||
+        (agent === "codex"
+          ? modelId
+            ? modelDisplayName(modelId)
+            : ""
+          : claudeModel(modelId));
 
   const addFiles = (files: File[]) => {
     for (const file of files) {
@@ -2536,6 +2568,23 @@ export default function AgentSessionView({
     atBottom.current = true;
     try {
       await draftSync.current?.settle();
+      if (agent === "gemini" && agCanReply) {
+        const moved = await post<{ agent: AgentName; id: string }>(
+          peer,
+          `/api/sessions/gemini/${encodeURIComponent(initial.id)}/move`,
+          {
+            to: "antigravity",
+            resume: true,
+            text: message.text,
+            ...(choice.model ? { model: choice.model } : {}),
+            ...(choice.effort ? { effort: choice.effort } : {}),
+          },
+        );
+        if (!currentSend()) return;
+        setPending([]);
+        onSelect(movedChat(initial, moved));
+        return;
+      }
       const r = await sendMessage(peer, initial, {
         text: message.text,
         images: ready.filter((a) => !a.file).map((a) => a.id!),
@@ -2865,11 +2914,12 @@ export default function AgentSessionView({
         >
           <strong>{info.title}</strong>
           <small>
-            {[
-              ...new Set(
-                [projectName(info.cwd), whereLabel(info)].filter(Boolean),
-              ),
-            ].join(" · ")}
+            {(agent === "api"
+              ? [info.providerName || "API & Local", info.model].filter(Boolean)
+              : agent === "antigravity"
+                ? ["Antigravity", info.model].filter(Boolean)
+                : [...new Set([projectName(info.cwd), whereLabel(info)].filter(Boolean))]
+            ).join(" · ")}
             {autoOn && !autoOn.holding && (
               <span className="as-auto-on" role="img" aria-label="Auto-continue on" title="Auto-continue on">
                 <RefreshCw size={11} aria-hidden />
@@ -2916,7 +2966,7 @@ export default function AgentSessionView({
           <div className="as-details-scrim" aria-hidden="true" onClick={() => setDetails(false)} />
           <div className="as-details" role="menu" aria-label="Chat details">
             {!continuing && !automation && <div className="as-details-head">
-              {renaming !== null && (agent === "claude" || agent === "codex") ? (
+              {renaming !== null && (agent === "claude" || agent === "codex" || agent === "api") ? (
                 <form
                   className="as-rename"
                   onSubmit={async (e) => {
@@ -2924,7 +2974,7 @@ export default function AgentSessionView({
                     if (!renaming.trim()) return;
                     try {
                       const r = await renameSession(peer, initial, renaming);
-                      setInfo((old) => ({ ...old, title: r.title }));
+                      setInfo((old) => ({ ...old, title: r.title || renaming.trim() }));
                       setRenaming(null);
                     } catch (error) {
                       setProblem((error as Error).message);
@@ -2937,7 +2987,7 @@ export default function AgentSessionView({
               ) : (
                 <strong className="as-details-title">
                   {info.title}
-                  {(agent === "claude" || agent === "codex") && (
+                  {(agent === "claude" || agent === "codex" || agent === "api") && (
                     <button className="as-icon" aria-label="Rename chat" onClick={() => setRenaming(info.title || "")}>
                       <SquarePen size={14} />
                     </button>
@@ -2945,7 +2995,7 @@ export default function AgentSessionView({
                 </strong>
               )}
               <small>
-                {[agentLabel(agent), info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
+                {[info.providerName || agentLabel(agent), info.model, info.branch, projectName(info.cwd)].filter(Boolean).join(" · ")}
               </small>
             </div>}
             {!automation && <MoveItems
@@ -2964,7 +3014,7 @@ export default function AgentSessionView({
             />}
             {!continuing && (
               <>
-                {!automation && <button className="relay-menu-item" role="menuitem" aria-label="Automation" onClick={() => setAutomation(true)}>
+                {!automation && (agent === "claude" || agent === "codex") && <button className="relay-menu-item" role="menuitem" aria-label="Automation" onClick={() => setAutomation(true)}>
                   <Workflow size={18} />
                   <span className="move-item-text"><span>Automation</span></span>
                   {autoOn && <small className="relay-menu-value">On</small>}
@@ -3020,12 +3070,12 @@ export default function AgentSessionView({
                     <small className="relay-menu-value">{nearLimit.level === "out" ? "Out" : `${nearLimit.percent}%`}</small>
                   </button>
                 )}
-                {(agent === "claude" || agent === "codex") && (
+                {(agent === "claude" || agent === "codex" || agent === "api") && (
                   <button
                     className="as-details-delete"
                     role="menuitem"
                     onClick={async () => {
-                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : `Delete this chat? It goes to the ${peer.platform === "win32" ? "Recycle Bin" : "Trash"} on your ${word}.`))
+                      if (!window.confirm(agent === "codex" ? "Delete this chat? Codex deletes it for good." : agent === "api" ? "Delete this conversation permanently?" : `Delete this chat? It goes to the ${peer.platform === "win32" ? "Recycle Bin" : "Trash"} on your ${word}.`))
                         return;
                       try {
                         await deleteSession(peer, initial);
@@ -3565,7 +3615,67 @@ export default function AgentSessionView({
           />
         )}
         <SlashMenu menu={slashMenu} />
-        {picking && (
+        {picking && agent === "api" && (
+          <div className="as-api-models" role="menu" aria-label="Choose model">
+            <div className="as-api-models-head">
+              <strong>Switch provider or model</strong>
+              <button type="button" className="as-icon" aria-label="Close models" onClick={() => setPicking(false)}>
+                <X size={15} />
+              </button>
+            </div>
+            {modelsLoading ? (
+              <p className="as-hint"><LoaderCircle size={14} className="spin" /> Loading models…</p>
+            ) : models.length > 0 ? (
+              <div className="as-api-models-list">
+                {models.map((m) => {
+                  const ext = m as AgentModel & { providerId?: string; providerName?: string; modelId?: string };
+                  const active = m.id === modelId;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      className={`as-api-model-row ${active ? "active" : ""}`}
+                      disabled={modelSaving}
+                      onClick={async () => {
+                        setModelSaving(true);
+                        setModelError("");
+                        try {
+                          const res = await setAgentModel(peer, initial, { model: m.id }) as { session?: AgentSession };
+                          if (res.session) setInfo((prev) => ({ ...prev, ...res.session }));
+                          else {
+                            setInfo((prev) => ({
+                              ...prev,
+                              providerId: ext.providerId || prev.providerId,
+                              providerName: ext.providerName || prev.providerName,
+                              model: ext.modelId || m.name,
+                            }));
+                          }
+                          setChoice({});
+                          setPicking(false);
+                        } catch (err) {
+                          setModelError((err as Error).message);
+                        } finally {
+                          setModelSaving(false);
+                        }
+                      }}
+                    >
+                      <span className="as-api-model-copy">
+                        <strong>{m.name}</strong>
+                        <small>{ext.providerName || m.description}</small>
+                      </span>
+                      {active && <Check size={15} />}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="as-hint">{modelError || "No models available."}</p>
+            )}
+          </div>
+        )}
+        {picking && agent !== "api" && (
           <ModelMenu
             agent={agent}
             models={models}
@@ -3736,7 +3846,27 @@ export default function AgentSessionView({
             )}
           </div>
         )}
-        {agent !== "gemini" && (
+        {agent === "antigravity" && !agCanReply && (
+          <div className="as-ag-handoff" role="region" aria-label="Continue Antigravity conversation">
+            <div className="as-ag-handoff-copy">
+              <strong>Antigravity transcript</strong>
+              <small>Continue this conversation with full context in Codex, Claude, Venice, Ollama, or any API model.</small>
+            </div>
+            <button
+              type="button"
+              className="as-banner-btn primary"
+              onClick={() => {
+                setForkPoint(undefined);
+                setAutomation(false);
+                setContinuing(true);
+                setDetails(true);
+              }}
+            >
+              <GitFork size={14} /> Continue in another model…
+            </button>
+          </div>
+        )}
+        {((agent !== "gemini" && agent !== "antigravity") || agCanReply) && (
         <div className="as-box">
           <div className="as-field">
             {attachments.length > 0 && (
@@ -3785,7 +3915,7 @@ export default function AgentSessionView({
                 ))}
               </div>
             )}
-            {(agent === "claude" || agent === "codex") && mentionQuery !== null && (
+            {(agent === "claude" || agent === "codex" || agent === "api" || agent === "antigravity") && mentionQuery !== null && (
               <MentionMenu
                 peer={peer}
                 session={initial}
@@ -3815,7 +3945,13 @@ export default function AgentSessionView({
               aria-label="Message"
               rows={1}
               value={text}
-              placeholder={skin.placeholder}
+              placeholder={
+                agent === "gemini" && agCanReply
+                  ? "Reply with Gemini (continues in Antigravity)…"
+                  : agent === "antigravity"
+                    ? "Message Antigravity…"
+                    : skin.placeholder
+              }
               onChange={(e) => { setText(e.target.value); if (!sending) draftSync.current?.update(e.target.value); }}
               onPaste={(e) => {
                 const files = [...e.clipboardData.files];
@@ -3889,7 +4025,7 @@ export default function AgentSessionView({
             <span className="as-spacer" />
             {info.context && <ContextMeter used={info.context.used} window={info.context.window} />}
             {/* Always in sight, as both apps keep their model by the box. */}
-            {(agent === "codex" || agent === "claude") && (
+            {(agent === "codex" || agent === "claude" || agent === "api" || agent === "antigravity") && (
               <button
                 className="as-model"
                 aria-expanded={picking}

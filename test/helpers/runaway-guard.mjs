@@ -252,7 +252,9 @@ for (const target of new Set([assert, assert.strict]))
       if (arguments.length < 2) return original.apply(this, arguments);
       // Node already shortens two strings before diffing them.
       if (typeof actual === "string" && typeof expected === "string")
-        return original.call(this, actual, expected, message);
+        return message === undefined
+          ? original.call(this, actual, expected)
+          : original.call(this, actual, expected, message);
       if (holdsPage(actual) || holdsPage(expected)) {
         actual = standIn(actual);
         expected = standIn(expected);
@@ -262,7 +264,9 @@ for (const target of new Set([assert, assert.strict]))
         if (printedLines(actual) + printedLines(expected) > LINES)
           throw failBig(rule[0], actual, expected, message, safe);
       }
-      return original.call(this, actual, expected, message);
+      return message === undefined
+        ? original.call(this, actual, expected)
+        : original.call(this, actual, expected, message);
     };
     safe.pageSafe = true;
     target[name] = safe;

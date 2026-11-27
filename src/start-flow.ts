@@ -10,6 +10,8 @@ export type StartConfig = {
   home?: string;
   // A new browser can sign in with Face ID alone (server/face-join.mjs).
   faceId?: boolean;
+  // Whether a pairing window is currently open for Funnel device sign-in.
+  pairingOpen?: boolean;
   name: string;
   instance: string;
   tailnet: { wasm: string; exec: string } | null;
@@ -57,6 +59,7 @@ export function parseStartConfig(value: unknown): StartConfig | null {
       origin: v.origin,
       ...(sameComputer(v.home, origin) ? { home: v.home } : {}),
       ...(v.faceId === true ? { faceId: true } : {}),
+      ...(v.pairingOpen === true ? { pairingOpen: true } : {}),
       name: v.name.slice(0, 80),
       instance: v.instance,
       tailnet,
@@ -96,7 +99,7 @@ export function appLink(ua: string) {
 export async function probeDirect(
   config: StartConfig,
   fetcher: typeof fetch = fetch,
-  timeoutMs = 1800,
+  timeoutMs = 900,
 ) {
   try {
     const response = await fetcher(`${config.origin}/api/health`, {
@@ -109,6 +112,7 @@ export async function probeDirect(
     // Another computer (an invitation's) has its own instance: any Reach.
     return (
       health?.product === "Reach" &&
+      health.transport !== "funnel" &&
       (!config.instance || health.instance === config.instance)
     );
   } catch {

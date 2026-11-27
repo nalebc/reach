@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Peer } from "./api";
 import { ReconnectTimer } from "./reconnect";
+import { onAppResume } from "./page-visible";
 import {
   DesktopInputQueue,
   inputEnded,
@@ -288,17 +289,39 @@ export function useDesktopInput(
         }, () => {});
       queue?.checkTimeout();
     }, 500);
-    // The network is back, or the page is: try now, not after the wait.
+    // The network is back, or the page is: try now, not after the wait,
+    // and probe an open socket immediately so half-open post-sleep links
+    // recover without waiting for the first tap to time out.
     const wake = () => {
-      if (!document.hidden) retry.current.wake();
+      if (document.hidden) return;
+      retry.current.wake();
+      if (queue?.idle && socket.readyState === 1) {
+        void queue.enqueue({ type: "heartbeat" }).catch(() => {});
+      }
     };
+    const stopResume = onAppResume((suspended) => {
+      if (stopped || document.hidden) return;
+      if (suspended && !failed && !parked && on.current) {
+        retry.current.reset();
+        stop("Desktop control reconnecting…", true);
+        return;
+      }
+      wake();
+    });
     window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    window.addEventListener("focus", wake);
+    document.addEventListener("resume", wake);
     document.addEventListener("visibilitychange", wake);
     return () => {
       stopped = true;
+      stopResume();
       link.current = null;
       retry.current.cancel();
       window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("resume", wake);
       document.removeEventListener("visibilitychange", wake);
       clearTimeout(deadline);
       clearInterval(heartbeat);

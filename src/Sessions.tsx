@@ -18,6 +18,7 @@ import {
 } from "./terminal-keys";
 import { usePhonePaste } from "./TerminalPaste";
 import { useViewportBox } from "./useViewportBox";
+import { onAppResume } from "./page-visible";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
   altArrowWords,
@@ -165,12 +166,11 @@ export function TerminalView({
     };
     void list();
     const timer = told ? undefined : setInterval(() => void list(), 5000);
-    const shown = () => void list();
-    document.addEventListener("visibilitychange", shown);
+    const stopResume = onAppResume(() => void list());
     return () => {
       stopped = true;
       clearInterval(timer);
-      document.removeEventListener("visibilitychange", shown);
+      stopResume();
     };
   }, [showMacTabs, peer.url, peer.token, told, pushed]);
   // A shell chosen or started elsewhere (e.g. "In another folder…") comes to
@@ -315,8 +315,21 @@ export function TerminalView({
       } catch {}
     };
     let connectedRef = false;
+    let openDeadline: ReturnType<typeof setTimeout> | undefined;
+    const retire = () => {
+      clearTimeout(openDeadline);
+      const old = ws;
+      if (!old) return;
+      old.onopen = old.onmessage = old.onclose = old.onerror = null;
+      try {
+        old.close();
+      } catch {
+        /* Suspended socket already gone. */
+      }
+    };
     const connect = () => {
       if (stopped) return;
+      retire();
       setError("");
       lastSeen = Date.now();
       heartbeatSupported = false;
@@ -325,6 +338,12 @@ export function TerminalView({
       ws = new WebSocket(url);
       socket.current = ws;
       const current = ws;
+      openDeadline = setTimeout(() => {
+        if (stopped || ws !== current || connectedRef) return;
+        retire();
+        setConnected(false);
+        if (retryable) retry.schedule(connect);
+      }, 8000);
       ws.onopen = () => {
         if (stopped || ws !== current) {
           current.close();
@@ -349,9 +368,13 @@ export function TerminalView({
           return;
         }
         if (m.type === "snapshot") {
+          clearTimeout(openDeadline);
           heartbeatSupported = m.heartbeat === true;
           connectedRef = false;
           setConnected(false);
+          const prevBuf = term.buffer?.active;
+          const wasFollowing = !prevBuf || prevBuf.viewportY >= prevBuf.baseY;
+          const savedTop = prevBuf?.viewportY ?? 0;
           term.reset();
           // History can contain terminal queries. xterm parses asynchronously:
           // their replies must not become fresh input in the current shell.
@@ -362,6 +385,11 @@ export function TerminalView({
             retry.reset();
             setConnected(true);
             resize();
+            if (wasFollowing) term.scrollToBottom();
+            else {
+              const maxTop = term.buffer?.active?.baseY ?? savedTop;
+              term.scrollToLine(Math.min(savedTop, maxTop));
+            }
           });
         }
         if (m.type === "data") term.write(m.data);
@@ -371,10 +399,14 @@ export function TerminalView({
           );
           onRefresh();
         }
-        if (m.type === "error") setError(m.error);
+        if (m.type === "error") {
+          clearTimeout(openDeadline);
+          setError(m.error);
+        }
       };
       ws.onclose = (e) => {
         if (stopped || ws !== current) return;
+        clearTimeout(openDeadline);
         connectedRef = false;
         setConnected(false);
         retryable = e.code !== 4001;
@@ -386,14 +418,20 @@ export function TerminalView({
       };
     };
     connect();
-    const wake = () => {
+    const wake = (suspended = false) => {
       if (stopped || document.hidden || !retryable) return;
-      if (connectedRef && !heartbeatSupported) return;
-      if (Date.now() - lastSeen > 12000 && ws.readyState < WebSocket.CLOSING) {
+      if (!suspended && connectedRef && !heartbeatSupported) return;
+      if (
+        suspended ||
+        !ws ||
+        ws.readyState >= WebSocket.CLOSING ||
+        Date.now() - lastSeen > 12000
+      ) {
         connectedRef = false;
         setConnected(false);
-        ws.close();
-        retry.schedule(connect);
+        retire();
+        retry.reset();
+        connect();
       } else retry.wake();
     };
     const heartbeat = setInterval(() => {
@@ -409,8 +447,15 @@ export function TerminalView({
       )
         ws.send(JSON.stringify({ type: "ping" }));
     }, 4000);
-    window.addEventListener("online", wake);
-    document.addEventListener("visibilitychange", wake);
+    const onOnline = () => wake(true);
+    window.addEventListener("online", onOnline);
+    const stopResume = onAppResume((suspended) => {
+      resize();
+      try {
+        if (term.rows > 0) term.refresh(0, term.rows - 1);
+      } catch {}
+      wake(suspended);
+    });
     const input = term.onData((typed) => {
       if (stopped || !connectedRef || ws?.readyState !== WebSocket.OPEN) return;
       let data = typed;
@@ -429,14 +474,15 @@ export function TerminalView({
     return () => {
       stopped = true;
       retry.cancel();
+      clearTimeout(openDeadline);
       clearInterval(heartbeat);
-      window.removeEventListener("online", wake);
-      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", onOnline);
+      stopResume();
       ro.disconnect();
       input.dispose();
       stopHistory();
       removeTouch();
-      ws?.close();
+      retire();
       disposeLater(term);
       terminal.current = null;
       setConnected(false);

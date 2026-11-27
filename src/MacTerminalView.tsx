@@ -8,6 +8,7 @@ import { computerWord } from "./pause";
 import "./key-row.css";
 import { pastable, pasteQuestion } from "./terminal-keys";
 import { usePhonePaste } from "./TerminalPaste";
+import { onAppResume } from "./page-visible";
 import { useTerminalHistory } from "./useTerminalHistory";
 import {
   altArrowWords,
@@ -114,12 +115,37 @@ export default function MacTerminalView({
         const shown = () => {
           if (document.hidden && !stopped) return;
           document.removeEventListener("visibilitychange", shown);
+          window.removeEventListener("pageshow", shown);
+          window.removeEventListener("focus", shown);
           resume = undefined;
           resolve();
         };
         resume = shown;
         document.addEventListener("visibilitychange", shown);
+        window.addEventListener("pageshow", shown);
+        window.addEventListener("focus", shown);
       });
+    const abortWaits = () => {
+      for (const [wait, limit] of waits) {
+        clearTimeout(limit);
+        wait.abort();
+      }
+      waits.clear();
+    };
+    const stopResume = onAppResume((suspended) => {
+      try {
+        fitKeepingLatest(fit, term);
+        if (term.rows > 0) term.refresh(0, term.rows - 1);
+      } catch {}
+      resume?.();
+      if (suspended) abortWaits();
+      if (timer) void read();
+    });
+    const onOnline = () => {
+      abortWaits();
+      if (timer) void read();
+    };
+    window.addEventListener("online", onOnline);
     // Ask for the next text; the Mac answers when the tab prints, or after
     // ~20 s with nothing new.
     const follow = async () => {
@@ -237,12 +263,10 @@ export default function MacTerminalView({
     void follow();
     return () => {
       stopped = true;
+      stopResume();
+      window.removeEventListener("online", onOnline);
       resume?.();
-      for (const [wait, limit] of waits) {
-        clearTimeout(limit);
-        wait.abort();
-      }
-      waits.clear();
+      abortWaits();
       clearInterval(timer);
       clearTimeout(soon);
       ro.disconnect();

@@ -333,7 +333,10 @@ test("App keeps one meaningful connection view through loading and browser sign-
     assert.equal(view.container.querySelector('[aria-label="Copy connection report"]'), null, "ordinary startup keeps reports out of the loading view");
 
     releaseDevice();
-    await appDom.waitFor(() => fixture.starts === 1);
+    await appDom.waitFor(() =>
+      fixture.starts === 1 &&
+      view.container.querySelector(".connection-state h1")?.textContent === "Connecting to your computer",
+    );
     assert.equal(view.container.querySelector(".connection-state h1").textContent, "Connecting to your computer");
     assert.equal(count(), 1, "background setup uses the existing connection page");
     assert.equal(view.container.querySelectorAll(".connection-loading-dot").length, 1);

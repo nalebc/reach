@@ -15,6 +15,7 @@ let waiting = false;
 let generation = 0;
 let pageChecked = false;
 let checkingPage = false;
+let forceUpdateNow: (() => void) | null = null;
 export type UpdateState =
   "checking" | "current" | "offline" | "waiting" | "reloading";
 let updateState: UpdateState = "checking";
@@ -117,8 +118,23 @@ function queueUpdate({
   const held = () => busy() || away();
   const apply = () => {
     done = true;
+    forceUpdateNow = null;
     setUpdateState("reloading");
     reload();
+  };
+  forceUpdateNow = () => {
+    if (seen !== generation || done) return;
+    if (prepare && !prepared) {
+      if (preparing) return;
+      preparing = true;
+      void prepare().catch(() => false).then(() => {
+        preparing = false;
+        if (seen !== generation || done) return;
+        apply();
+      });
+      return;
+    }
+    apply();
   };
   const attempt = () => {
     if (seen !== generation || done) return;
@@ -280,10 +296,16 @@ export function noteBuild(build: unknown, options: UpdateOptions = {}) {
   checkForUpdates(options, false);
 }
 
+export function installUpdateNow() {
+  if (forceUpdateNow) forceUpdateNow();
+  else checkForUpdates();
+}
+
 // Tests start each case afresh.
 export function forgetBuild() {
   first = null;
   waiting = false;
+  forceUpdateNow = null;
   generation++;
   pageChecked = false;
   checkingPage = false;

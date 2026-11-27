@@ -44,7 +44,7 @@ export function ownerBootstrapRequest(req) {
   if (!["GET", "HEAD"].includes(req.method)) return false;
   const route = (req.url || "/").split("?", 1)[0];
   return ownerPagePath(route) || route === "/reach-start.json" ||
-    ["/favicon.svg", "/fonts.css", "/manifest.webmanifest", "/sw.js"].includes(route) ||
+    ["/favicon.svg", "/fonts.css", "/manifest.webmanifest", "/sw.js", "/offline-shell.json"].includes(route) ||
     (route.startsWith("/assets/") && NAME.test(route.slice(7))) ||
     (route.startsWith("/tailnet/") && NAME.test(route.slice(8)));
 }
@@ -84,6 +84,8 @@ export function publicStartHandler({
   // Whether a new browser can sign in with Face ID alone right now
   // (server/face-join.mjs).
   faceId = () => false,
+  // Whether new devices may request approval over Funnel right now.
+  pairingOpen = () => false,
   // What the steps at /agent call this computer (computer-word.mjs).
   platform = process.platform,
 }) {
@@ -97,6 +99,7 @@ export function publicStartHandler({
       origin: privateOrigin,
       ...(home ? { home } : {}),
       ...(faceId() ? { faceId: true } : {}),
+      ...(pairingOpen() ? { pairingOpen: true } : {}),
       name,
       instance,
       since,
@@ -221,6 +224,7 @@ export function publicStartHandler({
         "/fonts.css",
         "/manifest.webmanifest",
         "/sw.js",
+        "/offline-shell.json",
         "/agent.mjs",
       ].includes(url)
     )

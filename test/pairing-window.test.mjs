@@ -208,7 +208,7 @@ test("./reach pair opens a pairing window at the one address; without one, it sa
   await pairRunningHost(root, deps);
   assert.equal(reach.funnelWindow().reason, "pairing");
   assert.match(qrs.at(-1), /^https:\/\/studio\.example\.ts\.net\/#pair=\d{8}&name=Studio$/);
-  assert.match(said.at(-1), /sign in to Tailscale in its browser for the next 15 minutes/);
+  assert.match(said.at(-1), /connect securely in its browser for the next 15 minutes/);
 
   // A linked computer's general link belongs to the fleet home. Its code
   // and pairing window still belong to this computer.

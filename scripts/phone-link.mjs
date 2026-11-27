@@ -7,13 +7,13 @@ import { command } from "./home.mjs";
 // - only the private address (port 443 isn't Reach's, Funnel isn't allowed):
 //   the phone needs the Tailscale app.
 export function phoneLinkText({ oneAddress = false, attended = false, minutes = 15, ownLink = "", publicProblem = "" } = {}) {
+  void attended;
+  void minutes;
   const lines = [];
   if (oneAddress) {
-    lines.push("  With the Tailscale app on your phone, it opens straight away.");
-    // Linked computers share the first one's link; browser sign-in opens
-    // here, at this computer's own.
-    const signIn = ownLink ? `Open ${ownLink} and sign in` : "Sign in";
-    lines.push(`  No Tailscale app? ${signIn} to Tailscale in the phone's browser to finish owner setup.`);
+    lines.push("  With the Tailscale app on your phone, it connects privately straight away.");
+    const open = ownLink ? `Open ${ownLink}` : "Open this link";
+    lines.push(`  No Tailscale app? ${open} in any browser to connect securely and approve the code here.`);
     lines.push("  After setup, this same link reconnects automatically with the phone app on or off.");
   } else {
     lines.push("  Your phone needs the Tailscale app, on and signed in to this account. The QR holds only this private address.");

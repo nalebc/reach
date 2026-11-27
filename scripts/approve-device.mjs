@@ -19,7 +19,10 @@ export const thisComputerNote = (platform = process.platform) =>
     ? "From this PC itself: anyone signed in to Windows here could have asked. Approve only if you just asked from this PC's browser."
     : `From this ${computerWord(platform)} itself: anyone signed in to it could have asked. Approve only if you just asked from a browser on it.`;
 export function describeApproval(r, platform = process.platform) {
-  return `${r.id.slice(0, 8)} · ${safeLabel(r.name)}\n  Tailscale: ${safeLabel(r.login)} · ${safeLabel(r.nodeName)}\n  Grants owner access (including terminals and files); screen control stays separately enabled.${r.thisComputer === true ? `\n  ${thisComputerNote(platform)}` : ""}`;
+  const via = r.transport === "funnel"
+    ? `Public link (encrypted) · ${safeLabel(r.nodeName || "Browser")}`
+    : `Tailscale: ${safeLabel(r.login)} · ${safeLabel(r.nodeName)}`;
+  return `${r.id.slice(0, 8)} · ${safeLabel(r.name)}\n  ${via}\n  Grants owner access (including terminals and files); screen control stays separately enabled.${r.thisComputer === true ? `\n  ${thisComputerNote(platform)}` : ""}`;
 }
 export function decideApproval(dataDir, value) {
   const deny = value.startsWith("deny ");

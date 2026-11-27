@@ -4,6 +4,7 @@ import { viewScope, useViewScroll } from "./view-memory";
 import { useFleetConnections, type FleetConnection } from "./useFleetConnections";
 import { watchInterfaceUpdates } from "./build-reload";
 import { watchStalls } from "./stall-watch";
+import { onAppResume } from "./page-visible";
 import { reconnectUrl } from "./page-recovery";
 import InterfaceUpdates from "./InterfaceUpdates";
 import ConnectionReport from "./ConnectionReport";
@@ -109,7 +110,8 @@ import MobileNav from "./MobileNav";
 import NewSessionSheet from "./NewSessionSheet";
 import { MonitorPlay } from "lucide-react";
 import { homeOrigin, setHomeOrigin } from "./home-origin";
-import { bindPrivatePeer, installTailnet, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
+import { ensureDeviceKey } from "./device-transport";
+import { bindPrivatePeer, funnelBrowser, installTailnet, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
 import { tailnetSuffix, type StartConfig } from "./start-flow";
 import { watchPrivateRecovery } from "./app-watch";
 import { keepDoorKey } from "./door-key";
@@ -154,6 +156,8 @@ const offMenus = new Set(["apps"]);
 const menuPages = pages.filter((p) => !offMenus.has(p.id));
 const connectionLabel = (url: string) => {
   const host = new URL(url).hostname;
+  if (funnelBrowser() || (typeof document !== "undefined" && document.documentElement.dataset.connection === "funnel"))
+    return "Public link · faster with Tailscale";
   // Signed in from the browser: works anywhere, but the app connects device
   // to device and is faster.
   if (tailnetBrowser()) return "Tailscale in browser · faster with the app";
@@ -229,7 +233,7 @@ function ReachWorkspace() {
   const currentPeerKey = useRef(peerKey);
   currentPeerKey.current = peerKey;
   const device = deviceState?.key === peerKey ? deviceState.value : null;
-  const privateHandoff = useRef("");
+  const privateHandoff = useRef(new Set<string>());
   const recoveryCurrent = useRef<{ peer: Peer; device: Device } | null>(null);
   recoveryCurrent.current = peer && device ? { peer, device } : null;
   const recoverySelected = useRef(peer);
@@ -261,18 +265,28 @@ function ReachWorkspace() {
         connectionGeneration.current++;
         deviceRequest.current?.abort();
         const key = `${next.id}:${next.url}:${next.token}`;
-        privateHandoff.current = key;
+        currentPeerKey.current = key;
+        privateHandoff.current.add(key);
+        deviceRetry.current.reset();
         // The destination was authenticated before the route changed. Keep
         // this same computer's composer, attachments and pending sends mounted.
         setDeviceState({ key, value: checked });
+        setError("");
+        setConnectionDenied(false);
         setPeers(saved);
         setActive(next.id);
-        try { localStorage.setItem(activeKey(), next.id); } catch { /* Keep the current handoff when storage is full. */ }
+        try {
+          localStorage.setItem(activeKey(), next.id);
+        } catch { /* Keep the current handoff when storage is full. */ }
       },
     });
   }, [peerKey, device?.access?.kind, device?.access?.scopes.join(" ")]);
-  const setDevice = (value: Device | null) =>
-    setDeviceState(value ? { key: peerKey, value } : null);
+  const setDevice = (value: Device | null) => {
+    if (currentPeerKey.current !== peerKey) return;
+    setDeviceState((prev) =>
+      value ? { key: peerKey, value } : prev && prev.key !== peerKey ? prev : null,
+    );
+  };
   const [codexRevision, setCodexRevision] = useState(0);
   const codexStatus = useCodexAvailability(peer, device, codexRevision);
   const features = workspaceCapabilities(device, codexStatus);
@@ -486,6 +500,8 @@ function ReachWorkspace() {
   const loadDevice = useCallback(
     (quiet = false) => {
       if (!peer) return;
+      const targetKey = `${peer.id}:${peer.url}:${peer.token}`;
+      if (currentPeerKey.current !== targetKey) return;
       deviceRequest.current?.abort();
       const controller = new AbortController();
       deviceRequest.current = controller;
@@ -504,7 +520,8 @@ function ReachWorkspace() {
         .then((value) => {
           if (
             controller.signal.aborted ||
-            generation !== connectionGeneration.current
+            generation !== connectionGeneration.current ||
+            currentPeerKey.current !== targetKey
           )
             return;
           deviceRetry.current.reset();
@@ -516,7 +533,8 @@ function ReachWorkspace() {
         .catch((e) => {
           if (
             controller.signal.aborted ||
-            generation !== connectionGeneration.current
+            generation !== connectionGeneration.current ||
+            currentPeerKey.current !== targetKey
           )
             return;
           // A status refresh can fail while the independent screen/input
@@ -532,7 +550,8 @@ function ReachWorkspace() {
         .finally(() => {
           if (
             !controller.signal.aborted &&
-            generation === connectionGeneration.current
+            generation === connectionGeneration.current &&
+            currentPeerKey.current === targetKey
           )
             setLoading(false);
         });
@@ -561,11 +580,11 @@ function ReachWorkspace() {
     if (accessChanged(previous, live)) refreshDeviceRef.current(true);
   }, [live, refreshSessions]);
   useEffect(() => {
+    const handoff = privateHandoff.current.delete(peerKey);
+    if (currentPeerKey.current !== peerKey) return;
     seenChanges.current = undefined;
     connectionGeneration.current++;
     deviceRetry.current.reset();
-    const handoff = privateHandoff.current === peerKey;
-    privateHandoff.current = "";
     if (!handoff) {
       setDevice(null);
       setTerminals([]);
@@ -580,20 +599,20 @@ function ReachWorkspace() {
       if (document.hidden) return;
       if (!liveRef.current || ticks % 12 === 0) refreshSessions();
     }, 5000);
-    const shown = () => !document.hidden && refreshSessions();
-    document.addEventListener("visibilitychange", shown);
     const wake = () => {
       if (!document.hidden) loadDevice(true);
     };
+    const stopResume = onAppResume(() => {
+      refreshSessions();
+      loadDevice(true);
+    });
     const capabilitiesTimer = setInterval(wake, 30000);
     window.addEventListener("online", wake);
-    document.addEventListener("visibilitychange", wake);
     return () => {
       deviceRetry.current.cancel();
       deviceRequest.current?.abort();
       window.removeEventListener("online", wake);
-      document.removeEventListener("visibilitychange", wake);
-      document.removeEventListener("visibilitychange", shown);
+      stopResume();
       connectionGeneration.current++;
       clearInterval(t);
       clearInterval(capabilitiesTimer);
@@ -635,6 +654,10 @@ function ReachWorkspace() {
     if (afterStep.current) return;
     const n = stackDepth() - i;
     if (n <= 0) return then();
+    if (window.history.length <= 1) {
+      seedBase();
+      return then();
+    }
     afterStep.current = then;
     window.history.go(-n);
     // A browser that never says it got there still goes on.
@@ -642,7 +665,7 @@ function ReachWorkspace() {
       if (afterStep.current !== then) return;
       afterStep.current = null;
       then();
-    }, 800);
+    }, 350);
   };
   useEffect(() => {
     const onPop = () => {
@@ -718,7 +741,7 @@ function ReachWorkspace() {
     show();
   };
   const goBack = () => {
-    if (!backOne()) navigate("overview");
+    if (!backOne(() => navigate("overview"))) navigate("overview");
   };
   const openChat = (chat: { agent: AgentName | "openclaw"; id: string }) => {
     setChatTarget(chat);
@@ -1107,7 +1130,7 @@ function ReachWorkspace() {
                     connections={connections}
                     connection={connectionName(peer)}
                     appLink={
-                      connectionWay(peer) === "browser"
+                      connectionWay(peer) === "browser" || connectionWay(peer) === "public"
                         ? tailscaleAppLink()
                         : undefined
                     }
@@ -1442,12 +1465,17 @@ async function pairWith(
   name: string,
 ): Promise<Peer> {
   const origin = normalizeUrl(url);
+  const key = await ensureDeviceKey().catch(() => null);
   let response: Response;
   try {
     response = await fetch(origin + "/api/pair", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: code.replace(/\s/g, ""), name }),
+      body: JSON.stringify({
+        code: code.replace(/\s/g, ""),
+        name,
+        ...(key ? { deviceKey: key.jwk } : {}),
+      }),
       redirect: "error",
       signal: AbortSignal.timeout(12000),
     });

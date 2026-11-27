@@ -384,6 +384,15 @@ export function ChatLibraryHeader({
       <div className="chat-list-heading">
         <h1>{name}</h1>
         <span className="chat-list-device">{peer.name}</span>
+        {value !== "all" && apps.some((a) => a.agent === "all") && (
+          <button
+            type="button"
+            className="ac-app-pill"
+            onClick={() => onChange("all")}
+          >
+            All chats
+          </button>
+        )}
       </div>
       <div className="chat-heading-actions">
         <button className="chat-refresh" aria-label="Search chats" title="Search chats" aria-expanded={searchOpen} onClick={onSearch}>
@@ -958,6 +967,18 @@ export default function ChatList({
           </label>
         )}
       </div>
+      {!compact && apps.some((a) => a.agent === "all") && (
+        <div className="ac-list-banner">
+          <span>Viewing {picked?.name || agentLabel(filter)} only</span>
+          <button
+            type="button"
+            className="ac-list-banner-btn"
+            onClick={() => (onAgentChange || setLocalAgent)("all")}
+          >
+            Open Anything Chat (All)
+          </button>
+        </div>
+      )}
       {!compact && computers > 1 && <div className="chat-source-strip" aria-label="Chat source">
         <span>All</span>
         <span className="chat-source-device"><span className="chat-source-dot" /><Laptop size={16} />{peer.name}</span>
@@ -1164,7 +1185,11 @@ function ChatMenu({
   // runs, shows it archived once it reopens (agent-sessions/claude.mjs).
   const claudeOpen = session.agent === "claude" && health.find((h) => h.agent === "claude")?.app?.open;
   const noArchive =
-    session.agent === "codex" ? "" : session.agent === "claude" ? (session.inApp ? "" : "Open it in the Claude app to archive it.") : `${agentLabel(session.agent)} has no archive.`;
+    session.agent === "codex" || session.agent === "api"
+      ? ""
+      : session.agent === "claude"
+        ? (session.inApp ? "" : "Open it in the Claude app to archive it.")
+        : `${agentLabel(session.agent)} has no archive.`;
   return (
     <ChatPopover anchor={at} align="start" label={`${session.title || "New chat"} options`} onClose={onClose}>
       {!continuing && (

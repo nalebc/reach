@@ -16,6 +16,7 @@ import {
   trustedRequest,
   serveRequestHost,
   ownerIdentity,
+  fromInternet,
 } from "./tailscale-auth.mjs";
 import { approvalStore } from "./device-approval.mjs";
 import { createPasskeys } from "./passkeys.mjs";
@@ -139,6 +140,9 @@ import { Jobs } from "./jobs.mjs";
 import { createWindowsSandbox, windowsJobSandbox, windowsShellRunner, createWindowsGrantLedger, windowsRevoker } from "./windows-sandbox.mjs";
 import { Codex } from "./codex.mjs";
 import { createAgentSessions } from "./agent-sessions/index.mjs";
+import { createAntigravitySessions } from "./agent-sessions/antigravity.mjs";
+import { createChatProviders } from "./chat-providers/registry.mjs";
+import { createApiChats } from "./chat-providers/sessions.mjs";
 import { SWITCHABLE_MODES } from "./agent-sessions/claude-host.mjs";
 import { createOpenClaw, openClawRoutes } from "./openclaw.mjs";
 import { createDoneWatch } from "./agent-sessions/done-watch.mjs";
@@ -163,6 +167,7 @@ import { createToolDetector, deviceCapabilities } from "./capabilities.mjs";
 import { browserAccessRoutes, browserRouteAllowed } from "./browser-access.mjs";
 import { publicNameState } from "./public-dns.mjs";
 import { createFunnelAgentGateway } from "./funnel-agent.mjs";
+import { createFunnelDeviceGateway, normalizeDeviceKey, verifyDeviceSignature } from "./funnel-device.mjs";
 import { createHostedMcp } from "./hosted-mcp.mjs";
 import { createToolSetup } from "./tool-setup.mjs";
 import { createBrowserExtensionBridge } from "./browser-extension.mjs";
@@ -290,10 +295,14 @@ export async function createReach(overrides = {}) {
   // kind of credential, whatever its scopes.
   const faceIdOwner = (req) => {
     const client = req.reauthorize();
+    const isDeviceFunnel = funnelRequests.get(req)?.deviceFunnel === true;
+    const ownAccount = isDeviceFunnel
+      ? !client.faceJoin && !client.tailscale?.faceJoin
+      : !config.tailscaleOwner || ownerIdentity(req.reachIdentity, config.tailscaleOwner);
     if (
       client.kind !== "device" ||
       !client.scopes.includes("admin") ||
-      (config.tailscaleOwner && !ownerIdentity(req.reachIdentity, config.tailscaleOwner))
+      !ownAccount
     )
       throw fail(403, "Only your own devices use Face ID for agents.");
     return client;
@@ -424,9 +433,13 @@ export async function createReach(overrides = {}) {
   const verify = (req, token) => {
     const context = funnelRequests.get(req);
     const client = context
-      ? context.token === token && !paused && transportAvailable &&
-        auth.verifyFunnel(token, context.keyThumbprint)
+      ? context.deviceFunnel
+        ? context.downloadLink
+          ? auth.verifyDeviceFunnelDigest(token, context.keyThumbprint)
+          : auth.verifyDeviceFunnel(token, context.keyThumbprint, context.token)
+        : auth.verifyFunnel(token, context.keyThumbprint, context.token)
       : auth.verify(token, req.reachIdentity);
+    if (context && (paused || !transportAvailable)) return null;
     if (client?.kind === "guest" && client.macEntry?.status === "waiting") return null;
     if (!browserHostGuard.allows(req, client)) return null;
     if (client && req.headers.upgrade?.toLowerCase() === "websocket") {
@@ -575,6 +588,32 @@ export async function createReach(overrides = {}) {
       keepOut: (agent, id) => !!teams?.inTeam(agent, id) || codingTasks.ownsSession(agent, id),
       recoveryAllowed: (agent, id) => !codingTasks.ownsSession(agent, id),
       teamExtras: (agent, id) => teams?.leadExtras(agent, id) || null,
+    });
+  const chatProviders =
+    overrides.chatProviders ||
+    createChatProviders({
+      dataDir: config.dataDir,
+      ...(overrides.chatProviderFetch ? { fetchImpl: overrides.chatProviderFetch } : {}),
+    });
+  const antigravitySessions =
+    overrides.antigravitySessions || createAntigravitySessions();
+  const apiChats =
+    overrides.apiChats ||
+    createApiChats({
+      dataDir: config.dataDir,
+      providers: chatProviders,
+      readImage: (id) => {
+        try {
+          const p = agentImages.paths([id])?.[0];
+          if (!p) return null;
+          const ext = path.extname(p).toLowerCase();
+          const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : ext === ".gif" ? "image/gif" : "image/png";
+          return { path: p, mime };
+        } catch {
+          return null;
+        }
+      },
+      ...(overrides.chatProviderFetch ? { fetchImpl: overrides.chatProviderFetch } : {}),
     });
   // Find sessions as soon as Reach runs, not when the Chat tab opens. Tests
   // (node --test) never reach for the real agents.
@@ -1485,6 +1524,9 @@ export async function createReach(overrides = {}) {
   const acceptedOrigin = (req) =>
     validOrigin(req.headers.origin, [
       config.publicOrigin,
+      ...(config.publicOrigin?.startsWith("https://")
+        ? [`https://${new URL(config.publicOrigin).hostname}`]
+        : []),
       `http://127.0.0.1:${server.address()?.port}`,
       `http://localhost:${server.address()?.port}`,
       ...(config.allowedOrigins || []),
@@ -1599,7 +1641,11 @@ export async function createReach(overrides = {}) {
     next();
   });
   const parseJSON = express.json({ limit: "256kb" });
-  app.use((req, res, next) => funnelRequests.has(req) ? next() : parseJSON(req, res, next));
+  app.use((req, res, next) =>
+    funnelRequests.has(req) && !funnelRequests.get(req)?.streamed
+      ? next()
+      : parseJSON(req, res, next),
+  );
   app.use("/api", compressJson());
   app.use((req, res, next) => {
     if (!transportAvailable || (!privateTransportAvailable && !funnelRequests.has(req)))
@@ -1610,10 +1656,35 @@ export async function createReach(overrides = {}) {
     next();
   });
   app.get("/api/health", (req, res) =>
-    res.json({ product: "Reach", version: REACH_VERSION, instance }),
-  );
-  app.get("/api/auth/method", (req, res) =>
     res.json({
+      product: "Reach",
+      version: REACH_VERSION,
+      instance,
+      ...(req.query?.probe === "1"
+        ? {
+            transport: funnelRequests.has(req) || fromInternet(req)
+              ? "funnel"
+              : trustedRequest(req)
+                ? "private"
+                : "local",
+          }
+        : {}),
+    }),
+  );
+  app.get("/api/auth/method", (req, res) => {
+    const funnelCtx = funnelRequests.get(req);
+    if (funnelCtx?.deviceFunnel) {
+      return res.json({
+        method: config.tailscaleOwner ? "tailscale" : "pairing",
+        transport: "funnel",
+        eligible: !!funnelCtx.pairingOpen,
+        pairingOpen: !!funnelCtx.pairingOpen,
+        ...(passkeys?.has() ? { faceId: true } : {}),
+        name: config.name,
+        command,
+      });
+    }
+    return res.json({
       method: config.tailscaleOwner ? "tailscale" : "pairing",
       eligible: config.tailscaleOwner
         ? ownerIdentity(req.reachIdentity, config.tailscaleOwner)
@@ -1629,8 +1700,8 @@ export async function createReach(overrides = {}) {
       // How this computer's Reach is run, for the phone's hints: reach,
       // ./reach, or .\reach.cmd on Windows (scripts/home.mjs).
       command,
-    }),
-  );
+    });
+  });
   app.use("/api", (req, res, next) => {
     if (config.tailscaleOwner && !funnelRequests.has(req) && (!trustedRequest(req) || !req.reachIdentity))
       return res.status(403).json({
@@ -1651,25 +1722,36 @@ export async function createReach(overrides = {}) {
     notify({ category: "access", title: `${name} wants to come in`, body: `An agent is using this Mac, so you allow each new person once${device ? ` (${person.macEntry.nodeName})` : ""}.`, icon: "agent", tag: `person-waiting-${person.id}` });
     for (const nudge of presenceNudges) nudge();
   };
-  const ownerDeviceRoutes = new Set(["sessions", "push", "notifications", "reach"]);
+  const ownerDeviceRoutes = new Set(["sessions", "chat", "push", "notifications", "reach"]);
   const redeemRoutes = ["/api/guest/redeem", "/api/invitations/redeem"];
   app.use("/api", async (req, res, next) => {
     const route = (req.originalUrl || req.url || "").split("?", 1)[0];
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     const context = funnelRequests.get(req);
-    const verified = () => context ? context.token === token && auth.verifyFunnel(token, context.keyThumbprint) : auth.verify(token, req.reachIdentity);
+    const verified = () =>
+      context
+        ? context.deviceFunnel
+          ? auth.verifyDeviceFunnel(token, context.keyThumbprint, context.token)
+          : auth.verifyFunnel(token, context.keyThumbprint, context.token)
+        : auth.verify(token, req.reachIdentity);
     const initialClient = token ? verified() : null;
     // These credentials can never use owner APIs. Refuse them before a
     // host-identity lookup can turn a permission denial into an outage.
     if (initialClient && initialClient.kind !== "device" && ownerDeviceRoutes.has(req.path.split("/")[1].toLowerCase()))
       return res.status(403).json({ error: "This credential does not grant admin access." });
     // A person waiting for your Allow reads that, whatever else is going on.
-    if (token && !context) {
+    if (token && (!context || context.deviceFunnel)) {
       let client = initialClient;
       if (client?.kind === "guest" && agentsActive()) {
         await browserHostGuard.refresh();
-        if (browserHostGuard.needsPersonApproval(req, client)) {
-          const waiting = auth.holdPerson(client.id, req.reachIdentity);
+        const needsFunnelAllow =
+          context?.deviceFunnel &&
+          client.macEntry?.status !== "allowed" &&
+          client.macEntry?.status !== "waiting";
+        if (needsFunnelAllow || (!context && browserHostGuard.needsPersonApproval(req, client))) {
+          const waiting = context?.deviceFunnel
+            ? auth.holdPerson(client.id, null, { keyThumbprint: context.keyThumbprint })
+            : auth.holdPerson(client.id, req.reachIdentity);
           if (waiting) personWaiting(waiting);
           client = verified();
         }
@@ -1688,10 +1770,16 @@ export async function createReach(overrides = {}) {
     if (agentsActive()) {
       await browserHostGuard.refresh();
       const client = verified();
-      // These two handlers check the pinned owner relationship themselves
+      // These handlers check the pinned owner relationship themselves
       // and require a signed, identity-bound proof. Ordinary sign-in and
       // owner APIs remain guarded before a credential has been issued.
-      const ownerProof = req.method === "POST" && ["/api/auth/owner-connection/challenge", "/api/auth/owner-connection/join"].includes(route);
+      const ownerProof =
+        req.method === "POST" &&
+        [
+          "/api/auth/owner-connection/challenge",
+          "/api/auth/owner-connection/join",
+          "/api/device/bind-private",
+        ].includes(route);
       if (!ownerProof && !auth.isBrowserAppAdmission(req) && !browserHostGuard.allows(req, client)) {
         // A person opening their invitation comes in beside the agent, and
         // waits for your Allow (the redeem route holds them). Not on this
@@ -1699,7 +1787,7 @@ export async function createReach(overrides = {}) {
         const invited = req.method === "POST" && redeemRoutes.includes(route)
           ? auth.unopenedInvitation(req.body?.invitation) : null;
         if (invited?.kind === "guest") {
-          if (browserHostGuard.onHost(req)) throw fail(403, personOnHostMessage);
+          if (!context?.deviceFunnel && browserHostGuard.onHost(req)) throw fail(403, personOnHostMessage);
           return next();
         }
         browserHostGuard.assertRequest(req, client);
@@ -1741,12 +1829,151 @@ export async function createReach(overrides = {}) {
     const joined = ownerConnections.join(req.reachIdentity, req.body, connection => browserHostGuard.assertOwnerConnection(req, connection));
     res.json({ ...joined, device: { id: device.id, computerId: device.computerId, name: config.name, platform: hostPlatform } });
   });
+  let funnelFaceJoined = [];
+  const funnelFaceLimit = rateLimit({
+    windowMs: 60_000,
+    limit: 20,
+    store: new MemoryStore(),
+    keyGenerator: (req) => String(funnelRequests.get(req)?.keyThumbprint || req.socket.remoteAddress || "unknown"),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    identifier: "funnel-face-passkey",
+    message: { error: "Too many Face ID attempts. Wait a minute and try again." },
+  });
+  app.post("/api/auth/face-passkey/options", funnelFaceLimit, (req, res) => {
+    const context = funnelRequests.get(req);
+    if (!context?.deviceFunnel || !passkeys?.has())
+      throw fail(404, "Face ID sign-in isn't set up on this computer.");
+    res.json(passkeys.publicOptions());
+  });
+  app.post("/api/auth/face-passkey/join", funnelFaceLimit, (req, res) => {
+    const context = funnelRequests.get(req);
+    if (!context?.deviceFunnel || !context.deviceKey || !passkeys?.has())
+      throw fail(404, "Face ID sign-in isn't set up on this computer.");
+    const passkey = passkeys.verifyPublic(req.body?.id, req.body?.credential);
+    const now = Date.now();
+    funnelFaceJoined = funnelFaceJoined.filter((at) => at > now - 3600000);
+    if (funnelFaceJoined.length >= 12)
+      throw fail(429, "Too many new browsers signed in this hour. Try again later.");
+    funnelFaceJoined.push(now);
+    const asked = req.body?.name;
+    const name =
+      typeof asked === "string" && asked.trim() && !/[\x00-\x1f\x7f]/.test(asked)
+        ? asked.trim().slice(0, 80)
+        : "Browser";
+    const issued = auth.issue(name, ALL_SCOPES, "device", {
+      deviceKey: context.deviceKey,
+      faceJoin: true,
+      passkeyId: passkey.id,
+      nodeName: name,
+    });
+    record("security", `${name}: a new browser signed in with Face ID`);
+    res.json({
+      status: "approved",
+      token: issued.token,
+      device: { ...device, name: config.name, platform: hostPlatform },
+    });
+  });
+  const bindNonces = new Map();
+  const rememberBindNonce = (key, now) => {
+    for (const [entry, until] of bindNonces) if (until <= now) bindNonces.delete(entry);
+    if (bindNonces.has(key)) throw fail(409, "This route proof was already used.");
+    if (bindNonces.size >= 1024) bindNonces.delete(bindNonces.keys().next().value);
+    bindNonces.set(key, now + 120_000);
+  };
+  // Bind a P-256 Funnel device key onto an already-approved private device so
+  // turning off Tailscale falls back to Funnel immediately without re-pairing.
+  app.post("/api/device/funnel-key", ownerConnectionLimit, (req, res) => {
+    const token = req.headers.authorization?.replace(/^Bearer /, "");
+    const client = verify(req, token);
+    if (!client || !["device", "guest"].includes(client.kind) || client.policy?.browser)
+      throw fail(403, "Only an approved device or invited guest can register a Funnel key.");
+    const issuedAt = req.body?.issuedAt;
+    const nonce = req.body?.nonce;
+    const now = Date.now();
+    if (
+      !Number.isSafeInteger(issuedAt) ||
+      Math.abs(now - issuedAt) > 60_000 ||
+      typeof nonce !== "string" ||
+      !/^[A-Za-z0-9_-]{16,64}$/.test(nonce)
+    )
+      throw fail(400, "Invalid device key proof timestamp.");
+    const normalized = normalizeDeviceKey(req.body?.publicKey);
+    const payload = `reach-bind-funnel-v1\n${device.id}\n${normalized.thumbprint}\n${issuedAt}\n${nonce}`;
+    if (!verifyDeviceSignature(normalized.publicKey, payload, req.body?.signature))
+      throw fail(400, "Invalid device key proof.");
+    rememberBindNonce(`funnel:${normalized.thumbprint}:${nonce}`, now);
+    const bound = auth.bindDeviceFunnelKey(client.id, normalized.jwk);
+    res.json({ ...bound, ok: true });
+  });
+  // Bind a newly-detected private Tailscale node onto an existing Funnel-paired
+  // device when the browser proves possession of its enrolled P-256 key.
+  app.post("/api/device/bind-private", ownerConnectionLimit, async (req, res) => {
+    if (funnelRequests.has(req) || !trustedRequest(req) || !req.reachIdentity)
+      throw fail(403, "Connect through Tailscale to upgrade to the private route.");
+    if (thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps()))
+      throw fail(403, "Set up this computer's own browser with its local approval.");
+    const token = req.headers.authorization?.replace(/^Bearer /, "");
+    const thumbprint = req.body?.keyThumbprint;
+    const issuedAt = req.body?.issuedAt;
+    const nonce = req.body?.nonce;
+    const now = Date.now();
+    if (
+      typeof token !== "string" ||
+      !token ||
+      typeof thumbprint !== "string" ||
+      !Number.isSafeInteger(issuedAt) ||
+      Math.abs(now - issuedAt) > 60_000 ||
+      typeof nonce !== "string" ||
+      !/^[A-Za-z0-9_-]{16,64}$/.test(nonce)
+    )
+      throw fail(400, "Invalid private route upgrade proof.");
+    const storedKey = auth.devicePublicKey(thumbprint);
+    if (!storedKey) throw fail(401, "This device key is no longer active.");
+    const host = config.publicOrigin?.startsWith("https://")
+      ? new URL(config.publicOrigin).hostname.toLowerCase()
+      : "";
+    const payload = `reach-bind-private-v1\n${host}\n${thumbprint}\n${issuedAt}\n${nonce}`;
+    if (!verifyDeviceSignature(storedKey.jwk || storedKey, payload, req.body?.signature))
+      throw fail(401, "Invalid private route upgrade signature.");
+    rememberBindNonce(`private:${thumbprint}:${nonce}`, now);
+    if (agentsActive()) {
+      const candidate = auth.verifyDeviceFunnel(token, thumbprint);
+      if (candidate) {
+        const fakeReq = { reachFunnelDevice: { clientId: candidate.id, keyThumbprint: thumbprint } };
+        browserHostGuard.assertRequest(fakeReq, candidate);
+      }
+    }
+    const bound = auth.bindDeviceTailscale(token, thumbprint, req.reachIdentity);
+    res.json({
+      ...bound,
+      device: { id: device.id, computerId: device.computerId, name: config.name, platform: hostPlatform },
+    });
+  });
   app.post("/api/auth/requests", async (req, res) => {
     if (!approvals)
       throw fail(
         404,
         `Run ${command} configure on the computer to enable device approval.`,
       );
+    const funnelCtx = funnelRequests.get(req);
+    if (funnelCtx?.deviceFunnel) {
+      if (!funnelCtx.pairingOpen)
+        throw fail(403, `Pairing is closed on this link. Run ${command} pair on your computer, or turn on Tailscale.`);
+      const created = approvals.request(
+        null,
+        req.body?.name,
+        config.tailscaleOwner,
+        {
+          funnel: true,
+          deviceKey: funnelCtx.deviceKey,
+          nodeName: req.body?.nodeName || req.body?.name || "Browser",
+        },
+      );
+      return res
+        .status(202)
+        .json({ ...created, ...(passkeys?.has() ? { passkey: true } : {}) });
+    }
     // A ticket from a linked computer (src/fleet-join.ts): approved at once
     // when that computer issued it to this very device, refused otherwise, so
     // a phone joining your computers never leaves a request waiting. Without
@@ -1764,11 +1991,15 @@ export async function createReach(overrides = {}) {
     // Face ID on the phone would skip the warning (docs/parity/D-public-door.md
     // §0.8, D1).
     const fromHere = thisComputerRequest(req) || sameComputer(req, await ownTailscaleIps());
+    const optionalDeviceKey = req.body?.deviceKey ? normalizeDeviceKey(req.body.deviceKey) : null;
     const created = approvals.request(
       req.reachIdentity,
       req.body?.name,
       config.tailscaleOwner,
-      fromHere ? { thisComputer: true } : undefined,
+      {
+        ...(fromHere ? { thisComputer: true } : {}),
+        ...(optionalDeviceKey ? { deviceKey: optionalDeviceKey } : {}),
+      },
     );
     // A linked computer's ticket vouches for a device, not for whoever is
     // signed in here: from this computer itself, only the code typed here.
@@ -1782,12 +2013,14 @@ export async function createReach(overrides = {}) {
   });
   app.post("/api/auth/requests/:id", (req, res) => {
     if (!approvals) throw fail(404, "Device approval is not configured.");
+    const funnelCtx = funnelRequests.get(req);
     const result = approvals.poll(
       req.params.id,
       req.body?.secret,
       req.reachIdentity,
       config.tailscaleOwner,
       auth,
+      funnelCtx?.deviceFunnel ? { keyThumbprint: funnelCtx.keyThumbprint } : undefined,
     );
     res.json({
       ...result,
@@ -1803,20 +2036,22 @@ export async function createReach(overrides = {}) {
     });
   });
   // Face ID for a request of yours, from the browser that made it (its secret,
-  // on the same Tailscale device), with a passkey added from a device this
+  // on the same Tailscale device or Funnel key), with a passkey added from a device this
   // computer approved before. It approves the request; the poll above then
   // issues the credential exactly as approving here does.
   const passkeyRequest = (req) => {
     if (!passkeys) throw fail(404, "Face ID isn't available on this computer.");
+    const funnelCtx = funnelRequests.get(req);
     const pending = approvals.pending(
       req.params.id,
       req.body?.secret,
       req.reachIdentity,
       config.tailscaleOwner,
+      funnelCtx?.deviceFunnel ? { keyThumbprint: funnelCtx.keyThumbprint } : undefined,
     );
     if (pending.thisComputer)
       throw fail(403, `This request came from this ${computerWord(hostPlatform)} itself: type its code in Reach on the ${computerWord(hostPlatform)} instead.`);
-    return `${req.params.id}:${req.reachIdentity.nodeId}`;
+    return `${req.params.id}:${funnelCtx?.deviceFunnel ? funnelCtx.keyThumbprint : req.reachIdentity.nodeId}`;
   };
   app.post("/api/auth/requests/:id/passkey/options", (req, res) => {
     const binding = passkeyRequest(req);
@@ -1843,12 +2078,16 @@ export async function createReach(overrides = {}) {
       req,
       req.headers.authorization?.replace(/^Bearer /, ""),
     );
+    const isDeviceFunnel = funnelRequests.get(req)?.deviceFunnel === true;
+    const ownAccount = isDeviceFunnel
+      ? !client?.faceJoin && !client?.tailscale?.faceJoin
+      : ownerIdentity(req.reachIdentity, config.tailscaleOwner);
     if (
       !passkeys ||
       !client ||
       client.kind !== "device" ||
       !client.scopes.includes("admin") ||
-      !ownerIdentity(req.reachIdentity, config.tailscaleOwner)
+      !ownAccount
     )
       throw fail(403, "Only your own approved devices can manage Face ID.");
     return client;
@@ -1876,7 +2115,7 @@ export async function createReach(overrides = {}) {
       res.json(
         passkeys.registrationOptions(
           client.id,
-          req.reachIdentity.login || config.tailscaleOwner.login,
+          req.reachIdentity?.login || config.tailscaleOwner.login,
         ),
       );
     } catch (e) {
@@ -1913,8 +2152,12 @@ export async function createReach(overrides = {}) {
     // Also end the browsers that this passkey admitted. Old Face ID devices
     // without provenance are revoked conservatively during this migration.
     for (const client of auth.list())
-      if (client.tailscale?.faceJoin &&
-          (!client.tailscale.passkeyId || client.tailscale.passkeyId === req.params.id))
+      if (
+        (client.tailscale?.faceJoin &&
+          (!client.tailscale.passkeyId || client.tailscale.passkeyId === req.params.id)) ||
+        (client.faceJoin === true &&
+          (!client.passkeyId || client.passkeyId === req.params.id))
+      )
         endClient(client.id);
     if (guestKeys?.configured()) void tidyFace();
     record("security", "Face ID removed");
@@ -1959,7 +2202,14 @@ export async function createReach(overrides = {}) {
     platform: process.platform,
   });
   app.post(["/api/guest/redeem", "/api/invitations/redeem"], (req, res) => {
-    const joined = auth.redeemGuest(req.body?.invitation, req.reachIdentity, { hold: agentsActive() });
+    const funnelCtx = funnelRequests.get(req);
+    const optionalKey = req.body?.deviceKey ? normalizeDeviceKey(req.body.deviceKey) : null;
+    const joined = funnelCtx?.deviceFunnel
+      ? auth.redeemFunnelGuest(req.body?.invitation, funnelCtx.deviceKey, { hold: agentsActive() })
+      : auth.redeemGuest(req.body?.invitation, req.reachIdentity, {
+          hold: agentsActive(),
+          ...(optionalKey ? { deviceKey: optionalKey } : {}),
+        });
     if (joined.waiting) personWaiting(auth.list().find((client) => client.id === joined.clientId) || { id: joined.clientId });
     if (joined.status === "pending") {
       record("agent", "An invited agent is waiting for connection approval");
@@ -1979,13 +2229,24 @@ export async function createReach(overrides = {}) {
     const result = auth.pollAgentAdmission(req.params.requestId, req.body?.secret, req.reachIdentity);
     res.json({ ...result, device: invitationDevice() });
   });
-  app.post("/api/pair", (req, res) =>
-    res.json({
+  app.post("/api/pair", (req, res) => {
+    const funnelCtx = funnelRequests.get(req);
+    const optionalKey = !funnelCtx?.deviceFunnel && req.body?.deviceKey
+      ? normalizeDeviceKey(req.body.deviceKey)
+      : null;
+    return res.json({
       ...auth.pair(
         req.body?.code,
         req.body?.name,
-        req.reachIdentity?.nodeId || req.socket.remoteAddress,
+        funnelCtx?.deviceFunnel
+          ? funnelCtx.keyThumbprint
+          : req.reachIdentity?.nodeId || req.socket.remoteAddress,
         req.reachIdentity,
+        funnelCtx?.deviceFunnel
+          ? { funnel: true, deviceKey: funnelCtx.deviceKey }
+          : optionalKey
+            ? { deviceKey: optionalKey }
+            : undefined,
       ),
       device: {
         id: device.id,
@@ -1993,8 +2254,8 @@ export async function createReach(overrides = {}) {
         name: config.name,
         platform: process.platform,
       },
-    }),
-  );
+    });
+  });
   const accessRequests = new Map();
   const requestAttempts = new Map();
   const pendingRequests = () => {
@@ -3250,8 +3511,10 @@ export async function createReach(overrides = {}) {
     const file = resolve(req.query.root, req.query.path || "", req.client);
     const stat = await fsp.stat(file);
     if (!stat.isFile()) throw fail(400, "Choose a file.");
+    const funnelCtx = funnelRequests.get(req);
     const token = links.issue({
       digest: req.client.hash,
+      ...(funnelCtx?.deviceFunnel ? { keyThumbprint: funnelCtx.keyThumbprint } : {}),
       file,
       root: req.query.root,
       path: req.query.path || "",
@@ -3910,23 +4173,94 @@ export async function createReach(overrides = {}) {
       throw Object.assign(fail(error.status || 500, error.message), error.working ? { working: error.working } : {});
     }
   });
-  app.get("/api/sessions", async (req, res) =>
-    versioned(req, res, { ...(await agentSessions.list({ fresh: req.query.fresh === "1" })), relays: relays.list(), teams: teams.list(), workflows: workflows.list() }),
-  );
-  app.get("/api/sessions/health", async (req, res) =>
-    res.json({
-      agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
-        ...a,
-        ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
-        ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
-      })),
+  // Unified Anything Chat providers: API keys (Venice, OpenAI, Anthropic,
+  // OpenRouter, custom OpenAI-compatible) and local/self-hosted inference
+  // servers (Ollama, vLLM, LM Studio). Secrets stay on this computer only.
+  app.get("/api/chat/providers", async (req, res) => {
+    const providers = await chatProviders.list({
+      discover: req.query.discover !== "0",
+      refresh: req.query.refresh === "1",
+    });
+    res.json({ providers, presets: chatProviders.presets() });
+  });
+  app.post("/api/chat/providers", async (req, res) => {
+    macOwner(req);
+    const provider = chatProviders.upsert(req.body || {});
+    record("session", `Saved chat provider ${provider.name}`);
+    res.json({ provider });
+  });
+  app.delete("/api/chat/providers/:id", async (req, res) => {
+    macOwner(req);
+    const result = chatProviders.remove(req.params.id);
+    record("session", `Removed chat provider ${req.params.id}`);
+    res.json(result);
+  });
+  app.post("/api/chat/providers/test", async (req, res) => {
+    macOwner(req);
+    const result = await chatProviders.test(req.body || {});
+    res.json(result);
+  });
+  app.post("/api/chat/providers/quick", async (req, res) => {
+    macOwner(req);
+    const result = await chatProviders.autoConnectKey(req.body?.key, {
+      preferredPreset: typeof req.body?.preferredPreset === "string" ? req.body.preferredPreset : "",
+    });
+    record("session", `Connected chat provider ${result.provider?.name || "API"}`);
+    res.json(result);
+  });
+  app.get("/api/chat/providers/:id/models", async (req, res) => {
+    const result = await chatProviders.listModels(req.params.id, {
+      refresh: req.query.refresh === "1",
+    });
+    res.json(result);
+  });
+  app.get("/api/sessions", async (req, res) => {
+    const base = await agentSessions.list({ fresh: req.query.fresh === "1" });
+    const direct = apiChats.list();
+    const ag = antigravitySessions.list();
+    const extra = [...direct, ...ag];
+    const sessions = extra.length
+      ? [...(base.sessions || []), ...extra].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      : base.sessions;
+    return versioned(req, res, {
+      ...base,
+      sessions,
+      relays: relays.list(),
+      teams: teams.list(),
+      workflows: workflows.list(),
+    });
+  });
+  app.get("/api/sessions/health", async (req, res) => {
+    const agCli = antigravitySessions.hasCli?.() === true;
+    const hasAntigravity = agCli || antigravitySessions.list().length > 0;
+    const baseAgents = (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
+      ...a,
+      ...(a.agent === "antigravity" && (a.installed || hasAntigravity)
+        ? { installed: true, signedIn: true, usable: true, supported: true, canReply: agCli }
+        : {}),
+      ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
+      ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
+    }));
+    if (hasAntigravity && !baseAgents.some((a) => a.agent === "antigravity")) {
+      baseAgents.push({
+        agent: "antigravity",
+        name: "Antigravity",
+        installed: true,
+        signedIn: true,
+        usable: true,
+        supported: true,
+        canReply: agCli,
+      });
+    }
+    return res.json({
+      agents: baseAgents,
       // No team bridge open on Windows (team-bridge.mjs: its pipe, or the
       // owners helper a lead's check needs): the phone doesn't offer a Team
       // that could only fail. (A Mac's that failed to open says "Restart
       // Reach" when a team starts, as before.)
       ...((overrides.platform || process.platform) === "win32" && !teamBridgeOpen && !overrides.teams ? { teams: false } : {}),
-    }),
-  );
+    });
+  });
   // Ask (or stop asking) for one notification when an agent's limit is back.
   app.post("/api/sessions/usage-watch", async (req, res) => {
     const agent = req.body?.agent;
@@ -4006,13 +4340,48 @@ export async function createReach(overrides = {}) {
     const q = typeof req.query.q === "string" ? req.query.q.slice(0, 200) : "";
     const found = await search.search(q);
     const { sessions = [] } = await agentSessions.list();
-    const named = new Map(sessions.map((s) => [`${s.agent}:${s.id}`, s]));
+    const direct = apiChats.list();
+    const ag = antigravitySessions.list();
+    const allSessions = [...sessions, ...direct, ...ag];
+    const named = new Map(allSessions.map((s) => [`${s.agent}:${s.id}`, s]));
+    const extraHits = [];
+    const needle = q.trim().toLowerCase();
+    if (needle.length >= 2) {
+      for (const s of [...direct, ...ag]) {
+        if (s.archived) continue;
+        try {
+          const page = s.agent === "api" ? apiChats.read(s.id, { limit: 120 }) : antigravitySessions.read(s.id, { limit: 120 });
+          for (const item of page.items || []) {
+            if (item.kind !== "text" || !item.text) continue;
+            const idx = item.text.toLowerCase().indexOf(needle);
+            if (idx >= 0) {
+              const start = Math.max(0, idx - 40);
+              const snippet = (start > 0 ? "…" : "") + item.text.slice(start, idx + needle.length + 80).replace(/\s+/g, " ").trim();
+              extraHits.push({
+                agent: s.agent,
+                id: s.id,
+                role: item.role,
+                at: item.at || s.updatedAt || 0,
+                snippet,
+                title: s.title || "",
+                cwd: "",
+                listed: true,
+              });
+              break;
+            }
+          }
+        } catch {}
+      }
+    }
     res.json({
       partial: found.partial,
-      results: found.results.map((r) => {
-        const s = named.get(`${r.agent}:${r.id}`);
-        return { ...r, title: s?.title || "", cwd: s?.cwd || "", listed: !!s && !s.archived };
-      }),
+      results: [
+        ...found.results.map((r) => {
+          const s = named.get(`${r.agent}:${r.id}`);
+          return { ...r, title: s?.title || "", cwd: s?.cwd || "", listed: !!s && !s.archived };
+        }),
+        ...extraHits,
+      ],
     });
   });
   // Relays and second opinions: set up from the owner's own devices, and
@@ -4219,6 +4588,22 @@ export async function createReach(overrides = {}) {
   app.get("/api/sessions/:agent/:id", async (req, res) => {
     const before =
       typeof req.query.before === "string" ? req.query.before : null;
+    if (req.params.agent === "api") {
+      const page = apiChats.read(req.params.id, {
+        limit: Number(req.query.limit) || 200,
+        before,
+      });
+      if (before) return res.json(page);
+      return versioned(req, res, page);
+    }
+    if (req.params.agent === "antigravity") {
+      const page = antigravitySessions.read(req.params.id, {
+        limit: Number(req.query.limit) || 200,
+        before,
+      });
+      if (before) return res.json(page);
+      return versioned(req, res, page);
+    }
     const page = await agentSessions.read(req.params.agent, req.params.id, {
       limit: Number(req.query.limit) || 200,
       before,
@@ -4350,14 +4735,16 @@ export async function createReach(overrides = {}) {
   };
   // Slash commands the agent offers after "/" in its composer.
   // With a chat's id: that chat's (its folder's skills and commands).
-  app.get("/api/sessions/commands", async (req, res) =>
-    res.json({
+  app.get("/api/sessions/commands", async (req, res) => {
+    if (req.query.agent === "api" || req.query.agent === "antigravity")
+      return res.json({ commands: [] });
+    return res.json({
       commands: await agentSessions.commands(
         ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
         typeof req.query.id === "string" && /^[\w-]{1,80}$/.test(req.query.id) ? { id: req.query.id } : {},
       ),
-    }),
-  );
+    });
+  });
   // One of Codex's own commands from "/", run in the chat (status, compact,
   // review, …); only those its menu offers.
   app.post("/api/sessions/:agent/:id/commands", async (req, res) => {
@@ -4385,13 +4772,43 @@ export async function createReach(overrides = {}) {
         : { version, logos },
     );
   });
-  app.get("/api/sessions/models", async (req, res) =>
-    res.json(
+  app.get("/api/sessions/models", async (req, res) => {
+    if (req.query.agent === "antigravity") {
+      return res.json(
+        antigravitySessions.models
+          ? await antigravitySessions.models({ refresh: req.query.refresh === "1" })
+          : { models: [], mode: null },
+      );
+    }
+    if (req.query.agent === "api") {
+      const providers = await chatProviders.list({
+        discover: true,
+        refresh: req.query.refresh === "1",
+      });
+      const models = providers
+        .filter((p) => p.configured || p.reachable)
+        .flatMap((p) =>
+          (p.models || []).map((m) => ({
+            id: `${p.id}::${m.id}`,
+            modelId: m.id,
+            providerId: p.id,
+            providerName: p.name,
+            providerKind: p.kind,
+            name: m.name || m.id,
+            description: m.description ? `${p.name} · ${m.description}` : p.name,
+            isDefault: false,
+            efforts: [],
+            defaultEffort: null,
+          })),
+        );
+      return res.json({ models, mode: null });
+    }
+    return res.json(
       await agentSessions.models(
         ["claude", "gemini"].includes(req.query.agent) ? req.query.agent : "codex",
       ),
-    ),
-  );
+    );
+  });
   // Signing an agent in on the Mac from the phone: Reach relays the link and
   // the code; the sign-in itself is the agent's own, on the Mac.
   const signInAgent = (value) => {
@@ -4467,6 +4884,34 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions", async (req, res) => {
     const body = req.body || {};
     const agent = String(body.agent || "");
+    if (agent === "api") {
+      const started = apiChats.start({
+        providerId: body.providerId,
+        model: body.model,
+        text: body.text,
+        images: Array.isArray(body.images) ? body.images : [],
+        systemPrompt: body.systemPrompt,
+        temperature: body.temperature,
+        veniceWebSearch: body.veniceWebSearch === true,
+      });
+      record("session", `Started a ${started.session.providerName || "API"} chat from Reach`);
+      return res.json({ threadId: started.session.id, turnId: null, session: started.session });
+    }
+    if (agent === "antigravity") {
+      const options = turnOptions(body);
+      const cwd = body.cwd ? sessionFolder(body.cwd) : os.homedir();
+      const started = await antigravitySessions.start({
+        text: options.text,
+        cwd,
+        model: options.model,
+        effort: options.effort,
+        mode: typeof body.mode === "string" && ["auto", "accept-edits", "plan"].includes(body.mode) ? body.mode : "auto",
+        images: options.images,
+        title: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
+      });
+      record("session", "Started an Antigravity session from Reach");
+      return res.json(started);
+    }
     // Each agent's own permission modes: the Codex app's menu (sent exactly
     // as the app sends it) or Claude Code's --permission-mode choices.
     const modeSettings =
@@ -4496,15 +4941,63 @@ export async function createReach(overrides = {}) {
     for (const chat of value) {
       const agent = String(chat?.agent || "");
       const id = String(chat?.id || "");
-      if (!["codex", "claude", "gemini"].includes(agent) || !/^[\w-]{1,80}$/.test(id) || (agent === here.agent && id === here.id))
+      if (!["codex", "claude", "gemini", "api", "antigravity"].includes(agent) || !/^[\w-]{1,80}$/.test(id) || (agent === here.agent && id === here.id))
         throw fail(400, "Unknown chat.");
-      const page = await agentSessions.read(agent, id, { limit: 200 });
-      blocks.push(mentionBlock({ from: agentName(agent), title: page.session?.title || "", cwd: page.session?.cwd || "", items: page.items || [] }));
+      const page =
+        agent === "api"
+          ? apiChats.read(id, { limit: 200 })
+          : agent === "antigravity"
+            ? antigravitySessions.read(id, { limit: 200 })
+            : await agentSessions.read(agent, id, { limit: 200 });
+      blocks.push(mentionBlock({ from: page.session?.providerName || agentName(agent), title: page.session?.title || "", cwd: page.session?.cwd || "", items: page.items || [] }));
     }
     return blocks;
   };
   app.post("/api/sessions/:agent/:id/messages", async (req, res) => {
     const { agent, id } = req.params;
+    if (agent === "api") {
+      const body = req.body || {};
+      let providerId = typeof body.providerId === "string" ? body.providerId : undefined;
+      let model = typeof body.model === "string" ? body.model : undefined;
+      if (model && model.includes("::") && !providerId) {
+        const idx = model.indexOf("::");
+        providerId = model.slice(0, idx);
+        model = model.slice(idx + 2);
+      }
+      const chats = await mentioned(body.chats, req.params);
+      const text = chats.length ? withMentions(typeof body.text === "string" ? body.text : "", chats) : body.text;
+      const sent = apiChats.send(id, {
+        text,
+        images: Array.isArray(body.images) ? body.images : [],
+        providerId,
+        model,
+        systemPrompt: body.systemPrompt,
+        temperature: body.temperature,
+        veniceWebSearch: typeof body.veniceWebSearch === "boolean" ? body.veniceWebSearch : undefined,
+      });
+      record("session", `Sent a message to ${sent.session.providerName || "API"} chat`);
+      return res.json(sent);
+    }
+    if (agent === "antigravity") {
+      const { fresh, repeated } = imageRepeats.split(agent, id, req.body?.images);
+      const options = turnOptions({ ...(req.body || {}), images: fresh });
+      const repeatFiles = agentImages.paths(repeated);
+      const chats = await mentioned(req.body?.chats, req.params);
+      let promptText = options.text;
+      if (chats.length) promptText = withMentions(promptText, chats);
+      const note = repeatFiles.length ? repeatNote(repeatFiles) : "";
+      if (note) promptText = `${note}\n\n${promptText}`;
+      const sent = await antigravitySessions.send(id, {
+        text: promptText,
+        model: options.model,
+        effort: options.effort,
+        mode: typeof req.body?.mode === "string" && ["auto", "accept-edits", "plan"].includes(req.body.mode) ? req.body.mode : undefined,
+        images: options.images,
+      });
+      imageRepeats.add(agent, id, Array.isArray(fresh) ? fresh : []);
+      record("session", "Sent a message to Antigravity");
+      return res.json(sent);
+    }
     const { fresh, repeated } = imageRepeats.split(agent, id, req.body?.images);
     const options = turnOptions({ ...(req.body || {}), images: fresh }, agent);
     const repeatFiles = agentImages.paths(repeated);
@@ -4572,25 +5065,130 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/archive", async (req, res) => {
     macOwner(req);
     const archived = req.body?.archived !== false;
+    if (req.params.agent === "api") {
+      const done = apiChats.archive(req.params.id, archived);
+      record("session", `${archived ? "Archived" : "Unarchived"} an API chat`);
+      return res.json({ archived, ...done });
+    }
+    if (req.params.agent === "antigravity" && antigravitySessions.archive) {
+      const done = antigravitySessions.archive(req.params.id, archived);
+      record("session", `${archived ? "Archived" : "Unarchived"} an Antigravity chat`);
+      return res.json({ archived, ...done });
+    }
     const done = await agentSessions.archive(req.params.agent, req.params.id, { archived });
     record("session", `${archived ? "Archived" : "Unarchived"} a ${agentLabel(req.params.agent)} chat`);
     res.json(done);
   });
-  app.post("/api/sessions/:agent/:id/stop", async (req, res) =>
-    res.json(await agentSessions.stop(req.params.agent, req.params.id)),
-  );
-  // Continue a chat with the other agent, as if forked in the same app
-  // (agent-sessions/move.mjs); the new chat's address comes back. resume:
-  // the new agent is told to keep going too (one tap when out of usage).
+  app.post("/api/sessions/:agent/:id/stop", async (req, res) => {
+    if (req.params.agent === "api") return res.json(apiChats.stop(req.params.id));
+    if (req.params.agent === "antigravity" && antigravitySessions.stop) return res.json(antigravitySessions.stop(req.params.id));
+    return res.json(await agentSessions.stop(req.params.agent, req.params.id));
+  });
+  // Continue a chat with the other agent or any API/Local provider
+  // (codex, claude, openclaw, antigravity, venice, ollama, vllm, openai, etc.).
+  const moveOrForkAny = async (req, { fork = false } = {}) => {
+    const { agent, id } = req.params;
+    const to = String(req.body?.to || "");
+    const resume = req.body?.resume === true;
+    const isDirectTarget = to === "api" || to.startsWith("api:") || to === "antigravity";
+    const isDirectSource = agent === "api" || agent === "antigravity";
+
+    if (isDirectTarget || isDirectSource) {
+      const sourcePage =
+        agent === "api"
+          ? apiChats.read(id, { limit: 200 })
+          : agent === "antigravity"
+            ? antigravitySessions.read(id, { limit: 200 })
+            : await agentSessions.read(agent, id, { limit: 200 });
+
+      if (to === "antigravity") {
+        const transcript = (sourcePage.items || [])
+          .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+          .slice(-24)
+          .map((i) => `${i.role === "user" ? "User" : "Assistant"}: ${String(i.text).slice(0, 1500)}`)
+          .join("\n\n");
+        const followUp = typeof req.body?.text === "string" && req.body.text.trim() ? req.body.text.trim() : "";
+        const prompt = followUp
+          ? `Context from earlier ${sourcePage.session?.providerName || agentName(agent)} conversation ("${sourcePage.session?.title || "Chat"}"):\n\n${transcript}\n\n---\nNew user message:\n${followUp}`
+          : `Continued from ${sourcePage.session?.providerName || agentName(agent)} ("${sourcePage.session?.title || "Chat"}"):\n\n${transcript}\n\nPlease review the context above and continue helping from where we left off.`;
+        const targetCwd =
+          req.body?.cwd
+            ? sessionFolder(req.body.cwd)
+            : sourcePage.session?.cwd && fs.existsSync(sourcePage.session.cwd)
+              ? sourcePage.session.cwd
+              : os.homedir();
+        const priorItems = (sourcePage.items || [])
+          .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+          .slice(-24);
+        const started = await antigravitySessions.start({
+          text: prompt,
+          ...(followUp ? { displayUserText: followUp, priorItems } : {}),
+          cwd: targetCwd,
+          model: typeof req.body?.model === "string" && MODEL.test(req.body.model) ? req.body.model : undefined,
+          effort: typeof req.body?.effort === "string" && EFFORT.test(req.body.effort) ? req.body.effort : undefined,
+          title: sourcePage.session?.title ? String(sourcePage.session.title).slice(0, 120) : undefined,
+        });
+        record("session", `${fork ? "Forked" : "Continued"} a chat in Antigravity`);
+        return { agent: "antigravity", id: started.threadId, resumed: true };
+      }
+
+      if (to === "api" || to.startsWith("api:")) {
+        const providerId =
+          typeof req.body?.providerId === "string" && req.body.providerId
+            ? req.body.providerId
+            : to.startsWith("api:")
+              ? to.slice(4)
+              : "";
+        let model = typeof req.body?.model === "string" ? req.body.model : "";
+        if (!model && providerId) {
+          const modelsRes = await chatProviders.listModels(providerId).catch(() => ({ models: [] }));
+          model = modelsRes.models?.[0]?.id || chatProviders.getInternal(providerId)?.defaultModel || "";
+        }
+        const moved = apiChats.importHistory({
+          title: sourcePage.session?.title || "",
+          fromAgent: agent,
+          fromId: id,
+          items: sourcePage.items || [],
+          providerId,
+          model,
+          resume,
+        });
+        record("session", `${fork ? "Forked" : "Continued"} a chat in ${moved.session.providerName || "API"}`);
+        return moved;
+      }
+
+      // Source is api or antigravity -> destination is codex or claude.
+      if (!["codex", "claude"].includes(to))
+        throw fail(400, "Choose Codex, Claude Code, or an API/Local provider.");
+      const transcript = (sourcePage.items || [])
+        .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+        .slice(-24)
+        .map((i) => `${i.role === "user" ? "User" : "Assistant"}: ${String(i.text).slice(0, 1500)}`)
+        .join("\n\n");
+      const prompt = `Continued from ${sourcePage.session?.providerName || agent} ("${sourcePage.session?.title || "Chat"}"):\n\n${transcript}\n\nPlease review the context above and continue helping from where we left off.`;
+      const started = await agentSessions.start(to, {
+        text: prompt,
+        cwd: sessionFolder(req.body?.cwd),
+        name: sourcePage.session?.title ? String(sourcePage.session.title).slice(0, 120) : undefined,
+      });
+      record("session", `${fork ? "Forked" : "Continued"} a chat in ${agentName(to)}`);
+      return { agent: to, id: started.threadId, resumed: true };
+    }
+    return null;
+  };
   app.post("/api/sessions/:agent/:id/move", async (req, res) => {
     const resume = req.body?.resume === true;
     if (resume) notPaused();
+    const direct = await moveOrForkAny(req, { fork: false });
+    if (direct) return res.json(direct);
     const moved = await agentSessions.move(req.params.agent, req.params.id, { to: req.body?.to, authorize: () => req.reauthorize(), resume, owner: req.client.id });
     record("session", `Continued a chat in ${agentName(moved.agent)}`);
     res.json(moved);
   });
   app.post("/api/sessions/:agent/:id/fork", async (req, res) => {
     macOwner(req);
+    const direct = await moveOrForkAny(req, { fork: true });
+    if (direct) return res.json(direct);
     const forked = await agentSessions.fork(req.params.agent, req.params.id, {
       to: req.body?.to, through: req.body?.through ?? null, authorize: () => req.reauthorize(),
     });
@@ -4608,6 +5206,36 @@ export async function createReach(overrides = {}) {
   // owner's call (it changes what Claude may do without asking). Never Bypass.
   app.post("/api/sessions/:agent/:id/model", async (req, res) => {
     macOwner(req);
+    if (req.params.agent === "api") {
+      const b = req.body || {};
+      let providerId = typeof b.providerId === "string" ? b.providerId : undefined;
+      let model = typeof b.model === "string" ? b.model : undefined;
+      if (model && model.includes("::") && !providerId) {
+        const idx = model.indexOf("::");
+        providerId = model.slice(0, idx);
+        model = model.slice(idx + 2);
+      }
+      const updated = apiChats.setModel(req.params.id, {
+        providerId,
+        model,
+        ...(typeof b.systemPrompt === "string" ? { systemPrompt: b.systemPrompt } : {}),
+        ...(b.temperature === null || typeof b.temperature === "number" ? { temperature: b.temperature } : {}),
+        ...(typeof b.veniceWebSearch === "boolean" ? { veniceWebSearch: b.veniceWebSearch } : {}),
+      });
+      return res.json({
+        applied: true,
+        model: updated.session.model,
+        providerId: updated.session.providerId,
+        providerName: updated.session.providerName,
+        session: updated.session,
+      });
+    }
+    if (req.params.agent === "antigravity" && antigravitySessions.setModel) {
+      const { model, effort } = req.body || {};
+      if (model != null && (typeof model !== "string" || !MODEL.test(model))) throw fail(400, "Unknown model.");
+      if (effort != null && (typeof effort !== "string" || !EFFORT.test(effort))) throw fail(400, "Unknown thinking level.");
+      return res.json(antigravitySessions.setModel(req.params.id, { model, effort }));
+    }
     const { model, effort, speed } = req.body || {};
     // Claude's Effort page sends the level alone: the chat keeps its model.
     if ((model == null && (effort == null || req.params.agent !== "claude")) ||
@@ -4622,6 +5250,10 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/mode", async (req, res) => {
     macOwner(req);
     const mode = req.body?.mode;
+    if (req.params.agent === "antigravity" && antigravitySessions.setMode) {
+      if (!["auto", "accept-edits", "plan", "default"].includes(mode)) throw fail(400, "Reach can't pick that mode.");
+      return res.json(antigravitySessions.setMode(req.params.id, { mode: mode === "default" ? "auto" : mode }));
+    }
     // Claude: never Bypass. Codex: its own menu's choices, as when sending.
     const allowed = req.params.agent === "codex" ? isCodexMode(mode) : SWITCHABLE_MODES.includes(mode);
     if (!allowed) throw fail(400, "Reach can't pick that mode.");
@@ -4658,6 +5290,11 @@ export async function createReach(overrides = {}) {
   // A chat deleted, as in its app (Codex's delete; a Claude chat to the Trash).
   app.delete("/api/sessions/:agent/:id", async (req, res) => {
     macOwner(req);
+    if (req.params.agent === "api") {
+      const result = apiChats.remove(req.params.id);
+      record("session", "Deleted an API chat");
+      return res.json(result);
+    }
     const result = await agentSessions.deleteChat(req.params.agent, req.params.id);
     record("session", `Deleted a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
@@ -4665,6 +5302,16 @@ export async function createReach(overrides = {}) {
   // A chat renamed, as in its app.
   app.post("/api/sessions/:agent/:id/rename", async (req, res) => {
     if (typeof req.body?.title !== "string") throw fail(400, "Name the chat.");
+    if (req.params.agent === "api") {
+      const result = apiChats.rename(req.params.id, req.body.title);
+      record("session", "Renamed an API chat");
+      return res.json({ title: result.session.title, ...result });
+    }
+    if (req.params.agent === "antigravity" && antigravitySessions.rename) {
+      const result = antigravitySessions.rename(req.params.id, req.body.title);
+      record("session", "Renamed an Antigravity chat");
+      return res.json(result);
+    }
     const result = await agentSessions.rename(req.params.agent, req.params.id, req.body?.title);
     record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
     res.json(result);
@@ -4710,6 +5357,81 @@ export async function createReach(overrides = {}) {
     const since = Number(req.query.since);
     const gone = new AbortController();
     res.on("close", () => gone.abort());
+    if (req.params.agent === "api") {
+      const snapshot = () => {
+        const page = apiChats.read(req.params.id, { limit: 200 });
+        const lastReply = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "text");
+        const lastThink = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "thinking");
+        return {
+          version: page.session.rev || page.session.updatedAt || 1,
+          running: page.session.status === "running",
+          streaming: lastReply?.status === "running" ? lastReply.text : "",
+          thinking: lastThink?.status === "running" ? lastThink.text : "",
+          status: page.session.status,
+          items: page.items.filter((i) => i.status !== "running").length,
+          prompts: [],
+          waiting: [],
+        };
+      };
+      let view = snapshot();
+      if (Number.isFinite(since) && view.version <= since) {
+        await new Promise((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            unsub();
+            resolve();
+          };
+          const timer = setTimeout(done, 25000);
+          const unsub = apiChats.subscribe(req.params.id, done);
+          gone.signal.addEventListener("abort", done, { once: true });
+        });
+        view = snapshot();
+      }
+      if (!res.writableEnded && !gone.signal.aborted) res.json(view);
+      return;
+    }
+    if (req.params.agent === "antigravity") {
+      const readSnap = () => {
+        const page = antigravitySessions.read(req.params.id, { limit: 200 });
+        const lastReply = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "text");
+        const lastThink = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "thinking");
+        const ver = antigravitySessions.version?.(req.params.id) || Math.max(1, Math.floor(page.session.rev || page.session.updatedAt || 1));
+        return {
+          version: ver,
+          running: page.session.status === "running",
+          streaming: lastReply?.status === "running" ? lastReply.text : "",
+          thinking: lastThink?.status === "running" ? lastThink.text : "",
+          status: page.session.status,
+          items: page.items.filter((i) => i.status !== "running").length,
+          prompts: [],
+          waiting: [],
+        };
+      };
+      let view = readSnap();
+      if (Number.isFinite(since) && view.version <= since) {
+        const end = Date.now() + 25000;
+        while (!gone.signal.aborted && Date.now() < end && view.version <= since) {
+          await new Promise((resolve) => {
+            let unsub = () => {};
+            const done = () => {
+              clearTimeout(timer);
+              unsub();
+              gone.signal.removeEventListener("abort", done);
+              resolve();
+            };
+            const timer = setTimeout(done, 2000);
+            if (antigravitySessions.subscribe) unsub = antigravitySessions.subscribe(req.params.id, done);
+            gone.signal.addEventListener("abort", done, { once: true });
+          });
+          if (gone.signal.aborted) break;
+          const quickVer = antigravitySessions.version?.(req.params.id);
+          if (quickVer && quickVer <= since) continue;
+          view = readSnap();
+        }
+      }
+      if (!res.writableEnded && !gone.signal.aborted) res.json(view);
+      return;
+    }
     if (Number.isFinite(since)) {
       await agentSessions.changes(
         req.params.agent,
@@ -5373,7 +6095,10 @@ export async function createReach(overrides = {}) {
     // Every check the credential would get on /api, including its device.
     if (browserHostGuard.isActive()) await browserHostGuard.refresh();
     const check = () => {
-      const current = auth.verifyDigest(link.digest, req.reachIdentity);
+      const funnelCtx = funnelRequests.get(req);
+      const current = funnelCtx?.deviceFunnel
+        ? auth.verifyDeviceFunnelDigest(link.digest, funnelCtx.keyThumbprint)
+        : auth.verifyDigest(link.digest, req.reachIdentity);
       if (!current || current.policy?.browser || paused || !transportAvailable ||
           !current.scopes.some(scope => scope === "files" || scope === "files:read") ||
           resolve(link.root, link.path, current) !== link.file)
@@ -5505,9 +6230,10 @@ export async function createReach(overrides = {}) {
         return;
       }
     }
-    if (config.tailscaleOwner && (!trustedRequest(req) || !req.reachIdentity))
+    const isDeviceFunnelUpgrade = funnelRequests.get(req)?.deviceFunnel === true;
+    if (config.tailscaleOwner && !isDeviceFunnelUpgrade && (!trustedRequest(req) || !req.reachIdentity))
       return socket.destroy();
-    if (!transportAvailable || !privateTransportAvailable) {
+    if (!transportAvailable || (!privateTransportAvailable && !isDeviceFunnelUpgrade)) {
       socket.destroy();
       return;
     }
@@ -5527,7 +6253,7 @@ export async function createReach(overrides = {}) {
     }
     if (
       !WS_ROUTES.includes(req.url) ||
-      req.headers["tailscale-funnel-request"] !== undefined ||
+      (!isDeviceFunnelUpgrade && req.headers["tailscale-funnel-request"] !== undefined) ||
       !validHost(req) ||
       !acceptedOrigin(req)
     ) {
@@ -5541,6 +6267,7 @@ export async function createReach(overrides = {}) {
   };
   server.on("upgrade", upgrade);
   wss.on("connection", (ws, req) => {
+    ws.deviceFunnel = funnelRequests.get(req)?.deviceFunnel === true;
     // Every live connection but presence holds itself through a lapse.
     const cleanupIdentity = trackIdentity(req, () => ws.terminate(), {
       holds: req.url !== "/ws/presence",
@@ -6362,6 +7089,50 @@ export async function createReach(overrides = {}) {
     : null;
   const gatewayAgent = publicAgent;
   publicAgent = hostedMcp ? (req, res) => gatewayAgent(req, res) || hostedMcp.handle(req, res) : gatewayAgent;
+  const publicDeviceOrigin = config.publicOrigin?.startsWith("https://")
+    ? new URL(config.publicOrigin).origin.replace(/:\d+$/, "")
+    : "";
+  const publicDevice = publicDeviceOrigin
+    ? createFunnelDeviceGateway({
+        auth,
+        origin: publicDeviceOrigin,
+        privateHost: new URL(config.publicOrigin).host,
+        requestHost: serveRequestHost,
+        available: () => !paused && transportAvailable,
+        passkeysAvailable: () => !!passkeys?.has(),
+        onFlood: (count) => {
+          record("security", `The public device gateway had ${count} requests from strangers in a minute: new sign-ins are paused for 5 minutes`);
+          notify({ category: "access", title: "Your public link is under a flood", body: "New sign-ins from strangers are paused for 5 minutes; your connected devices are unaffected.", icon: "agent", tag: "funnel-device-flood" });
+        },
+        dispatch: (req, res, context) => {
+          funnelRequests.set(req, context);
+          req.reachFunnelDevice = context;
+          req.reachIdentity = null;
+          for (const name of Object.keys(req.headers))
+            if (name.startsWith("tailscale-user-")) delete req.headers[name];
+          if (!context.streamed) req.body = context.body || {};
+          if (context.token) req.headers.authorization = `Bearer ${context.token}`;
+          else delete req.headers.authorization;
+          delete req._parsedUrl;
+          delete req._parsedOriginalUrl;
+          app(req, res);
+        },
+      })
+    : null;
+  const publicUpgrade = publicDevice
+    ? (req) => {
+        const context = publicDevice.upgrade(req);
+        if (!context) return false;
+        funnelRequests.set(req, context);
+        req.reachFunnelDevice = context;
+        req.reachIdentity = null;
+        for (const name of Object.keys(req.headers))
+          if (name.startsWith("tailscale-user-")) delete req.headers[name];
+        delete req._parsedUrl;
+        delete req._parsedOriginalUrl;
+        return true;
+      }
+    : null;
   // Keys Reach knows (agents with access, or ended lately): the door's
   // check before anything is parsed (core.mjs reads the store again only
   // when it changed).
@@ -6382,6 +7153,22 @@ export async function createReach(overrides = {}) {
     if (paused || !transportAvailable) {
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
       return res.end("Unavailable.");
+    }
+    if (publicDevice?.handle(req, res)) return;
+    const downloadMatch = (req.method === "GET" || req.method === "HEAD")
+      ? /^\/download\/([A-Za-z0-9_-]{43})$/.exec((req.url || "").split("?", 1)[0])
+      : null;
+    if (downloadMatch) {
+      const link = links.find(downloadMatch[1]);
+      if (link?.keyThumbprint) {
+        const context = { deviceFunnel: true, downloadLink: true, keyThumbprint: link.keyThumbprint };
+        funnelRequests.set(req, context);
+        req.reachFunnelDevice = context;
+        req.reachIdentity = null;
+        for (const name of Object.keys(req.headers))
+          if (name.startsWith("tailscale-user-")) delete req.headers[name];
+        return app(req, res);
+      }
     }
     // Invitation and agent pages open while their admission window is live.
     // Outside it, those requests are answered only when they name
@@ -6417,12 +7204,13 @@ export async function createReach(overrides = {}) {
     // For the start page at the one address (scripts/launch.mjs).
     publicFaceId,
     publicAgent,
+    publicDevice: publicDevice ? publicDevice.handle : () => false,
     funnelWindow: () => paused || !transportAvailable
       ? { open: false, until: 0, reason: null } : auth.funnelWindow(),
     setFunnelController(controller) { prepareFunnel = controller; },
     // The 5-minute sweep of invitations nobody joined, run now (tests).
     clearUnopened,
-    faceIdAvailable: () => !!faceJoin?.available(),
+    faceIdAvailable: () => !!passkeys?.has(),
     approvals,
     guestKeys,
     terminals,
@@ -6438,7 +7226,7 @@ export async function createReach(overrides = {}) {
     // `publicApp`: what the internet gets at this same address (the start page).
     // The public route stays on while Reach runs (scripts/ephemeral-funnel.mjs),
     // serving fixed owner bootstrap; invitation and agent routes have their
-    // own admission windows. No owner API or WebSocket crosses this door.
+    // own admission windows. Signed device & ticketed WS requests cross here.
     async listenPrivate(socketPath, { publicApp } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
@@ -6449,6 +7237,7 @@ export async function createReach(overrides = {}) {
         upgrade,
         resolveIdentity,
         publicApp: publicDoor(publicApp),
+        publicUpgrade,
       });
     },
     // Windows: the same, on a keyed loopback route only Tailscale's own
@@ -6456,7 +7245,7 @@ export async function createReach(overrides = {}) {
     async listenKeyed({ key, peerCheck, publicApp, refuse, onRefused, selfIps } = {}) {
       if (!config.tailscaleOwner)
         throw Error("Configure Tailscale identity first.");
-      privateServer = await listenKeyedIngress({ key, peerCheck, refuse, onRefused, selfIps, app, upgrade, resolveIdentity, publicApp: publicDoor(publicApp) });
+      privateServer = await listenKeyedIngress({ key, peerCheck, refuse, onRefused, selfIps, app, upgrade, resolveIdentity, publicApp: publicDoor(publicApp), publicUpgrade });
       return privateServer.address().port;
     },
     setTransportAvailable(value) {
@@ -6481,8 +7270,8 @@ export async function createReach(overrides = {}) {
       else {
         screenControl.clear();
         closeInput();
-        // WebSockets are private-only. Funnel agents use signed HTTP calls.
-        for (const ws of wss.clients) ws.terminate();
+        // Private WebSockets close on private-route loss; Funnel device sockets stay up.
+        for (const ws of wss.clients) if (!ws.deviceFunnel) ws.terminate();
       }
     },
     async close() {
@@ -6553,6 +7342,7 @@ export async function createReach(overrides = {}) {
       wss.close();
       await codingTasks.close();
       const sessionsExit = Promise.resolve(agentSessions.close?.()).catch(() => {});
+      apiChats.close?.();
       openClaw.close?.();
       doneWatch.stop();
       turnWatch.stop();
