@@ -53,23 +53,15 @@ function titleFromText(text) {
 const transcriptCache = new Map(); // file -> { mtimeMs, size, parsed }
 
 function readCachedTranscript(file) {
-  let stat;
-  try {
-    stat = fs.statSync(file);
-    if (!stat.isFile()) return null;
-  } catch {
-    transcriptCache.delete(file);
-    return null;
-  }
-  const hit = transcriptCache.get(file);
-  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) {
-    return { stat, parsed: hit.parsed };
-  }
   let fd;
   try {
     fd = fs.openSync(file, "r");
     const fstat = fs.fstatSync(fd);
     if (!fstat.isFile()) return null;
+    const hit = transcriptCache.get(file);
+    if (hit && hit.mtimeMs === fstat.mtimeMs && hit.size === fstat.size) {
+      return { stat: fstat, parsed: hit.parsed };
+    }
     const content = fs.readFileSync(fd, "utf8");
     const parsed = parseAntigravityTranscript(content);
     if (transcriptCache.size > 200) {
@@ -78,6 +70,7 @@ function readCachedTranscript(file) {
     transcriptCache.set(file, { mtimeMs: fstat.mtimeMs, size: fstat.size, parsed });
     return { stat: fstat, parsed };
   } catch {
+    transcriptCache.delete(file);
     return null;
   } finally {
     if (fd !== undefined) {
@@ -664,10 +657,18 @@ export function createAntigravitySessions({
       if (run?.version) return run.version;
       const files = candidateTranscripts().get(cleanId) || [];
       for (const file of files) {
+        let fd;
         try {
-          const stat = fs.statSync(file);
+          fd = fs.openSync(file, "r");
+          const stat = fs.fstatSync(fd);
           if (stat.isFile()) return Math.max(1, Math.floor(stat.mtimeMs) + stat.size);
-        } catch {}
+        } catch {} finally {
+          if (fd !== undefined) {
+            try {
+              fs.closeSync(fd);
+            } catch {}
+          }
+        }
       }
       const meta = sessionMeta.get(cleanId);
       return meta?.createdAt ? Math.floor(meta.createdAt) : 0;

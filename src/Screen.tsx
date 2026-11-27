@@ -457,7 +457,6 @@ export default function Screen({
     };
     const unsubResume = onAppResume(syncVisible);
     const leave = () => {
-      setVisible(false);
       const owned = grant.intent;
       if (!owned || !grant.allowed) return;
       grant.intent = false;
@@ -479,12 +478,16 @@ export default function Screen({
         redirect: "error",
       }).catch(() => {});
     };
+    const onPageHide = () => {
+      setVisible(false);
+      leave();
+    };
     document.addEventListener("visibilitychange", hide);
     document.addEventListener("freeze", pause);
     document.addEventListener("resume", syncVisible);
     window.addEventListener("pageshow", syncVisible);
     window.addEventListener("focus", syncVisible);
-    window.addEventListener("pagehide", leave);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       mounted.current = false;
       unsubResume();
@@ -493,7 +496,7 @@ export default function Screen({
       document.removeEventListener("resume", syncVisible);
       window.removeEventListener("pageshow", syncVisible);
       window.removeEventListener("focus", syncVisible);
-      window.removeEventListener("pagehide", leave);
+      window.removeEventListener("pagehide", onPageHide);
       leave();
     };
   }, [grant, release]);
