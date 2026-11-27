@@ -509,3 +509,152 @@ test("EverythingChat renders unified Anything Chat launchpad, opens Antigravity 
     await dom.close();
   }
 });
+
+test("createAntigravitySessions drives live agy turns, streams deltas, and Gemini/Antigravity chats reply interactively", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const { startDom, typeInto } = await import("./dom/harness.mjs");
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "reach-ag-live-"));
+  const spawned = [];
+  const fakeSpawn = (cli, args, opts) => {
+    spawned.push({ cli, args, cwd: opts.cwd });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => {};
+    const convIdx = args.indexOf("--conversation");
+    const convId = convIdx >= 0 ? args[convIdx + 1] : "33333333-4444-5555-6666-777777777777";
+    queueMicrotask(() => {
+      child.stdout.write(JSON.stringify({ event: "init", conversation_id: convId, init: { cwd: opts.cwd } }) + "\n");
+      child.stdout.write(
+        JSON.stringify({
+          event: "step_update",
+          step_update: { conversation_id: convId, step_index: 1, state: "ACTIVE", step_type: "agent_response", text_delta: "Live Gemini " },
+        }) + "\n",
+      );
+      setTimeout(() => {
+        child.stdout.write(
+          JSON.stringify({
+            event: "step_update",
+            step_update: { conversation_id: convId, step_index: 1, state: "DONE", step_type: "agent_response", text_delta: "answer!" },
+          }) + "\n",
+        );
+        child.stdout.write(
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: convId, status: "SUCCESS", response: "Live Gemini answer!" },
+          }) + "\n",
+        );
+        child.emit("close", 0);
+      }, 15);
+    });
+    return child;
+  };
+
+  try {
+    const ag = createAntigravitySessions({
+      roots: [root],
+      agyBin: "/usr/local/bin/agy",
+      spawnImpl: fakeSpawn,
+      execFileImpl: async () => ({ stdout: "gemini-4-neon-high\tGemini 4 Neon (High)\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\n" }),
+    });
+
+    assert.equal(ag.hasCli(), true);
+    const catalog = await ag.models();
+    assert.equal(catalog.models[0].id, "gemini-4-neon-high");
+
+    const started = await ag.start({ text: "Hello Gemini", cwd: root, model: "gemini-4-neon-high" });
+    assert.equal(started.threadId, "33333333-4444-5555-6666-777777777777");
+    await new Promise((r) => setTimeout(r, 40));
+    const page = ag.read(started.threadId);
+    assert.equal(page.session.status, "idle");
+    assert.equal(page.items.at(-1).text, "Live Gemini answer!");
+
+    await ag.send(started.threadId, { text: "Follow up question" });
+    assert.ok(spawned[1].args.includes("--conversation"));
+    await new Promise((r) => setTimeout(r, 40));
+
+    // Verify UI composer is active for both Antigravity (canReply: true) and Gemini CLI (continuing into Antigravity)
+    const peer = { id: "mac", name: "Studio", url: "https://reach.test", token: "t", platform: "darwin" };
+    const gemId = "44444444-5555-6666-7777-888888888888";
+    const movedAgId = "55555555-6666-7777-8888-999999999999";
+    let movedBody = null;
+    const dom = await startDom({
+      mobile: true,
+      routes: {
+        "/api/sessions/logos": () => ({ version: "1", logos: {} }),
+        "/api/sessions/commands": () => ({ commands: [] }),
+        "/api/sessions/stranded": () => ({ messages: [] }),
+        "/api/sessions/activity": () => ({ chats: [], overlaps: [] }),
+        "/api/chat/providers": () => ({ providers: [], presets: [] }),
+        "/api/sessions/models": () => catalog,
+        [`/api/sessions/gemini/${gemId}`]: () => ({
+          version: "g1",
+          session: { agent: "gemini", id: gemId, title: "Gemini CLI thread", cwd: "/work", origin: "cli", inApp: false, updatedAt: Date.now(), createdAt: Date.now(), status: "idle", archived: false },
+          items: [{ id: "u1", role: "user", kind: "text", text: "Initial Gemini prompt" }],
+          before: null,
+        }),
+        [`/api/sessions/gemini/${gemId}/live`]: async () => {
+          await new Promise((r) => setTimeout(r, 30));
+          return { version: 1, running: false, streaming: "", status: "idle", items: 1, prompts: [], waiting: [] };
+        },
+        [`/api/sessions/gemini/${gemId}/move`]: (init) => {
+          movedBody = JSON.parse(init.body);
+          return { agent: "antigravity", id: movedAgId, resumed: true };
+        },
+        [`/api/sessions/antigravity/${movedAgId}`]: () => ({
+          version: "a1",
+          session: { agent: "antigravity", id: movedAgId, title: "Gemini CLI thread", cwd: "/work", origin: "reach", inApp: true, updatedAt: Date.now(), createdAt: Date.now(), status: "idle", archived: false, model: "gemini-4-neon-high", providerName: "Antigravity" },
+          items: [
+            { id: "u1", role: "user", kind: "text", text: "Answer right here" },
+            { id: "a1", role: "assistant", kind: "text", text: "Answered via Antigravity!" },
+          ],
+          before: null,
+        }),
+        [`/api/sessions/antigravity/${movedAgId}/live`]: async () => {
+          await new Promise((r) => setTimeout(r, 30));
+          return { version: 2, running: false, streaming: "", status: "idle", items: 2, prompts: [], waiting: [] };
+        },
+      },
+    });
+    let view;
+    try {
+      dom.window.localStorage.setItem("reach.chatAgent", "all");
+      const { default: EverythingChat } = await dom.load("/src/EverythingChat.tsx");
+      const feed = {
+        sessions: [
+          { agent: "gemini", id: gemId, title: "Gemini CLI thread", cwd: "/work", origin: "cli", inApp: false, updatedAt: Date.now(), createdAt: Date.now(), status: "idle", preview: "Initial Gemini prompt", archived: false },
+        ],
+        errors: {},
+        health: [
+          { agent: "gemini", name: "Gemini CLI", installed: true, signedIn: true, supported: true },
+          { agent: "antigravity", name: "Antigravity", installed: true, signedIn: true, usable: true, supported: true, canReply: true },
+        ],
+        healthChecked: true,
+        failure: "",
+        reload: async () => {},
+        recheck: () => {},
+      };
+      view = await dom.render(dom.React.createElement(EverythingChat, { peer, feed }));
+      const gemCard = await dom.waitFor(() =>
+        [...dom.document.querySelectorAll(".ac-chat-card, .chat-card")].find((el) => el.textContent.includes("Gemini CLI thread")),
+      );
+      gemCard.click();
+      const input = await dom.waitFor(() => dom.document.querySelector('textarea[aria-label="Message"]'));
+      await typeInto(input, "Answer right here");
+      const sendBtn = await dom.waitFor(() => dom.document.querySelector('[aria-label="Send"]:not(:disabled)'));
+      sendBtn.click();
+      await dom.waitFor(() => movedBody !== null);
+      assert.equal(movedBody.to, "antigravity");
+      assert.equal(movedBody.text, "Answer right here");
+      await dom.waitFor(() => /Answered via Antigravity!/.test(dom.document.body.textContent));
+      assert.ok(dom.document.querySelector('textarea[aria-label="Message"]'), "Antigravity composer stays open for further replies");
+    } finally {
+      await view?.unmount();
+      await dom.close();
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

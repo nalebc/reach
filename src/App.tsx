@@ -233,7 +233,7 @@ function ReachWorkspace() {
   const currentPeerKey = useRef(peerKey);
   currentPeerKey.current = peerKey;
   const device = deviceState?.key === peerKey ? deviceState.value : null;
-  const privateHandoff = useRef("");
+  const privateHandoff = useRef(new Set<string>());
   const recoveryCurrent = useRef<{ peer: Peer; device: Device } | null>(null);
   recoveryCurrent.current = peer && device ? { peer, device } : null;
   const recoverySelected = useRef(peer);
@@ -265,10 +265,14 @@ function ReachWorkspace() {
         connectionGeneration.current++;
         deviceRequest.current?.abort();
         const key = `${next.id}:${next.url}:${next.token}`;
-        privateHandoff.current = key;
+        currentPeerKey.current = key;
+        privateHandoff.current.add(key);
+        deviceRetry.current.reset();
         // The destination was authenticated before the route changed. Keep
         // this same computer's composer, attachments and pending sends mounted.
         setDeviceState({ key, value: checked });
+        setError("");
+        setConnectionDenied(false);
         setPeers(saved);
         setActive(next.id);
         try {
@@ -277,8 +281,12 @@ function ReachWorkspace() {
       },
     });
   }, [peerKey, device?.access?.kind, device?.access?.scopes.join(" ")]);
-  const setDevice = (value: Device | null) =>
-    setDeviceState(value ? { key: peerKey, value } : null);
+  const setDevice = (value: Device | null) => {
+    if (currentPeerKey.current !== peerKey) return;
+    setDeviceState((prev) =>
+      value ? { key: peerKey, value } : prev && prev.key !== peerKey ? prev : null,
+    );
+  };
   const [codexRevision, setCodexRevision] = useState(0);
   const codexStatus = useCodexAvailability(peer, device, codexRevision);
   const features = workspaceCapabilities(device, codexStatus);
@@ -492,6 +500,8 @@ function ReachWorkspace() {
   const loadDevice = useCallback(
     (quiet = false) => {
       if (!peer) return;
+      const targetKey = `${peer.id}:${peer.url}:${peer.token}`;
+      if (currentPeerKey.current !== targetKey) return;
       deviceRequest.current?.abort();
       const controller = new AbortController();
       deviceRequest.current = controller;
@@ -510,7 +520,8 @@ function ReachWorkspace() {
         .then((value) => {
           if (
             controller.signal.aborted ||
-            generation !== connectionGeneration.current
+            generation !== connectionGeneration.current ||
+            currentPeerKey.current !== targetKey
           )
             return;
           deviceRetry.current.reset();
@@ -522,7 +533,8 @@ function ReachWorkspace() {
         .catch((e) => {
           if (
             controller.signal.aborted ||
-            generation !== connectionGeneration.current
+            generation !== connectionGeneration.current ||
+            currentPeerKey.current !== targetKey
           )
             return;
           // A status refresh can fail while the independent screen/input
@@ -538,7 +550,8 @@ function ReachWorkspace() {
         .finally(() => {
           if (
             !controller.signal.aborted &&
-            generation === connectionGeneration.current
+            generation === connectionGeneration.current &&
+            currentPeerKey.current === targetKey
           )
             setLoading(false);
         });
@@ -567,11 +580,11 @@ function ReachWorkspace() {
     if (accessChanged(previous, live)) refreshDeviceRef.current(true);
   }, [live, refreshSessions]);
   useEffect(() => {
+    const handoff = privateHandoff.current.delete(peerKey);
+    if (currentPeerKey.current !== peerKey) return;
     seenChanges.current = undefined;
     connectionGeneration.current++;
     deviceRetry.current.reset();
-    const handoff = privateHandoff.current === peerKey;
-    privateHandoff.current = "";
     if (!handoff) {
       setDevice(null);
       setTerminals([]);

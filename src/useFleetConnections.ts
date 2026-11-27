@@ -102,7 +102,12 @@ export function useFleetConnections(peers: Peer[]) {
             clearTimeout(timeout);
             attempts = 0;
             // The Mac that served this page says which interface it serves now.
-            if (new URL(peer.url).origin === location.origin) noteBuild(value.changes?.build);
+            const peerUrl = new URL(peer.url);
+            if (
+              peerUrl.origin === location.origin ||
+              (peerUrl.hostname.endsWith(".ts.net") && peerUrl.hostname === location.hostname)
+            )
+              noteBuild(value.changes?.build);
             update(
               "connected",
               value.devices.filter(
@@ -138,7 +143,7 @@ export function useFleetConnections(peers: Peer[]) {
       const wake = () => {
         if (document.hidden) { hidden(); return; }
         const now = Date.now();
-        const suspended = (hiddenAt !== undefined && now - hiddenAt >= 3000) || now - lastTick >= 8000;
+        const suspended = (hiddenAt !== undefined && now - hiddenAt >= 1500) || now - lastTick >= 8000;
         hiddenAt = undefined;
         lastTick = now;
         if (stopped || denied) return;

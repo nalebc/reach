@@ -4,7 +4,7 @@ import type { Device, Peer } from "./api";
 import { ensureFunnelKeyBound } from "./device-transport";
 import { watchOwnerEnrollment, type OwnerSetup } from "./owner-connection";
 import type { StartConfig } from "./start-flow";
-import { funnelBrowser, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
+import { funnelBrowser, privatePeerWay, privateWay, tailnetBrowser, type TailnetNode } from "./tailnet-transport";
 import ConnectionStatus, { useConnectionWait } from "./ConnectionStatus";
 import "./owner-connection.css";
 
@@ -26,7 +26,15 @@ export function useOwnerConnection(peer: Peer | undefined, device: Device | null
   const admin = device?.access?.kind === "device" && device.access.scopes.includes("admin");
   const connected = !!device;
   useEffect(() => {
-    if (!peer || !device || peer.transport === "funnel" || funnelBrowser() || tailnetBrowser())
+    if (
+      !peer ||
+      !device ||
+      peer.transport === "funnel" ||
+      privateWay() !== "native" ||
+      privatePeerWay(peer) === "browser" ||
+      funnelBrowser() ||
+      tailnetBrowser()
+    )
       return;
     void ensureFunnelKeyBound(peer);
   }, [key, connected, attempt]);

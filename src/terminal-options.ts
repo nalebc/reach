@@ -157,15 +157,16 @@ export function terminalTouch(element: HTMLElement, term: Terminal) {
     const dt = Math.max(16, at - first.at);
     const vy = (y - first.y) / dt;
     const speed = Math.abs(vy);
-    gain = 1 + 2 * clamp((speed - 0.35) / 1.65, 0, 1) ** 1.2;
+    gain = samples.length >= 3 ? 1 + 2 * clamp((speed - 0.35) / 1.65, 0, 1) ** 1.2 : 1;
     const limit = Math.min(1, 6 / Math.max(0.001, speed * gain));
     velocity = vy * gain * limit;
     return dy * gain;
   };
-  const usesWheel = () =>
-    term.buffer?.active?.type === "alternate" ||
-    (!!term.modes?.mouseTrackingMode &&
-      term.modes.mouseTrackingMode !== "none");
+  const hasMouseTracking = () =>
+    !!term.modes?.mouseTrackingMode &&
+    term.modes.mouseTrackingMode !== "none";
+  const isAlternateScreen = () =>
+    term.buffer?.active?.type === "alternate" && !hasMouseTracking();
   const rowHeight = () =>
     Math.max(
       10,
@@ -183,29 +184,38 @@ export function terminalTouch(element: HTMLElement, term: Terminal) {
       y: Math.max(rect.top + 1, Math.min(rect.bottom - 1, y)),
     };
   };
+  const dispatchWheel = (deltaY: number, deltaMode: number, clientX: number, clientY: number) => {
+    const target = element.querySelector(".xterm");
+    if (!target) return;
+    const pt = clampToScreen(clientX, clientY);
+    const WinWheel = element.ownerDocument?.defaultView?.WheelEvent || WheelEvent;
+    target.dispatchEvent(
+      new WinWheel("wheel", {
+        bubbles: true,
+        cancelable: true,
+        deltaMode,
+        deltaY,
+        clientX: pt.x,
+        clientY: pt.y,
+      }),
+    );
+  };
   const applyDelta = (deltaY: number, clientX: number, clientY: number) => {
+    if (isAlternateScreen()) {
+      if (deltaY) dispatchWheel(deltaY, 0, clientX, clientY);
+      return;
+    }
     remainder += deltaY;
     const row = rowHeight();
     const lines = Math.trunc(remainder / row);
     if (!lines) return;
     remainder -= lines * row;
-    if (usesWheel()) {
-      const target = element.querySelector(".xterm");
-      if (!target) return;
-      const pt = clampToScreen(clientX, clientY);
+    if (hasMouseTracking()) {
       const dir = lines > 0 ? 1 : -1;
       const steps = Math.min(Math.abs(lines), 12);
       for (let i = 0; i < steps; i++) {
-        target.dispatchEvent(
-          new WheelEvent("wheel", {
-            bubbles: true,
-            cancelable: true,
-            deltaMode: 1, // DOM_DELTA_LINE bypasses xterm's <50px 0.3x pixel penalty
-            deltaY: dir,
-            clientX: pt.x,
-            clientY: pt.y,
-          }),
-        );
+        // DOM_DELTA_LINE bypasses xterm's <50px 0.3x pixel penalty
+        dispatchWheel(dir, 1, clientX, clientY);
       }
     } else {
       term.scrollLines(lines);

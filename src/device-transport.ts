@@ -1,5 +1,5 @@
 import { nativeBrowser, nativeBrowserFetch } from "./native-browser";
-import { installFunnelTransport, type PrivateWay } from "./tailnet-transport";
+import { installFunnelTransport, privatePeerWay, privateWay, type PrivateWay } from "./tailnet-transport";
 
 export type DeviceJwk = {
   crv: "P-256";
@@ -708,6 +708,8 @@ export async function ensureFunnelKeyBound(peer: {
   if (boundFunnelPeers.has(cacheId)) return true;
   try {
     const key = await ensureDeviceKey();
+    if (privateWay() !== "native" || privatePeerWay(peer) === "browser")
+      return false;
     const issuedAt = Date.now();
     const nonce = randomNonce(18);
     const payload = `reach-bind-funnel-v1\n${peer.id}\n${key.thumbprint}\n${issuedAt}\n${nonce}`;

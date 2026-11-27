@@ -285,7 +285,13 @@ export function NewChat({
   const modeChoices: AgentMode[] =
     agent === "codex"
       ? modes || CODEX_MODE_CHOICES
-      : [
+      : agent === "antigravity"
+        ? modes || [
+            { id: "auto", label: "Auto" },
+            { id: "accept-edits", label: "Accept edits" },
+            { id: "plan", label: "Plan" },
+          ]
+        : [
           { id: "default", label: "Default" },
           ...modesFor(
             modes ||
@@ -1168,16 +1174,20 @@ export default function EverythingChat({
     if (here.length > 1) list.unshift({ agent: "all", name: "All", supported: true });
     return list;
   }, [health, readyProviderCount, hasApiSessions, hasAntigravitySessions]);
-  // The apps a new chat can be started in (not All or read-only Antigravity transcripts): always offer API & Local too.
+  const antigravityCanReply = useMemo(() => {
+    const h = health.find((item) => item.agent === "antigravity") as (AgentHealth & { canReply?: boolean }) | undefined;
+    return !!h && h.installed && !!h.supported && h.canReply !== false;
+  }, [health]);
+  // The apps a new chat can be started in (not All or transcript-only Antigravity without agy CLI): always offer API & Local too.
   const startApps = useMemo<ChatAppChoice[]>(() => {
     const base = apps.filter(
-      (app) => app.agent !== "all" && !(app.agent === "antigravity" && app.supported),
+      (app) => app.agent !== "all" && !(app.agent === "antigravity" && !antigravityCanReply),
     );
     if (!base.some((app) => app.agent === "api")) {
       base.push({ agent: "api", name: agentLabel("api"), supported: true });
     }
     return base;
-  }, [apps]);
+  }, [apps, antigravityCanReply]);
   useEffect(() => {
     if (
       (savedAgent === "codex" || savedAgent === "claude") &&
@@ -1218,8 +1228,8 @@ export default function EverythingChat({
   };
   const newApp =
     startApps.find((app) => app.agent === newPick) ||
-    (picked.agent === "all" || (picked.agent === "antigravity" && picked.supported)
-      ? startApps.find((app) => AGENTS.includes(app.agent as AgentName) && canAnswer(app.agent)) ||
+    (picked.agent === "all" || (picked.agent === "antigravity" && !antigravityCanReply)
+      ? startApps.find((app) => (AGENTS.includes(app.agent as AgentName) || app.agent === "antigravity") && canAnswer(app.agent)) ||
         (readyProviderCount > 0 ? startApps.find((app) => app.agent === "api") : undefined) ||
         startApps[0] ||
         picked
@@ -1228,8 +1238,10 @@ export default function EverythingChat({
     // The app last picked isn't here (anymore): All when there is one.
     if (health.length && !apps.some((app) => app.agent === savedAgent)) setAgent(apps.some((app) => app.agent === "all") ? "all" : "codex");
   }, [health, apps, savedAgent]);
-  const current: AgentName = picked.agent === "claude" || picked.agent === "gemini" ? picked.agent : "codex";
-  const newAgent: AgentName = newApp.agent === "claude" || newApp.agent === "gemini" ? newApp.agent : "codex";
+  const current: AgentName =
+    picked.agent === "claude" || picked.agent === "gemini" || picked.agent === "antigravity" ? picked.agent : "codex";
+  const newAgent: AgentName =
+    newApp.agent === "claude" || newApp.agent === "gemini" || newApp.agent === "antigravity" ? newApp.agent : "codex";
   const [open, setOpen] = useState<AgentSession | null>(null);
   const [sheet, setSheet] = useState<"" | "new" | "review" | "providers">("");
   // A new chat's folder, when one was asked for (a chat's menu on the list).
@@ -1462,6 +1474,7 @@ export default function EverythingChat({
             onOpen={openRef}
             onNew={() => {
               if (app.agent === "api") pickNew("api");
+              else if (app.agent === "antigravity" && antigravityCanReply) pickNew("antigravity");
               else if (app.agent === "antigravity" && readyProviderCount > 0 && !AGENTS.some((a) => canAnswer(a))) pickNew("api");
               setNewFolder("");
               setSheet("new");

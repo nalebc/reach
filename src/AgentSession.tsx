@@ -48,7 +48,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import type { Peer } from "./api";
+import { post, type Peer } from "./api";
 import AgentMarkdown from "./AgentMarkdown";
 import { createDraftSync } from "./draft-sync";
 import { attachedFiles, mentionedChats, visibleUserText } from "../server/agent-sessions/message-text.mjs";
@@ -2231,7 +2231,7 @@ export default function AgentSessionView({
       | { type: "agent"; item: SessionItem }
     )[] = [];
     for (const raw of items || []) {
-      if (agent === "api" && raw.role === "assistant" && raw.status === "running" && live.streaming) continue;
+      if ((agent === "api" || agent === "antigravity") && raw.role === "assistant" && raw.status === "running" && live.streaming) continue;
       // Also normalize older companions until their server has restarted.
       const item = raw.role === "user" ? { ...raw, text: visibleUserText(raw.text), mentions: mentionedChats(raw.text) } : raw;
       if (item.role === "user" && !item.text && !item.images && !item.repeats && !item.skills?.length && !item.attachments?.length) continue;
@@ -2305,6 +2305,8 @@ export default function AgentSessionView({
   // Why replying isn't possible from here, if it isn't.
   const claudeHealth = health.find((h) => h.agent === "claude");
   const codexHealth = health.find((h) => h.agent === "codex");
+  const agHealth = health.find((h) => h.agent === "antigravity") as (AgentHealth & { canReply?: boolean }) | undefined;
+  const agCanReply = !!agHealth && agHealth.installed && agHealth.supported === true && agHealth.canReply !== false;
   // Where the session lives decides what sending does; writing is never
   // switched off, the note just says what will happen.
   const elsewhere =
@@ -2321,7 +2323,9 @@ export default function AgentSessionView({
     !(info.inApp && claudeHealth.app?.open);
   const blocked =
     agent === "gemini"
-      ? "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app from ⋯."
+      ? agCanReply
+        ? ""
+        : "Gemini CLI no longer answers personal Google accounts (Google moved them to Antigravity). Continue this chat in another app from ⋯."
       : agent === "claude"
       ? elsewhere === "terminal"
         ? `Running in a terminal on your ${word}. Reply there or from the Terminal tab.`
@@ -2569,6 +2573,23 @@ export default function AgentSessionView({
     atBottom.current = true;
     try {
       await draftSync.current?.settle();
+      if (agent === "gemini" && agCanReply) {
+        const moved = await post<{ agent: AgentName; id: string }>(
+          peer,
+          `/api/sessions/gemini/${encodeURIComponent(initial.id)}/move`,
+          {
+            to: "antigravity",
+            resume: true,
+            text: message.text,
+            ...(choice.model ? { model: choice.model } : {}),
+            ...(choice.effort ? { effort: choice.effort } : {}),
+          },
+        );
+        if (!currentSend()) return;
+        setPending([]);
+        onSelect(movedChat(initial, moved));
+        return;
+      }
       const r = await sendMessage(peer, initial, {
         text: message.text,
         images: ready.filter((a) => !a.file).map((a) => a.id!),
@@ -3830,7 +3851,7 @@ export default function AgentSessionView({
             )}
           </div>
         )}
-        {agent === "antigravity" && (
+        {agent === "antigravity" && !agCanReply && (
           <div className="as-ag-handoff" role="region" aria-label="Continue Antigravity conversation">
             <div className="as-ag-handoff-copy">
               <strong>Antigravity transcript</strong>
@@ -3850,7 +3871,7 @@ export default function AgentSessionView({
             </button>
           </div>
         )}
-        {agent !== "gemini" && agent !== "antigravity" && (
+        {((agent !== "gemini" && agent !== "antigravity") || agCanReply) && (
         <div className="as-box">
           <div className="as-field">
             {attachments.length > 0 && (
@@ -3899,7 +3920,7 @@ export default function AgentSessionView({
                 ))}
               </div>
             )}
-            {(agent === "claude" || agent === "codex" || agent === "api") && mentionQuery !== null && (
+            {(agent === "claude" || agent === "codex" || agent === "api" || agent === "antigravity") && mentionQuery !== null && (
               <MentionMenu
                 peer={peer}
                 session={initial}
@@ -3929,7 +3950,13 @@ export default function AgentSessionView({
               aria-label="Message"
               rows={1}
               value={text}
-              placeholder={skin.placeholder}
+              placeholder={
+                agent === "gemini" && agCanReply
+                  ? "Reply with Gemini (continues in Antigravity)…"
+                  : agent === "antigravity"
+                    ? "Message Antigravity…"
+                    : skin.placeholder
+              }
               onChange={(e) => { setText(e.target.value); if (!sending) draftSync.current?.update(e.target.value); }}
               onPaste={(e) => {
                 const files = [...e.clipboardData.files];
@@ -4003,7 +4030,7 @@ export default function AgentSessionView({
             <span className="as-spacer" />
             {info.context && <ContextMeter used={info.context.used} window={info.context.window} />}
             {/* Always in sight, as both apps keep their model by the box. */}
-            {(agent === "codex" || agent === "claude" || agent === "api") && (
+            {(agent === "codex" || agent === "claude" || agent === "api" || agent === "antigravity") && (
               <button
                 className="as-model"
                 aria-expanded={picking}

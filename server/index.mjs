@@ -433,14 +433,13 @@ export async function createReach(overrides = {}) {
   const verify = (req, token) => {
     const context = funnelRequests.get(req);
     const client = context
-      ? !paused && transportAvailable
-        ? context.deviceFunnel
-          ? context.downloadLink
-            ? auth.verifyDeviceFunnelDigest(token, context.keyThumbprint)
-            : auth.verifyDeviceFunnel(token, context.keyThumbprint, context.token)
-          : auth.verifyFunnel(token, context.keyThumbprint, context.token)
-        : null
+      ? context.deviceFunnel
+        ? context.downloadLink
+          ? auth.verifyDeviceFunnelDigest(token, context.keyThumbprint)
+          : auth.verifyDeviceFunnel(token, context.keyThumbprint, context.token)
+        : auth.verifyFunnel(token, context.keyThumbprint, context.token)
       : auth.verify(token, req.reachIdentity);
+    if (context && (paused || !transportAvailable)) return null;
     if (client?.kind === "guest" && client.macEntry?.status === "waiting") return null;
     if (!browserHostGuard.allows(req, client)) return null;
     if (client && req.headers.upgrade?.toLowerCase() === "websocket") {
@@ -4232,16 +4231,29 @@ export async function createReach(overrides = {}) {
     });
   });
   app.get("/api/sessions/health", async (req, res) => {
-    const hasAntigravity = antigravitySessions.list().length > 0;
+    const agCli = antigravitySessions.hasCli?.() === true;
+    const hasAntigravity = agCli || antigravitySessions.list().length > 0;
+    const baseAgents = (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
+      ...a,
+      ...(a.agent === "antigravity" && (a.installed || hasAntigravity)
+        ? { installed: true, signedIn: true, usable: true, supported: true, canReply: agCli }
+        : {}),
+      ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
+      ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
+    }));
+    if (hasAntigravity && !baseAgents.some((a) => a.agent === "antigravity")) {
+      baseAgents.push({
+        agent: "antigravity",
+        name: "Antigravity",
+        installed: true,
+        signedIn: true,
+        usable: true,
+        supported: true,
+        canReply: agCli,
+      });
+    }
     return res.json({
-      agents: (await agentSessions.health({ fresh: req.query.fresh === "1" })).map((a) => ({
-        ...a,
-        ...(a.agent === "antigravity" && (a.installed || hasAntigravity)
-          ? { installed: true, signedIn: true, supported: true }
-          : {}),
-        ...(savings.totals(a.agent).tokens ? { savings: savings.totals(a.agent) } : {}),
-        ...(usageWatch.has(a.agent) ? { notifyWhenBack: true } : {}),
-      })),
+      agents: baseAgents,
       // No team bridge open on Windows (team-bridge.mjs: its pipe, or the
       // owners helper a lead's check needs): the phone doesn't offer a Team
       // that could only fail. (A Mac's that failed to open says "Restart
@@ -4761,7 +4773,13 @@ export async function createReach(overrides = {}) {
     );
   });
   app.get("/api/sessions/models", async (req, res) => {
-    if (req.query.agent === "antigravity") return res.json({ models: [], mode: null });
+    if (req.query.agent === "antigravity") {
+      return res.json(
+        antigravitySessions.models
+          ? await antigravitySessions.models({ refresh: req.query.refresh === "1" })
+          : { models: [], mode: null },
+      );
+    }
     if (req.query.agent === "api") {
       const providers = await chatProviders.list({
         discover: true,
@@ -4879,6 +4897,21 @@ export async function createReach(overrides = {}) {
       record("session", `Started a ${started.session.providerName || "API"} chat from Reach`);
       return res.json({ threadId: started.session.id, turnId: null, session: started.session });
     }
+    if (agent === "antigravity") {
+      const options = turnOptions(body);
+      const cwd = body.cwd ? sessionFolder(body.cwd) : os.homedir();
+      const started = await antigravitySessions.start({
+        text: options.text,
+        cwd,
+        model: options.model,
+        effort: options.effort,
+        mode: typeof body.mode === "string" && ["auto", "accept-edits", "plan"].includes(body.mode) ? body.mode : "auto",
+        images: options.images,
+        title: typeof body.name === "string" ? body.name.slice(0, 120) : undefined,
+      });
+      record("session", "Started an Antigravity session from Reach");
+      return res.json(started);
+    }
     // Each agent's own permission modes: the Codex app's menu (sent exactly
     // as the app sends it) or Claude Code's --permission-mode choices.
     const modeSettings =
@@ -4943,6 +4976,26 @@ export async function createReach(overrides = {}) {
         veniceWebSearch: typeof body.veniceWebSearch === "boolean" ? body.veniceWebSearch : undefined,
       });
       record("session", `Sent a message to ${sent.session.providerName || "API"} chat`);
+      return res.json(sent);
+    }
+    if (agent === "antigravity") {
+      const { fresh, repeated } = imageRepeats.split(agent, id, req.body?.images);
+      const options = turnOptions({ ...(req.body || {}), images: fresh });
+      const repeatFiles = agentImages.paths(repeated);
+      const chats = await mentioned(req.body?.chats, req.params);
+      let promptText = options.text;
+      if (chats.length) promptText = withMentions(promptText, chats);
+      const note = repeatFiles.length ? repeatNote(repeatFiles) : "";
+      if (note) promptText = `${note}\n\n${promptText}`;
+      const sent = await antigravitySessions.send(id, {
+        text: promptText,
+        model: options.model,
+        effort: options.effort,
+        mode: typeof req.body?.mode === "string" && ["auto", "accept-edits", "plan"].includes(req.body.mode) ? req.body.mode : undefined,
+        images: options.images,
+      });
+      imageRepeats.add(agent, id, Array.isArray(fresh) ? fresh : []);
+      record("session", "Sent a message to Antigravity");
       return res.json(sent);
     }
     const { fresh, repeated } = imageRepeats.split(agent, id, req.body?.images);
@@ -5017,12 +5070,18 @@ export async function createReach(overrides = {}) {
       record("session", `${archived ? "Archived" : "Unarchived"} an API chat`);
       return res.json({ archived, ...done });
     }
+    if (req.params.agent === "antigravity" && antigravitySessions.archive) {
+      const done = antigravitySessions.archive(req.params.id, archived);
+      record("session", `${archived ? "Archived" : "Unarchived"} an Antigravity chat`);
+      return res.json({ archived, ...done });
+    }
     const done = await agentSessions.archive(req.params.agent, req.params.id, { archived });
     record("session", `${archived ? "Archived" : "Unarchived"} a ${agentLabel(req.params.agent)} chat`);
     res.json(done);
   });
   app.post("/api/sessions/:agent/:id/stop", async (req, res) => {
     if (req.params.agent === "api") return res.json(apiChats.stop(req.params.id));
+    if (req.params.agent === "antigravity" && antigravitySessions.stop) return res.json(antigravitySessions.stop(req.params.id));
     return res.json(await agentSessions.stop(req.params.agent, req.params.id));
   });
   // Continue a chat with the other agent or any API/Local provider
@@ -5031,7 +5090,7 @@ export async function createReach(overrides = {}) {
     const { agent, id } = req.params;
     const to = String(req.body?.to || "");
     const resume = req.body?.resume === true;
-    const isDirectTarget = to === "api" || to.startsWith("api:");
+    const isDirectTarget = to === "api" || to.startsWith("api:") || to === "antigravity";
     const isDirectSource = agent === "api" || agent === "antigravity";
 
     if (isDirectTarget || isDirectSource) {
@@ -5042,7 +5101,38 @@ export async function createReach(overrides = {}) {
             ? antigravitySessions.read(id, { limit: 200 })
             : await agentSessions.read(agent, id, { limit: 200 });
 
-      if (isDirectTarget) {
+      if (to === "antigravity") {
+        const transcript = (sourcePage.items || [])
+          .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+          .slice(-24)
+          .map((i) => `${i.role === "user" ? "User" : "Assistant"}: ${String(i.text).slice(0, 1500)}`)
+          .join("\n\n");
+        const followUp = typeof req.body?.text === "string" && req.body.text.trim() ? req.body.text.trim() : "";
+        const prompt = followUp
+          ? `Context from earlier ${sourcePage.session?.providerName || agentName(agent)} conversation ("${sourcePage.session?.title || "Chat"}"):\n\n${transcript}\n\n---\nNew user message:\n${followUp}`
+          : `Continued from ${sourcePage.session?.providerName || agentName(agent)} ("${sourcePage.session?.title || "Chat"}"):\n\n${transcript}\n\nPlease review the context above and continue helping from where we left off.`;
+        const targetCwd =
+          req.body?.cwd
+            ? sessionFolder(req.body.cwd)
+            : sourcePage.session?.cwd && fs.existsSync(sourcePage.session.cwd)
+              ? sourcePage.session.cwd
+              : os.homedir();
+        const priorItems = (sourcePage.items || [])
+          .filter((i) => (i.role === "user" || i.role === "assistant") && i.kind === "text" && i.text)
+          .slice(-24);
+        const started = await antigravitySessions.start({
+          text: prompt,
+          ...(followUp ? { displayUserText: followUp, priorItems } : {}),
+          cwd: targetCwd,
+          model: typeof req.body?.model === "string" && MODEL.test(req.body.model) ? req.body.model : undefined,
+          effort: typeof req.body?.effort === "string" && EFFORT.test(req.body.effort) ? req.body.effort : undefined,
+          title: sourcePage.session?.title ? String(sourcePage.session.title).slice(0, 120) : undefined,
+        });
+        record("session", `${fork ? "Forked" : "Continued"} a chat in Antigravity`);
+        return { agent: "antigravity", id: started.threadId, resumed: true };
+      }
+
+      if (to === "api" || to.startsWith("api:")) {
         const providerId =
           typeof req.body?.providerId === "string" && req.body.providerId
             ? req.body.providerId
@@ -5140,6 +5230,12 @@ export async function createReach(overrides = {}) {
         session: updated.session,
       });
     }
+    if (req.params.agent === "antigravity" && antigravitySessions.setModel) {
+      const { model, effort } = req.body || {};
+      if (model != null && (typeof model !== "string" || !MODEL.test(model))) throw fail(400, "Unknown model.");
+      if (effort != null && (typeof effort !== "string" || !EFFORT.test(effort))) throw fail(400, "Unknown thinking level.");
+      return res.json(antigravitySessions.setModel(req.params.id, { model, effort }));
+    }
     const { model, effort, speed } = req.body || {};
     // Claude's Effort page sends the level alone: the chat keeps its model.
     if ((model == null && (effort == null || req.params.agent !== "claude")) ||
@@ -5154,6 +5250,10 @@ export async function createReach(overrides = {}) {
   app.post("/api/sessions/:agent/:id/mode", async (req, res) => {
     macOwner(req);
     const mode = req.body?.mode;
+    if (req.params.agent === "antigravity" && antigravitySessions.setMode) {
+      if (!["auto", "accept-edits", "plan", "default"].includes(mode)) throw fail(400, "Reach can't pick that mode.");
+      return res.json(antigravitySessions.setMode(req.params.id, { mode: mode === "default" ? "auto" : mode }));
+    }
     // Claude: never Bypass. Codex: its own menu's choices, as when sending.
     const allowed = req.params.agent === "codex" ? isCodexMode(mode) : SWITCHABLE_MODES.includes(mode);
     if (!allowed) throw fail(400, "Reach can't pick that mode.");
@@ -5206,6 +5306,11 @@ export async function createReach(overrides = {}) {
       const result = apiChats.rename(req.params.id, req.body.title);
       record("session", "Renamed an API chat");
       return res.json({ title: result.session.title, ...result });
+    }
+    if (req.params.agent === "antigravity" && antigravitySessions.rename) {
+      const result = antigravitySessions.rename(req.params.id, req.body.title);
+      record("session", "Renamed an Antigravity chat");
+      return res.json(result);
     }
     const result = await agentSessions.rename(req.params.agent, req.params.id, req.body?.title);
     record("session", `Renamed a ${agentLabel(req.params.agent)} chat`);
@@ -5288,33 +5393,37 @@ export async function createReach(overrides = {}) {
     if (req.params.agent === "antigravity") {
       const readSnap = () => {
         const page = antigravitySessions.read(req.params.id, { limit: 200 });
+        const lastReply = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "text");
+        const lastThink = [...page.items].reverse().find((i) => i.role === "assistant" && i.kind === "thinking");
         return {
-          version: Math.max(1, Math.floor(page.session.updatedAt || 1)),
+          version: Math.max(1, Math.floor(page.session.rev || page.session.updatedAt || 1)),
           running: page.session.status === "running",
-          streaming: "",
+          streaming: lastReply?.status === "running" ? lastReply.text : "",
+          thinking: lastThink?.status === "running" ? lastThink.text : "",
           status: page.session.status,
-          items: page.items.length,
+          items: page.items.filter((i) => i.status !== "running").length,
           prompts: [],
           waiting: [],
         };
       };
       let view = readSnap();
       if (Number.isFinite(since) && view.version <= since) {
-        // Long-poll up to 25s (checking every 2s for transcript updates) so the
-        // client never spins in a tight 0ms loop on read-only Antigravity chats.
         const end = Date.now() + 25000;
-        while (!gone.signal.aborted && Date.now() < end) {
+        while (!gone.signal.aborted && Date.now() < end && view.version <= since) {
           await new Promise((resolve) => {
-            const timer = setTimeout(resolve, 2000);
-            const onAbort = () => {
+            let unsub = () => {};
+            const done = () => {
               clearTimeout(timer);
+              unsub();
+              gone.signal.removeEventListener("abort", done);
               resolve();
             };
-            gone.signal.addEventListener("abort", onAbort, { once: true });
+            const timer = setTimeout(done, 2000);
+            if (antigravitySessions.subscribe) unsub = antigravitySessions.subscribe(req.params.id, done);
+            gone.signal.addEventListener("abort", done, { once: true });
           });
           if (gone.signal.aborted) break;
           view = readSnap();
-          if (view.version > since) break;
         }
       }
       if (!res.writableEnded && !gone.signal.aborted) res.json(view);

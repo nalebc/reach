@@ -32,6 +32,9 @@ Screen Control.
 - Cryptographically signed Public Funnel device gateway allowing any browser
   to connect rapidly when Tailscale is not installed on the client device,
   with one-tap upgrade to Private Tailscale whenever available.
+- Live interactive Antigravity (`agy`) chat sessions with real-time streaming,
+  model and thinking selection, new conversation creation, and one-tap
+  continuation when replying from Gemini CLI transcripts.
 
 ### Fixed
 
@@ -39,8 +42,10 @@ Screen Control.
   listener, preserves scrollback position across reconnect snapshots, and
   supports smooth decaying momentum and alternate-screen wheel dispatch.
 - Standalone Home Screen PWA wakeups recover cleanly after OS suspension
-  via unified resume detection, bounded IndexedDB storage timeouts, stale
-  socket teardown, and pruned navigation history recovery.
+  via unified resume detection, iOS background memory guards, bounded IndexedDB
+  storage timeouts, public Funnel bootstrap fallback when opened from a private
+  Tailscale port away from home, stale socket teardown, and pruned navigation
+  history recovery.
 - Fullscreen Screen Control renders pure black edge-to-edge with no gray
   safe-area or letterbox boxes, coalesces stale pre-tap probes so clicks land
   without Accessibility queue lag, activates the mobile keyboard reliably on

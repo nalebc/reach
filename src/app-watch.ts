@@ -137,7 +137,12 @@ export function createPrivateRecovery(config: StartConfig, options: RecoveryOpti
       try {
         // Any usable native grant wins, including a deliberately restricted
         // or guest grant. A saved owner alternate must not replace it.
-        const device: Device = await read(direct, candidate.url + "/api/device", candidate.token);
+        const device: Device = await read(
+          direct,
+          candidate.url + "/api/device",
+          candidate.token,
+          initialMode === "native" ? 1000 : 1800,
+        );
         if (initialMode === "funnel") {
           if (
             !device ||
@@ -401,15 +406,42 @@ export function watchPrivateRecovery(options: Pick<RecoveryOptions, "current" | 
   const clearBootstrap = () => {
     clearInterval(timer);
     window.removeEventListener("online", check);
+    window.removeEventListener("pageshow", check);
+    window.removeEventListener("focus", check);
     document.removeEventListener("visibilitychange", check);
   };
   const bootstrap = async () => {
     // This fixed same-origin metadata may need the browser's existing asset
     // door cookie after native loss. It never carries a device credential.
-    const value = (knownConfig?.tailnet ? knownConfig : null) || await offlineBootstrap() || await nativeTailnetFetch("/reach-start.json", {
-      cache: "no-store", redirect: "error", credentials: "same-origin", signal: AbortSignal.timeout(5000),
-    }).then(response => response.ok ? response.json() : null);
-    const config = parseStartConfig(value);
+    // When a Home Screen app was saved at the private port (:8443), same-origin
+    // /reach-start.json cannot answer while Tailscale is off; fall back to the
+    // public Funnel port (443) and, if needed, a minimal host config so signed
+    // Funnel device recovery still runs immediately away from home.
+    let value: unknown = (knownConfig?.tailnet ? knownConfig : null) || await offlineBootstrap();
+    if (!value) {
+      value = await nativeTailnetFetch("/reach-start.json", {
+        cache: "no-store", redirect: "error", credentials: "same-origin", signal: AbortSignal.timeout(1500),
+      }).then(response => response.ok ? response.json() : null).catch(() => null);
+    }
+    if (!value && location.port) {
+      value = await nativeTailnetFetch(`https://${location.hostname}/reach-start.json`, {
+        cache: "no-store", redirect: "error", credentials: "omit", signal: AbortSignal.timeout(2500),
+      }).then(response => response.ok ? response.json() : null).catch(() => null);
+    }
+    let config = parseStartConfig(value);
+    if (!config) {
+      const candidatePeer = options.current()?.peer || options.selected?.();
+      if (candidatePeer && privateOrigin(candidatePeer)?.hostname === location.hostname) {
+        config = {
+          product: "Reach",
+          origin: `https://${location.hostname}`,
+          home: candidatePeer.url,
+          name: candidatePeer.name || "Computer",
+          instance: "",
+          tailnet: null,
+        };
+      }
+    }
     if (stopped || !config || new URL(config.origin).hostname !== location.hostname) return;
     if (config.tailnet) {
       configured = true;
@@ -451,6 +483,8 @@ export function watchPrivateRecovery(options: Pick<RecoveryOptions, "current" | 
   }
   const timer = setInterval(check, 5000);
   window.addEventListener("online", check);
+  window.addEventListener("pageshow", check);
+  window.addEventListener("focus", check);
   document.addEventListener("visibilitychange", check);
   check();
   return () => { stopped = true; clearBootstrap(); stop(); };

@@ -25,7 +25,7 @@ import "./move-chat.css";
 export type MoveSource = { agent: string; id: string; title?: string; cwd?: string; through?: string };
 
 // The apps Reach chats with, in the order offered.
-const APPS = ["codex", "claude", "openclaw"];
+const APPS = ["codex", "claude", "openclaw", "antigravity"];
 // Every other app here that can take the chat.
 export const moveTargets = (agent: string, health: AgentHealth[]) =>
   APPS.filter((a) => a !== agent && health.some((h) => h.agent === a && h.installed && h.supported !== false));
